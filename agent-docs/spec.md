@@ -5,6 +5,10 @@
 **License:** AGPL-3.0-only, with contributor CLA
 **Copyright:** Sarmad — personal project, developed independently
 
+> **Amended by Change Spec 001** (`agent-docs/change-spec-001.md`), which supersedes parts of §4, §5,
+> §21, §22, and §23 and adds ten further parts. Read its *Implementation discipline* section before
+> starting work; it constrains how much of this document is built early.
+>
 > **Location note.** This specification lives in `agent-docs/`, not `docs/`. `docs/` is reserved for
 > user-facing documentation shipped to operators and contributors. `agent-docs/` holds briefs,
 > planning notes, and specifications written for engineers and coding agents. See §29.
@@ -63,7 +67,7 @@ Railway and comparable platforms prohibit privileged containers and block Docker
 | Backend | Mechanism | Use case |
 |---|---|---|
 | `AgentRunner` (**Charter Agent**) | Companion daemon on the operator's host, connects **outbound** to the control plane and claims jobs (§33) | **Primary backend.** Required for hardware, macOS/Xcode, and licensed toolchains. Fastest, because toolchains and caches persist. Works behind NAT with no inbound ports. |
-| `GitHubActionsRunner` | `repository_dispatch` triggers a workflow; events stream back to a Charter webhook | Zero-infrastructure default for web projects on PaaS. Slowest — fresh VM every run. |
+| `CiDispatchRunner` (was `GitHubActionsRunner`) | `repository_dispatch` or the provider's equivalent triggers a workflow; events stream back to a Charter webhook | Zero-infrastructure option for web projects on PaaS. Slowest — fresh VM every run. Available only where the provider supports CI dispatch. **Not built in Phase 1.** |
 | `DockerRunner` | Local Docker socket; spawns sibling containers | Compose self-host where app and Docker share a host. Documented as root-equivalent host access. |
 
 Selected via `CHARTER_RUNNER=agent|github-actions|docker`. Multiple may be enabled simultaneously; the dispatcher routes by capability match (§27.3).
@@ -1012,22 +1016,37 @@ Only the two notify-worthy states fire (§6).
 
 ## 23. Build order
 
-**Phase 1 — Refinement only, no agent.**
-Request → refinement conversation → spec confirmation → approval queue. Shippable on its own, contains the actual novelty, de-risks everything downstream.
+> Amended by Change Spec 001. Read `agent-docs/change-spec-001.md`, *Implementation discipline*, before starting anything.
 
-**Phase 2 — Execution.**
-`IAgentRunner`, **Charter Agent (§33) and `GitHubActionsRunner` together**, capability matching, session orchestration, event streaming, SignalR, pane 2.
+**Fixed stack for Phases 1-3.** One implementation behind every seam: **GitHub** for version control, **Railway** for preview environments, **Charter Agent** as the runner, **OpenRouter** via `OpenAiCompatibleModelClient` as the model provider, **Claude Code and Pi** as agent adapters, web projects only. The interfaces exist from the start; the second implementation of each waits until the loop works.
 
-The Agent is built in Phase 2, not deferred. It is required for every non-web project type, it is the fastest backend, and its outbound job-claim protocol cannot be retrofitted onto a push-based dispatcher without a rewrite.
+**Phase 1 is a vertical slice, not a layer.** It is done when this runs end to end, for one web repository, for one person, once:
 
-**Phase 3 — The loop closes.**
-PR creation, preview URL binding, "what to check", feedback buttons, engineer recap.
+```
+request -> refinement -> spec -> approval -> session -> PR -> Railway preview
+        -> "what to check" -> Works / Not quite
+```
 
-**Phase 4 — Legibility and control.**
-Teaching, concept ledger, pane 3, budgets, triage rules, `DockerRunner`.
+Not "the data model is done", not "the API is done". The whole loop. Everything else is scaffolding around that path, and nothing else is worth building until it runs.
 
-**Phase 5 — Reach.**
-Slack/Discord inbound, SAML, remote Docker socket support, demo mode polish.
+**Phase 1 - the loop.**
+Request, refinement conversation, spec confirmation, approval queue, and then execution through to a verifiable artifact. `IAgentRunner` with the **Charter Agent** (§33) as the sole runner: pairing, lease-based claiming, heartbeat, capability probing, outbound event streaming, `docker` mode.
+
+The Agent is the flagship runner, not a fallback. It is the only backend that works across every provider and project type, it is the fastest because toolchains and caches persist (§32.5), and its outbound connection means local development needs no tunnel for runner traffic. `CiDispatchRunner` and `DockerRunner` are later conveniences.
+
+**Phase 2 - Legibility.**
+Session orchestration depth, SignalR, pane 2, engineer recap, status thread polish.
+
+**Phase 3 - Control.**
+Teaching, concept ledger, pane 3, budgets, triage rules.
+
+**Phase 4 - Infrastructure.**
+Email (Change Spec 001 Part C), configuration in the database (Part D), two-factor authentication (Part B), multimodal input (Part I.3, I.6), the `WorkItem` model (Part E.1), Charter Agent `native` mode, `DockerRunner`, native first-party model clients.
+
+**Phase 5 - Reach.**
+Additional version control providers (Part A), one-way external issue sync (Part H), Slack/Discord inbound, SAML, `CiDispatchRunner`, remote Docker socket support, demo mode polish.
+
+**Explicitly out of scope for Phase 1:** `CiDispatchRunner`, `DockerRunner`, any non-GitHub provider, any non-Railway deployment target, native first-party model clients, adapters beyond Claude Code and Pi, non-web project types, work management in any mode, design mode, analytics, MCP server, SDKs, CLI, 2FA, attachments of any kind.
 
 ---
 
