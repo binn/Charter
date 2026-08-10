@@ -34,8 +34,23 @@ public class RefinementSpecViewTests
             name.Contains("Technical", StringComparison.OrdinalIgnoreCase)
             || name.Contains("Approach", StringComparison.OrdinalIgnoreCase)
             || name.Contains("Risk", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("Scope", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("OpenQuestion", StringComparison.OrdinalIgnoreCase));
+            || name.Contains("Scope", StringComparison.OrdinalIgnoreCase));
+
+        // Open questions are the one field that is deliberately on the requester's side of the line:
+        // they are addressed *to* the requester, they are what blocks their confirm button, and they
+        // carry no repo path, SHA or cost. Section 10b was amended to say so.
+        Assert.Contains(nameof(RequesterSpecView.OpenQuestions), members);
+    }
+
+    [Fact]
+    public void OpenQuestionsAreTheSameListInBothRenderings()
+    {
+        // The same anti-drift property the acceptance criteria have: one document, two projections,
+        // no second place for the text to live.
+        var spec = Sample().WithOpenQuestions(["Does this apply to archived quotes?"]);
+
+        Assert.Same(spec.ForEngineer().OpenQuestions, spec.ForRequester().OpenQuestions);
+        Assert.Equal(["Does this apply to archived quotes?"], spec.ForRequester().OpenQuestions);
     }
 
     [Fact]

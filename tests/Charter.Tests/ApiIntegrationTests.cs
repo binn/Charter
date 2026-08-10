@@ -301,6 +301,188 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task TheRefinementThreadIsRebuiltFromTheStoredTurnsRatherThanFromTheRawText()
+    {
+        await using var fixture = await ApiFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var view = await fixture.Queries().LoadAsync(
+            fixture.Requester,
+            fixture.RequestId,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(view);
+
+        var messages = view.Aggregate.RefinementMessages;
+
+        // Section 2.3: the clarifying question and the answer to it are rows, so they come back on a
+        // refetch instead of existing only in whatever hub frame was broadcast at the time.
+        Assert.Contains(
+            messages,
+            message => message.Kind == ApiRefinementMessageKind.Question
+                       && message.Author == ApiRefinementAuthor.Charter);
+
+        Assert.Contains(
+            messages,
+            message => message.Author == ApiRefinementAuthor.Requester
+                       && message.Body == "no, only new ones");
+
+        // The opening turn appears exactly once: the conversation carries it, so the projection does
+        // not prepend a second copy from Request.RawText.
+        Assert.Single(
+            messages,
+            message => message.Body == "every time i start a new quote it makes me pick solar again");
+
+        // A mode promotion is history in the row, not a sentence in anybody's thread.
+        Assert.DoesNotContain(messages, message => message.Body.Contains("->", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task FeedbackIsRecordedAndComesBackOnTheThread()
+    {
+        await using var fixture = await ApiFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var outcome = await fixture.Commands().SubmitFeedbackAsync(
+            fixture.Requester,
+            fixture.RequestId,
+            new SubmitFeedbackBody { Verdict = ApiFeedbackVerdict.NotQuite, Note = "the old one is still selected" },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(outcome.Succeeded);
+
+        var stored = await fixture.Db.RequestFeedback
+            .Where(row => row.RequestId == fixture.RequestId)
+            .SingleAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(FeedbackVerdict.NotQuite, stored.Verdict);
+        Assert.Equal("the old one is still selected", stored.Note);
+        Assert.Equal(fixture.SessionId, stored.SessionId);
+
+        // Section 11: the thread renders it back rather than forgetting it happened.
+        var view = await fixture.Queries().LoadAsync(
+            fixture.Requester,
+            fixture.RequestId,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(view);
+        var body = await ApiPayloads.RenderAsync(
+            RequestProjection.Detail(view.Aggregate, view.Visibility, fixture.Queries().Now()));
+
+        using var document = JsonDocument.Parse(body);
+        var feedback = document.RootElement.GetProperty("thread").GetProperty("feedback");
+
+        Assert.Equal("not_quite", feedback.GetProperty("verdict").GetString());
+        Assert.Equal("the old one is still selected", feedback.GetProperty("note").GetString());
+    }
+
+    [Fact]
+    public async Task APreferencePatchLandsInPostgresRatherThanBeingAcceptedAndDropped()
+    {
+        await using var fixture = await ApiFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var viewers = fixture.Viewers();
+
+        await viewers.UpdatePreferencesAsync(
+            fixture.Requester,
+            new UpdatePreferencesBody
+            {
+                Theme = ApiThemePreference.Dark,
+                Pane = ApiPanePreference.Detailed,
+                TeachingLevel = ApiTeachingLevel.JustTheDecisions,
+            },
+            TestContext.Current.CancellationToken);
+
+        fixture.Db.ChangeTracker.Clear();
+
+        // Section 3.1: there is no browser storage, so the row is the only place this can have gone.
+        var user = await fixture.Db.Users
+            .AsNoTracking()
+            .SingleAsync(row => row.Id == fixture.Requester.UserId, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ThemePreference.Dark, user.Theme);
+        Assert.Equal(PanePreference.Detailed, user.Pane);
+        Assert.Equal(TeachingLevel.JustTheDecisions, user.TeachingLevel);
+
+        var viewer = await viewers.DescribeAsync(fixture.Requester, TestContext.Current.CancellationToken);
+        Assert.NotNull(viewer);
+        Assert.Equal(ApiThemePreference.Dark, viewer.Preferences.Theme);
+        Assert.Equal(ApiPanePreference.Detailed, viewer.Preferences.Pane);
+    }
+
+    [Fact]
+    public async Task CompletingRequesterOnboardingIsStoredAndIsIdempotent()
+    {
+        await using var fixture = await ApiFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var viewers = fixture.Viewers();
+
+        var before = await viewers.DescribeAsync(fixture.Requester, TestContext.Current.CancellationToken);
+        Assert.NotNull(before);
+        Assert.Null(before.RequesterOnboardingCompletedAt);
+
+        var first = await viewers.CompleteRequesterOnboardingAsync(
+            fixture.Requester,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(first.RequesterOnboardingCompletedAt);
+
+        var second = await viewers.CompleteRequesterOnboardingAsync(
+            fixture.Requester,
+            TestContext.Current.CancellationToken);
+
+        // Section 30.4: the second call is a re-render of a screen somebody already finished.
+        Assert.Equal(first.RequesterOnboardingCompletedAt, second.RequesterOnboardingCompletedAt);
+    }
+
+    [Fact]
+    public async Task AnEngineerWhoHasNeverChosenAPaneLandsInPaneThree()
+    {
+        await using var fixture = await ApiFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var viewers = fixture.Viewers();
+
+        // Section 12: "defaults by role (requester -> 1, engineer -> 3), then persisted per user."
+        var engineer = await viewers.DescribeAsync(fixture.Engineer, TestContext.Current.CancellationToken);
+        var requester = await viewers.DescribeAsync(fixture.Requester, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(engineer);
+        Assert.NotNull(requester);
+        Assert.Equal(ApiPanePreference.Developer, engineer.Preferences.Pane);
+        Assert.Equal(ApiPanePreference.Simple, requester.Preferences.Pane);
+
+        // A stored choice always wins, so an engineer who works in pane 1 stays there.
+        await viewers.UpdatePreferencesAsync(
+            fixture.Engineer,
+            new UpdatePreferencesBody { Pane = ApiPanePreference.Simple },
+            TestContext.Current.CancellationToken);
+
+        fixture.Db.ChangeTracker.Clear();
+
+        var chosen = await viewers.DescribeAsync(fixture.Engineer, TestContext.Current.CancellationToken);
+        Assert.NotNull(chosen);
+        Assert.Equal(ApiPanePreference.Simple, chosen.Preferences.Pane);
+    }
+
+    [Fact]
     public async Task TheViewersCapabilitiesComeFromThePoliciesRatherThanFromRoleArithmetic()
     {
         await using var fixture = await ApiFixture.CreateAsync();
@@ -471,6 +653,7 @@ public class ApiIntegrationTests
             db.Repos.Add(scenario.Repo);
             db.RepoScopes.AddRange(scenario.Scopes);
             db.Requests.Add(scenario.Request);
+            db.Conversations.Add(scenario.Conversation);
             db.Specs.Add(scenario.Spec);
             db.Sessions.Add(scenario.Session);
             db.Events.AddRange(scenario.Events);

@@ -48,6 +48,50 @@ internal sealed class RequestConfiguration : IEntityTypeConfiguration<Request>
     }
 }
 
+/// <summary>
+/// The two buttons of section 11, as rows.
+/// </summary>
+/// <remarks>
+/// A table rather than a column on <c>requests</c>: one thread carries several sessions (section 11),
+/// and "not quite, then not quite, then works" is the history that says how many rounds a request
+/// took. The thread renders the latest.
+/// </remarks>
+internal sealed class RequestFeedbackConfiguration : IEntityTypeConfiguration<RequestFeedback>
+{
+    public void Configure(EntityTypeBuilder<RequestFeedback> builder)
+    {
+        builder.ToTable("request_feedback");
+        builder.HasKey(feedback => feedback.Id);
+
+        builder.Property(feedback => feedback.Id).ValueGeneratedNever();
+        builder.Property(feedback => feedback.Verdict).HasEnumConversion();
+        builder.Property(feedback => feedback.Note).HasMaxLength(RequestFeedback.MaxNoteLength);
+        builder.Property(feedback => feedback.CreatedAt).IsRequired();
+
+        builder.HasOne<Request>()
+            .WithMany()
+            .HasForeignKey(feedback => feedback.RequestId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // The session can be pruned (section 20) long after somebody said whether it worked, and the
+        // verdict outlives it.
+        builder.HasOne<Session>()
+            .WithMany()
+            .HasForeignKey(feedback => feedback.SessionId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(feedback => feedback.SubmittedBy)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // The thread reads the latest verdict for one request, which is the only access pattern.
+        builder.HasIndex(feedback => new { feedback.RequestId, feedback.CreatedAt })
+            .IsDescending(false, true)
+            .HasDatabaseName("ix_request_feedback_request_id_created_at");
+    }
+}
+
 internal sealed class SpecConfiguration : IEntityTypeConfiguration<Spec>
 {
     public void Configure(EntityTypeBuilder<Spec> builder)

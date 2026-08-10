@@ -108,6 +108,7 @@ public static class ApiPayloads
 public sealed class ApiScenario
 {
     public const string CommitSha = "a3f9c21deadbeef";
+    public const string HeadBranch = "charter/remember-last-vertical";
     public const string TechnicalApproach = "Add a per-user preference row and read it on quote creation.";
     public const decimal CostUsd = 1.42m;
 
@@ -125,8 +126,12 @@ public sealed class ApiScenario
         IReadOnlyList<Milestone> milestones,
         IReadOnlyList<Event> events,
         IReadOnlyList<VerificationArtifact> artifacts,
-        PullRequest pullRequest)
+        PullRequest pullRequest,
+        RequestFeedback? feedback,
+        ConversationRecord conversation)
     {
+        Feedback = feedback;
+        Conversation = conversation;
         Organization = organization;
         RequesterUser = requesterUser;
         EngineerUser = engineerUser;
@@ -171,6 +176,15 @@ public sealed class ApiScenario
 
     public PullRequest PullRequest { get; }
 
+    /// <summary>Section 11: the latest verdict, when somebody has pressed one of the two buttons.</summary>
+    public RequestFeedback? Feedback { get; }
+
+    /// <summary>
+    /// The persisted refinement conversation (sections 2.3, 10). The thread is rebuilt from these
+    /// turns, so a fixture without one would make the refinement projection tests vacuous.
+    /// </summary>
+    public ConversationRecord Conversation { get; }
+
     public RepoSnapshot RepoSnapshot => RepoSnapshot.From(Repo, Scopes);
 
     public MemberSnapshot Requester => MemberSnapshot.From(RequesterMember);
@@ -186,7 +200,19 @@ public sealed class ApiScenario
         Roles = [MemberRole.Engineer, MemberRole.Admin],
     };
 
-    public static ApiScenario Build(DateTimeOffset? now = null)
+    /// <summary>Builds the scenario.</summary>
+    /// <param name="now">When it all happened. Everything is offset from this.</param>
+    /// <param name="openQuestions">
+    /// Section 10: what refinement still needs an answer to. Null for the default scenario, which is
+    /// a settled spec — the state every confirmable spec is in.
+    /// </param>
+    /// <param name="feedback">Section 11: what the requester said when they tried it, if they have.</param>
+    /// <param name="artifactPayload">Section 27.7: the kind-specific body, as stored jsonb.</param>
+    public static ApiScenario Build(
+        DateTimeOffset? now = null,
+        IEnumerable<string>? openQuestions = null,
+        RequestFeedback? feedback = null,
+        string? artifactPayload = null)
     {
         var at = now ?? DateTimeOffset.UtcNow.AddHours(-3);
 
@@ -254,7 +280,7 @@ public sealed class ApiScenario
             TechnicalApproach,
             SpecScope.Of(["src/Quotes/QuoteWizard.cs"], ["src/Quotes/**"]),
             ["Touching the wizard's session state could affect in-flight quotes."],
-            openQuestions: null);
+            openQuestions);
 
         var spec = SpecDocumentMapper.ToDraft(document, request.Id, version: 2, at);
         spec.Approve(requesterUser.Id, at.AddMinutes(20));
@@ -296,7 +322,8 @@ public sealed class ApiScenario
         artifact.MarkReady(
             url: "https://pr-142.preview.northbeam.charter.app/quotes/new",
             instructionsMd: "This is a full copy of the quote tool with your change in it.",
-            expiresAt: at.AddHours(8));
+            expiresAt: at.AddHours(8),
+            payload: artifactPayload);
 
         var pullRequest = PullRequest.Open(
             session.Id,
@@ -304,7 +331,24 @@ public sealed class ApiScenario
             "https://github.com/northbeam/quote-tool/pull/142",
             CommitSha,
             PullRequestState.Open,
-            at.AddHours(1));
+            at.AddHours(1),
+            headBranch: HeadBranch);
+
+        // Section 2.3: the thread survives a restart because it is rows. The opening turn repeats the
+        // request's own text, exactly as a refine job that seeded the conversation would leave it, so
+        // the projection's de-duplication is exercised rather than assumed.
+        var conversation = ConversationRecord.Start(organization.Id, InteractionMode.Chat, request.Id, at);
+        conversation.AppendRequesterMessage(request.RawText, at);
+        conversation.PromoteTo(InteractionMode.Plan, at.AddMinutes(1));
+        conversation.AppendCharterTurn(
+            ConversationTurnKind.ClarifyingQuestion,
+            "Should that apply to quotes you started before today?",
+            at.AddMinutes(2));
+        conversation.AppendRequesterMessage("no, only new ones", at.AddMinutes(3));
+        conversation.AppendCharterTurn(
+            ConversationTurnKind.SpecProposed,
+            "That is enough to build from.",
+            at.AddMinutes(4));
 
         return new ApiScenario(
             organization,
@@ -320,7 +364,9 @@ public sealed class ApiScenario
             milestones,
             events,
             artifacts: [artifact],
-            pullRequest);
+            pullRequest,
+            feedback,
+            conversation);
     }
 
     /// <summary>What section 7.4 says this member may be shown, via the real policy.</summary>
@@ -343,7 +389,8 @@ public sealed class ApiScenario
             Events = visibility.Transcript ? Events : [],
             Artifacts = Artifacts,
             PullRequest = RequestVisibility.CanSeeEngineerDetails(visibility) ? PullRequest : null,
-            RefinementMessages = RefinementThread.Derive(Request, Spec),
+            RefinementMessages = RefinementThread.Derive(Request, Spec, Conversation),
+            Feedback = RequestPresentation.Feedback(Feedback),
             ApprovedByName = RequesterUser.DisplayName,
             AwaitingApprovalFrom = "Tomas Beck",
         };

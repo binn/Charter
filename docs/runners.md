@@ -148,8 +148,35 @@ darwin/arm64, and windows/amd64, plus a container image for Docker mode.
    The agent dials out, exchanges the pairing token for a long-lived agent credential, registers
    itself, and probes its capabilities. The pairing token is spent at that point.
 
+   **`--token` is only needed on the first run.** The credential is written to the state directory
+   with owner-only permissions and reused on restart, so your service definition does not have to
+   carry a secret. It is bound to the server URL: pointing the same host at a different instance
+   forces a re-pair.
+
 3. **Confirm it appears online** in Settings -> Runners, with its mode, version, advertised
    capabilities, and concurrency limit.
+
+### Options
+
+| Option | Default | What it does |
+|---|---|---|
+| `--server` | required | Control-plane base URL |
+| `--token` | first run only | Single-use pairing token |
+| `--mode` | `docker` | `docker` or `native` |
+| `--name` | machine name | Label shown in the runners list |
+| `--concurrency` | `1` | Maximum concurrently claimed jobs |
+| `--state-dir` | `~/.charter-agent` | Where the agent credential is stored |
+| `--work-dir` | `<state-dir>/work` | Root of the per-job working directories |
+| `--native-user` | `charter-runner` | Dedicated unprivileged account for native jobs |
+| `--docker-socket` | `/var/run/docker.sock` | Local socket path; never exposed off this host |
+| `--reprobe-hours` | `24` | How often to re-probe host capabilities |
+| `--auto-update` | off | Install a newer build when the control plane offers one |
+| `--verbose` | off | Debug-level logging |
+
+Passing `--native-user self` runs jobs as the agent's own user. That is weaker isolation than a
+dedicated account, and the agent says so at startup rather than leaving you to notice.
+
+Invalid options are all reported together, followed by usage, rather than one per run.
 
 The agent heartbeats on an interval. Missed heartbeats mark it offline, and its in-flight jobs return
 to the queue after the lease expires. You can revoke it instantly from the UI — revocation kills

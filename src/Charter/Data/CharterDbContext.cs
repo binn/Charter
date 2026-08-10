@@ -41,6 +41,9 @@ public sealed class CharterDbContext : DbContext
 
     public DbSet<Spec> Specs => Set<Spec>();
 
+    /// <summary>Section 11: two buttons, and whatever they typed after "Not quite".</summary>
+    public DbSet<RequestFeedback> RequestFeedback => Set<RequestFeedback>();
+
     /// <summary>
     /// Refinement conversations. Section 2.3: no in-memory orchestration state, so the conversation a
     /// requester is halfway through survives the container restarting under it.
@@ -106,6 +109,7 @@ public sealed class CharterDbContext : DbContext
         modelBuilder.ApplyConfiguration(new RepoScopeConfiguration());
         modelBuilder.ApplyConfiguration(new AutoDispatchPolicyConfiguration());
         modelBuilder.ApplyConfiguration(new RequestConfiguration());
+        modelBuilder.ApplyConfiguration(new RequestFeedbackConfiguration());
         modelBuilder.ApplyConfiguration(new SpecConfiguration());
         modelBuilder.ApplyConfiguration(new ConversationConfiguration());
         modelBuilder.ApplyConfiguration(new ConversationTurnConfiguration());

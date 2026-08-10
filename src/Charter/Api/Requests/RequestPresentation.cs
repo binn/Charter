@@ -253,4 +253,22 @@ public static class RequestPresentation
     /// <summary>A stable, human-readable id for a criterion that the domain stores as bare text.</summary>
     public static string CriterionId(Guid specId, int index)
         => string.Create(CultureInfo.InvariantCulture, $"{specId:N}-ac-{index + 1}");
+
+    /// <summary>
+    /// The latest verdict on the status thread (section 11), or <c>null</c> when nobody has said yet.
+    /// </summary>
+    /// <remarks>
+    /// <c>null</c> rather than a fabricated "no feedback" record: <see cref="CharterApiJson"/> then
+    /// omits the key entirely, and the client's two buttons stay unpressed rather than rendering as
+    /// an answer nobody gave.
+    /// </remarks>
+    public static FeedbackResponse? Feedback(RequestFeedback? feedback)
+        => feedback is null
+            ? null
+            : new FeedbackResponse
+            {
+                Verdict = feedback.Verdict.ToApi(),
+                Note = feedback.Note,
+                SubmittedAt = feedback.CreatedAt,
+            };
 }

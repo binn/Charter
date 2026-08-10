@@ -108,7 +108,10 @@ The primary mitigation is structural, described above. Layered on top:
   Exfiltration needs somewhere to send data.
 - **The runner sees no control-plane environment.** Short-TTL, single-repository token, nothing else.
 - **Instruction-shaped language is flagged for review** before dispatch: imperatives addressed to an
-  agent, base64 blobs, URLs. Flagged requests go to an engineer.
+  agent, base64 blobs, URLs. Flagged requests go to an engineer. The flags are stored, so a container
+  restart mid-conversation does not quietly clear a review that had not happened yet — and a
+  conversation reloaded from the database refuses to be read as model-authored text just as the live
+  one does.
 - **Every file write and network call is logged**, attributable to a session and a named human.
 - **The agent never acts on its own initiative.** No schedulers, no infinite auto-retry. Every session
   traces back to a person who asked for something.

@@ -49,6 +49,34 @@ public class DomainEnumMappingTests
         });
 
     [Fact]
+    public void ThePreferenceEnumsMatchTheThreePaneVocabulary()
+    {
+        // Section 12 names the panes for the user, and the theme values are the shell's three
+        // settings. Both are columns on `users` now, so these spellings are schema.
+        AssertSpelling<ThemePreference>(new()
+        {
+            [ThemePreference.System] = "system",
+            [ThemePreference.Light] = "light",
+            [ThemePreference.Dark] = "dark",
+        });
+
+        AssertSpelling<PanePreference>(new()
+        {
+            [PanePreference.Simple] = "simple",
+            [PanePreference.Detailed] = "detailed",
+            [PanePreference.Developer] = "developer",
+        });
+    }
+
+    [Fact]
+    public void FeedbackIsTwoButtonsAndSpellsThemLikeTheWireDoes()
+        => AssertSpelling<FeedbackVerdict>(new()
+        {
+            [FeedbackVerdict.Works] = "works",
+            [FeedbackVerdict.NotQuite] = "not_quite",
+        });
+
+    [Fact]
     public void IdentityProviderMatchesTheSpecification()
         => AssertSpelling<IdentityProviderKind>(new()
         {
@@ -311,6 +339,9 @@ public class DomainEnumMappingTests
         AssertRoundTrip<MemberRole>();
         AssertRoundTrip<MemberCapability>();
         AssertRoundTrip<TeachingLevel>();
+        AssertRoundTrip<ThemePreference>();
+        AssertRoundTrip<PanePreference>();
+        AssertRoundTrip<FeedbackVerdict>();
         AssertRoundTrip<IdentityProviderKind>();
         AssertRoundTrip<RepoStatus>();
         AssertRoundTrip<RequestStatus>();

@@ -111,6 +111,58 @@ public sealed class ConversationTurn
         ArgumentNullException.ThrowIfNull(text);
         return new ConversationTurn(kind, mode, text, Refinement.RequesterText.Empty, at);
     }
+
+    /// <summary>
+    /// Rebuilds a turn that was read back out of Postgres.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately an <c>internal static</c> method rather than a constructor. Section 16's
+    /// structural guarantee is checked by reflection over non-private constructors and public statics
+    /// on the dispatch-path types, and a resume path is not a reason to widen that surface — an
+    /// assembly-internal factory is reachable from <c>Charter.Refinement</c> and from nowhere else.
+    /// </para>
+    /// <para>
+    /// The either/or invariant is restored, not bypassed: a requester kind carries the
+    /// <see cref="RequesterText"/> and nothing in <c>_authored</c>, every other kind carries the
+    /// string and nothing in <c>_requester</c>. A round-tripped requester turn therefore still throws
+    /// from <see cref="AuthoredText"/>, which is the property the boundary actually rests on.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="kind"/> disagrees with which text was supplied.
+    /// </exception>
+    internal static ConversationTurn Restore(
+        ConversationTurnKind kind,
+        InteractionMode mode,
+        string? authored,
+        RequesterText requester,
+        DateTimeOffset at)
+    {
+        if (kind == ConversationTurnKind.RequesterMessage)
+        {
+            if (!string.IsNullOrEmpty(authored))
+            {
+                throw new ArgumentException(
+                    "A restored requester turn carries its text as RequesterText, never as a string: "
+                    + "storing it in both places is how untrusted text ends up read as model-authored "
+                    + "(section 16).",
+                    nameof(authored));
+            }
+
+            return new ConversationTurn(kind, mode, string.Empty, requester, at);
+        }
+
+        if (!requester.IsEmpty)
+        {
+            throw new ArgumentException(
+                "Only a requester turn carries RequesterText.",
+                nameof(requester));
+        }
+
+        ArgumentNullException.ThrowIfNull(authored);
+        return new ConversationTurn(kind, mode, authored, Refinement.RequesterText.Empty, at);
+    }
 }
 
 /// <summary>
@@ -186,6 +238,69 @@ public sealed class RefinementConversation
         DateTimeOffset? now = null,
         Guid? id = null) =>
         new(id ?? Guid.CreateVersion7(), requestId, mode, DomainTime.Resolve(now));
+
+    /// <summary>
+    /// Rebuilds a conversation that was read back out of Postgres.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Section 2.3: the container restarts mid-session and there is no in-memory orchestration state,
+    /// so the aggregate has to be reconstructible from rows. This is that path, and it is an
+    /// <c>internal static</c> method rather than a constructor for the reason
+    /// <see cref="ConversationTurn.Restore"/> gives — the section 16 reflection tests read
+    /// constructors and public statics, and a resume path has no business widening either.
+    /// </para>
+    /// <para>
+    /// Restoring is deliberately not re-running the aggregate's own recorders. Replaying
+    /// <see cref="RecordRequesterMessage"/> would rescan every turn for instruction-shaped language
+    /// and could raise flags an engineer had already cleared, so the stored flags and the stored
+    /// cleared bit are taken as read. What is <em>not</em> taken as read is the promotion rule: a
+    /// restored conversation in Build mode with nothing approved is refused here rather than
+    /// materialising as a dispatchable conversation nobody confirmed.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException">The stored rows describe a state the aggregate forbids.</exception>
+    internal static RefinementConversation Restore(
+        Guid id,
+        Guid? requestId,
+        InteractionMode mode,
+        DateTimeOffset startedAt,
+        IEnumerable<ConversationTurn> turns,
+        IEnumerable<InjectionSignal> flags,
+        bool flagsCleared,
+        SpecDocument? spec,
+        ApprovedSpec? approved)
+    {
+        ArgumentNullException.ThrowIfNull(turns);
+        ArgumentNullException.ThrowIfNull(flags);
+
+        var conversation = new RefinementConversation(id, requestId, mode, startedAt)
+        {
+            FlagsCleared = flagsCleared,
+            Spec = spec,
+            Approved = approved,
+        };
+
+        conversation._turns.AddRange(turns);
+        conversation._flags.AddRange(flags);
+
+        if (mode == InteractionMode.Build && approved is null)
+        {
+            throw new ArgumentException(
+                "A stored conversation in Build mode with nothing confirmed cannot be restored: "
+                + "nothing gets built until someone has confirmed what it should do (section 10).",
+                nameof(mode));
+        }
+
+        if (approved is not null && spec is null)
+        {
+            throw new ArgumentException(
+                "A confirmed conversation has to carry the spec that was confirmed.",
+                nameof(spec));
+        }
+
+        return conversation;
+    }
 
     /// <summary>
     /// Records something the requester typed, scanning it for instruction-shaped language on the way

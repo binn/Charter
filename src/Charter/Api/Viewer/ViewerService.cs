@@ -73,11 +73,35 @@ public sealed class ViewerService
             Preferences = new UserPreferencesResponse
             {
                 Theme = resolved.Theme,
-                Pane = resolved.Pane,
+                Pane = PaneFor(member, resolved),
                 TeachingLevel = resolved.TeachingLevel,
             },
             RequesterOnboardingCompletedAt = resolved.RequesterOnboardingCompletedAt,
         };
+    }
+
+    /// <summary>
+    /// Section 12: <em>"defaults by role (requester → 1, engineer → 3), then persisted per user as a
+    /// preference"</em>.
+    /// </summary>
+    /// <remarks>
+    /// The stored choice always wins. The role only decides what somebody who has never chosen sees
+    /// first, which is why the store keeps "unchosen" distinguishable from "chose Simple" — an
+    /// engineer who deliberately works in pane 1 must not be bumped back to pane 3 on every load.
+    /// </remarks>
+    public static ApiPanePreference PaneFor(MemberSnapshot member, ViewerPreferencesRecord preferences)
+    {
+        ArgumentNullException.ThrowIfNull(member);
+        ArgumentNullException.ThrowIfNull(preferences);
+
+        if (preferences.PaneIsExplicit)
+        {
+            return preferences.Pane;
+        }
+
+        return member.HasRole(MemberRole.Engineer) || member.HasRole(MemberRole.Admin)
+            ? ApiPanePreference.Developer
+            : preferences.Pane;
     }
 
     /// <summary>

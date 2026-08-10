@@ -109,6 +109,27 @@ public sealed class VerificationArtifact
 
     public string? ConnectString { get; private set; }
 
+    /// <summary>
+    /// The kind-specific body of section 27.7's card, as jsonb.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A URL, a storage key and a connect string cover the <em>where</em> of an artifact and nothing
+    /// of the <em>what</em>: a checksum, a file size, a capture list, a pass/fail count, a device
+    /// identifier. Section 27.7 gives each of the eight kinds a different body, and without somewhere
+    /// to put that detail the card renders blanks for the very fields that let a person judge whether
+    /// the change is right.
+    /// </para>
+    /// <para>
+    /// JSON text rather than eight sets of columns, and rather than a mapped object graph: the kinds
+    /// share almost no fields, most artifacts are one kind, and the domain owns no serialiser — the
+    /// same reasoning as <c>Event.Payload</c> and <c>Spec.AcceptanceCriteria</c>. <c>null</c> means
+    /// nothing was recorded, and the projection leaves the corresponding fields empty rather than
+    /// inventing them.
+    /// </para>
+    /// </remarks>
+    public string? Payload { get; private set; }
+
     /// <summary>How to actually use this thing (section 27.1).</summary>
     public string? InstructionsMd { get; private set; }
 
@@ -141,7 +162,8 @@ public sealed class VerificationArtifact
         string? fileRef = null,
         string? connectString = null,
         string? instructionsMd = null,
-        DateTimeOffset? expiresAt = null)
+        DateTimeOffset? expiresAt = null,
+        string? payload = null)
     {
         if (Kind != VerificationArtifactKind.None
             && string.IsNullOrWhiteSpace(url)
@@ -158,8 +180,26 @@ public sealed class VerificationArtifact
         ConnectString = connectString?.Trim();
         InstructionsMd = instructionsMd;
         ExpiresAt = DomainTime.ResolveOptional(expiresAt);
+
+        // Detail already recorded survives a re-ready with none supplied: the checksum does not stop
+        // being true because the reachability check ran again.
+        if (!string.IsNullOrWhiteSpace(payload))
+        {
+            RecordPayload(payload);
+        }
+
         State = VerificationArtifactState.Ready;
     }
+
+    /// <summary>
+    /// Attaches the kind-specific detail of section 27.7, as the JSON the caller serialised.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="MarkReady"/> because detail can arrive after the URL does — a
+    /// checksum is computed once the upload finishes, a test report is parsed after the run.
+    /// </remarks>
+    public void RecordPayload(string? payload)
+        => Payload = string.IsNullOrWhiteSpace(payload) ? null : payload;
 
     public void MarkFailed() => State = VerificationArtifactState.Failed;
 

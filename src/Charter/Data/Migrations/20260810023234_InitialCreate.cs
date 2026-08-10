@@ -60,6 +60,9 @@ public partial class InitialCreate : Migration
                 email = table.Column<string>(type: "character varying(320)", maxLength: 320, nullable: false),
                 display_name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
                 teaching_level = table.Column<string>(type: "text", nullable: false),
+                theme = table.Column<string>(type: "text", nullable: false),
+                pane = table.Column<string>(type: "text", nullable: true),
+                requester_onboarding_completed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                 created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
             },
             constraints: table =>
@@ -589,6 +592,7 @@ public partial class InitialCreate : Migration
                 number = table.Column<int>(type: "integer", nullable: false),
                 url = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false),
                 head_sha = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                head_branch = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                 state = table.Column<string>(type: "text", nullable: false),
                 is_stale = table.Column<bool>(type: "boolean", nullable: false),
                 created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
@@ -628,6 +632,41 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "request_feedback",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                request_id = table.Column<Guid>(type: "uuid", nullable: false),
+                session_id = table.Column<Guid>(type: "uuid", nullable: true),
+                submitted_by = table.Column<Guid>(type: "uuid", nullable: false),
+                verdict = table.Column<string>(type: "text", nullable: false),
+                note = table.Column<string>(type: "character varying(8000)", maxLength: 8000, nullable: true),
+                created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_request_feedback", x => x.id);
+                table.ForeignKey(
+                    name: "fk_request_feedback_requests_request_id",
+                    column: x => x.request_id,
+                    principalTable: "requests",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+                table.ForeignKey(
+                    name: "fk_request_feedback_sessions_session_id",
+                    column: x => x.session_id,
+                    principalTable: "sessions",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.SetNull);
+                table.ForeignKey(
+                    name: "fk_request_feedback_users_submitted_by",
+                    column: x => x.submitted_by,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Restrict);
+            });
+
+        migrationBuilder.CreateTable(
             name: "verification_artifacts",
             columns: table => new
             {
@@ -638,6 +677,7 @@ public partial class InitialCreate : Migration
                 url = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: true),
                 file_ref = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
                 connect_string = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
+                payload = table.Column<string>(type: "jsonb", nullable: true),
                 instructions_md = table.Column<string>(type: "text", nullable: true),
                 expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                 audience = table.Column<string>(type: "text", nullable: false),
@@ -970,6 +1010,22 @@ public partial class InitialCreate : Migration
             unique: true);
 
         migrationBuilder.CreateIndex(
+            name: "ix_request_feedback_request_id_created_at",
+            table: "request_feedback",
+            columns: new[] { "request_id", "created_at" },
+            descending: new[] { false, true });
+
+        migrationBuilder.CreateIndex(
+            name: "ix_request_feedback_session_id",
+            table: "request_feedback",
+            column: "session_id");
+
+        migrationBuilder.CreateIndex(
+            name: "ix_request_feedback_submitted_by",
+            table: "request_feedback",
+            column: "submitted_by");
+
+        migrationBuilder.CreateIndex(
             name: "ix_requests_org_id_created_at",
             table: "requests",
             columns: new[] { "org_id", "created_at" },
@@ -1069,6 +1125,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "repo_scopes");
+
+        migrationBuilder.DropTable(
+            name: "request_feedback");
 
         migrationBuilder.DropTable(
             name: "verification_artifacts");

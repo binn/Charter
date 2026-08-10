@@ -190,6 +190,29 @@ public sealed class ApprovedSpec
 
     /// <summary>What the requester saw when they confirmed.</summary>
     public RenderedSpec ConfirmedView => Spec.ForRequester().Render();
+
+    /// <summary>
+    /// Rebuilds a confirmation that was read back out of Postgres (section 2.3).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>internal static</c>, not public and not a constructor. The section 16 tests read this
+    /// type's non-private constructors and its <em>public</em> statics; an assembly-internal factory
+    /// leaves both surfaces exactly as they were, and none of its parameters is a string, a
+    /// <see cref="RequesterText"/> or a <see cref="Request"/>, so raw requester text still has no
+    /// route to a build.
+    /// </para>
+    /// <para>
+    /// It takes the <see cref="SpecDocument"/> that was stored, so the restored hash is recomputed
+    /// from the document rather than trusted from a column: a spec edited behind the confirmation
+    /// stays detectable, which is the whole point of <see cref="ConfirmedContentHash"/>.
+    /// </para>
+    /// </remarks>
+    internal static ApprovedSpec Restore(SpecDocument spec, Guid confirmedBy, DateTimeOffset confirmedAt)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        return new ApprovedSpec(spec, confirmedBy, confirmedAt);
+    }
 }
 
 /// <summary>

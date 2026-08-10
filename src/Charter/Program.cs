@@ -3,9 +3,12 @@ using Charter.Auth;
 using Charter.Configuration;
 using Charter.Data;
 using Charter.Diagnostics;
+using Charter.GitHub;
 using Charter.Logging;
 using Charter.Models;
+using Charter.Onboarding;
 using Charter.Refinement;
+using Charter.Runners;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry.Metrics;
@@ -66,11 +69,15 @@ try
     builder.Services.AddCharterPreflight();
     builder.Services.AddCharterData(config.Database.ConnectionString.Reveal());
     builder.Services.AddCharterAuth();
+    builder.Services.AddCharterGitHub();
+    builder.Services.AddCharterOnboarding();
     builder.Services.AddCharterApi();
     builder.Services.AddCharterModels();
     builder.Services.AddCharterRefinement();
     builder.Services.AddCharterCredentials();
     builder.Services.AddCharterAdapters();
+    builder.Services.AddCharterRunners(config);
+    builder.Services.AddCharterOrchestration();
 
     builder.Services
         .AddOpenTelemetry()
@@ -198,6 +205,8 @@ try
         ServiceName: startup.ServiceName)));
 
     app.MapCharterApi();
+    app.MapCharterGitHub();
+    app.MapCharterRunnerCallbacks();
     app.MapCharterHubs();
 
     // Client-side routing: anything not matched above is the SPA's problem.

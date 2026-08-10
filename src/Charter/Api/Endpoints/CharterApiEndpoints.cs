@@ -82,7 +82,7 @@ public static class CharterApiEndpoints
             return Json(new UserPreferencesResponse
             {
                 Theme = resolved.Theme,
-                Pane = resolved.Pane,
+                Pane = ViewerService.PaneFor(member, resolved),
                 TeachingLevel = resolved.TeachingLevel,
             });
         });

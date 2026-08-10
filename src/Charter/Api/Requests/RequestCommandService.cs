@@ -364,8 +364,27 @@ public sealed class RequestCommandService
             return CommandOutcome.Forbidden("only the person who filed this request can say whether it worked");
         }
 
+        var note = body.Note?.Trim();
+        if (note is { Length: > RequestFeedback.MaxNoteLength })
+        {
+            return CommandOutcome.Invalid("That is longer than we can take in one go.");
+        }
+
         var now = clock.GetUtcNow();
         var specId = view.Aggregate.Spec?.Id;
+
+        // The verdict is a row before it is a job. A queue payload is a work item that gets claimed,
+        // retried and eventually completed away; "did this work" is a fact about the thread, and
+        // section 11 renders it back on every load.
+        database.RequestFeedback.Add(RequestFeedback.Record(
+            requestId,
+            member.UserId,
+            verdict.ToDomain(),
+            view.Aggregate.Session?.Id,
+            note,
+            now));
+
+        await database.SaveChangesAsync(cancellationToken);
 
         await jobs.EnqueueAsync(
             verdict == ApiFeedbackVerdict.NotQuite ? JobType.Build : JobType.Recap,
@@ -375,7 +394,7 @@ public sealed class RequestCommandService
                     requestId,
                     specId,
                     verdict = verdict == ApiFeedbackVerdict.Works ? "works" : "not_quite",
-                    note = body.Note?.Trim(),
+                    note,
                 },
                 CharterApiJson.Options),
             now: now,

@@ -587,8 +587,10 @@ Spec {
 }
 ```
 
-- **Requester view** renders `title`, `outcome`, `acceptance_criteria`. Nothing else.
+- **Requester view** renders `title`, `outcome`, `acceptance_criteria`, and any `open_questions` still outstanding. Nothing else.
 - **Engineer view** renders everything.
+
+`open_questions` is on the requester's side of that line deliberately, and it is the only field that crosses it. It is the one part of a Spec written *to* the requester rather than about the implementation: refinement refuses to dispatch anything still ambiguous (§10), so open questions are precisely what blocks the confirm button, and they are written in plain language because the requester is who can answer them. Withholding them leaves somebody looking at a disabled button with no way to learn why — a dead end of the kind §11 rules out — and it breaks this section's own rule that a requester must understand what they are approving. `technical_approach`, `scope` and `risks` stay engineer-only; open questions carry no repo path, no SHA and no cost.
 - **Explain** expands any term inline, calibrated by the user's teaching level and concept ledger (§13). Same machinery, no new subsystem.
 
 **Load-bearing rule: the structured Spec is the single source of truth.** The plain-language rendering is generated *from* it and regenerated whenever it changes. `acceptance_criteria` are authored in plain language first and shared verbatim between both views — they are the contract. If the two renderings can drift, *"the spec said X"* stops meaning anything and §10's accountability is lost.

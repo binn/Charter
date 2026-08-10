@@ -12,6 +12,12 @@ public sealed record ViewerPreferencesRecord
 
     public required ApiPanePreference Pane { get; init; }
 
+    /// <summary>
+    /// Whether <see cref="Pane"/> is a choice somebody made rather than the default standing in for
+    /// one. Section 12 defaults the pane by role, and that is only applicable while it is false.
+    /// </summary>
+    public bool PaneIsExplicit { get; init; }
+
     public required ApiTeachingLevel TeachingLevel { get; init; }
 
     /// <summary>Section 30.4. Null until the three onboarding screens are done.</summary>
@@ -23,9 +29,9 @@ public sealed record ViewerPreferencesRecord
 /// </summary>
 /// <remarks>
 /// Section 3.1: there is no browser storage in this app, so a preference exists in exactly one place
-/// and is refetched rather than cached across reloads. This is an interface because the onboarding
-/// work owns the columns that do not exist yet; registering a richer implementation replaces the
-/// default without the API layer changing.
+/// and is refetched rather than cached across reloads. This is an interface so the onboarding work
+/// can register a richer implementation without the API layer changing; the default below writes
+/// every field the contract carries.
 /// </remarks>
 public interface IViewerPreferencesStore
 {
@@ -45,41 +51,49 @@ public interface IViewerPreferencesStore
 }
 
 /// <summary>
-/// The default store, backed by the <c>users</c> row.
+/// The store, backed by the <c>users</c> row.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="ApiTeachingLevel"/> is a real column and round-trips properly.
+/// All four values are columns, so a <c>PATCH</c> lands in Postgres and survives the container
+/// restarting under it (section 2.3). Nothing here caches anything in memory, for the same reason.
 /// </para>
 /// <para>
-/// <strong>Known gap.</strong> There is no <c>theme</c>, <c>pane</c> or
-/// <c>requester_onboarding_completed_at</c> column on <c>users</c> yet, so those three are served at
-/// their defaults and a write to them is accepted and dropped rather than silently pretended. Pane
-/// defaults by role per section 12 — requesters land on pane 1 — and the role is not known here, so
-/// the default is the conservative one. Adding the columns is what closes this; nothing in this file
-/// caches anything in memory, because section 2.3 forbids it.
+/// <c>users.pane</c> is nullable on purpose. Section 12 defaults the pane by role — requesters land
+/// on pane 1, engineers on pane 3 — and that default can only be applied while nobody has chosen.
+/// Writing <c>simple</c> at account creation would be indistinguishable from an engineer who picked
+/// pane 1 deliberately. The role is not known at this layer, so an unchosen pane resolves to the
+/// conservative default and <see cref="ViewerPreferencesRecord.PaneIsExplicit"/> tells a caller that
+/// does know the role that it is still free to override it.
 /// </para>
 /// </remarks>
 public sealed class UserRecordPreferencesStore : IViewerPreferencesStore
 {
     private readonly CharterDbContext database;
+    private readonly TimeProvider clock;
 
     public UserRecordPreferencesStore(CharterDbContext database)
+        : this(database, TimeProvider.System)
+    {
+    }
+
+    public UserRecordPreferencesStore(CharterDbContext database, TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(database);
+        ArgumentNullException.ThrowIfNull(clock);
+
         this.database = database;
+        this.clock = clock;
     }
 
     /// <inheritdoc />
     public async Task<ViewerPreferencesRecord> GetAsync(Guid userId, CancellationToken cancellationToken = default)
     {
-        var teaching = await database.Users
+        var user = await database.Users
             .AsNoTracking()
-            .Where(row => row.Id == userId)
-            .Select(row => (TeachingLevel?)row.TeachingLevel)
-            .SingleOrDefaultAsync(cancellationToken);
+            .SingleOrDefaultAsync(row => row.Id == userId, cancellationToken);
 
-        return Resolve(teaching ?? TeachingLevel.ExplainEverything);
+        return user is null ? Defaults : Resolve(user);
     }
 
     /// <inheritdoc />
@@ -94,32 +108,63 @@ public sealed class UserRecordPreferencesStore : IViewerPreferencesStore
 
         if (user is null)
         {
-            return Resolve(TeachingLevel.ExplainEverything);
+            return Defaults;
         }
 
+        // A partial: an absent member is "leave it alone", never "reset it".
         if (patch.TeachingLevel is { } level)
         {
             user.SetTeachingLevel(level.ToDomain());
-            await database.SaveChangesAsync(cancellationToken);
         }
 
-        return Resolve(user.TeachingLevel, patch.Theme, patch.Pane);
+        if (patch.Theme is { } theme)
+        {
+            user.SetTheme(theme.ToDomain());
+        }
+
+        if (patch.Pane is { } pane)
+        {
+            user.SetPane(pane.ToDomain());
+        }
+
+        await database.SaveChangesAsync(cancellationToken);
+
+        return Resolve(user);
     }
 
     /// <inheritdoc />
-    public Task<ViewerPreferencesRecord> CompleteRequesterOnboardingAsync(
+    public async Task<ViewerPreferencesRecord> CompleteRequesterOnboardingAsync(
         Guid userId,
         CancellationToken cancellationToken = default)
-        => GetAsync(userId, cancellationToken);
+    {
+        var user = await database.Users.SingleOrDefaultAsync(row => row.Id == userId, cancellationToken);
 
-    private static ViewerPreferencesRecord Resolve(
-        TeachingLevel teachingLevel,
-        ApiThemePreference? theme = null,
-        ApiPanePreference? pane = null)
-        => new()
+        if (user is null)
         {
-            Theme = theme ?? ApiThemePreference.System,
-            Pane = pane ?? ApiPanePreference.Simple,
-            TeachingLevel = teachingLevel.ToApi(),
-        };
+            return Defaults;
+        }
+
+        // Idempotent in the aggregate: completing twice keeps the first timestamp.
+        user.CompleteRequesterOnboarding(clock.GetUtcNow());
+        await database.SaveChangesAsync(cancellationToken);
+
+        return Resolve(user);
+    }
+
+    private static ViewerPreferencesRecord Defaults => new()
+    {
+        Theme = ApiThemePreference.System,
+        Pane = ApiPanePreference.Simple,
+        PaneIsExplicit = false,
+        TeachingLevel = ApiTeachingLevel.ExplainEverything,
+    };
+
+    private static ViewerPreferencesRecord Resolve(User user) => new()
+    {
+        Theme = user.Theme.ToApi(),
+        Pane = user.Pane?.ToApi() ?? ApiPanePreference.Simple,
+        PaneIsExplicit = user.Pane is not null,
+        TeachingLevel = user.TeachingLevel.ToApi(),
+        RequesterOnboardingCompletedAt = user.RequesterOnboardingCompletedAt,
+    };
 }

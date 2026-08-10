@@ -11,9 +11,19 @@ namespace Charter.Refinement;
 /// <strong>Refinement is a sanitisation boundary.</strong> The agent never sees raw requester text;
 /// it sees the model-authored, human-approved <see cref="SpecDocument"/>. This type is the near half
 /// of that boundary: requester input is not a <see cref="string"/> anywhere in Charter, it is a
-/// <see cref="RequesterText"/>, and the only way to get characters back out of it is
-/// <see cref="RevealForRefinementPrompt"/> — assembly-internal, named for the one legitimate
-/// consumer, and called from exactly one place (<see cref="RefinementPromptBuilder"/>).
+/// <see cref="RequesterText"/>, and the only ways to get characters back out of it are four
+/// assembly-internal methods, each named for its single legitimate consumer and each called from
+/// exactly one place:
+/// </para>
+/// <list type="bullet">
+/// <item><see cref="RevealForRefinementPrompt"/> — the refiner (<see cref="RefinementPromptBuilder"/>).</item>
+/// <item><see cref="RevealForScanning"/> — the injection scanner.</item>
+/// <item><see cref="RevealForPersistence"/> — writing a turn to its column.</item>
+/// <item><see cref="RevealForRequesterEcho"/> — showing a person their own words back.</item>
+/// </list>
+/// <para>
+/// Keeping that list short is the point. "Who can read untrusted text" has to stay a question
+/// somebody can answer by reading one file.
 /// </para>
 /// <para>
 /// The far half is that nothing on the dispatch path accepts one. <see cref="ApprovedSpec"/> and
@@ -72,6 +82,38 @@ public readonly struct RequesterText : IEquatable<RequesterText>
     /// to act on them (section 16).
     /// </summary>
     internal string RevealForScanning() => _value ?? string.Empty;
+
+    /// <summary>
+    /// Hands the characters to the storage layer, so a turn can be written to a column and read back
+    /// into a <see cref="RequesterText"/> unchanged.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Section 2.3 requires the conversation to be resumable from Postgres alone, and characters that
+    /// cannot leave the type cannot be persisted. This is the third and last reveal site, it is
+    /// assembly-internal like the other two, and it is named for the one thing it is for: a round
+    /// trip through a column, ending in <see cref="From"/> on the way back.
+    /// </para>
+    /// <para>
+    /// Deliberately <em>not</em> a general accessor. Keeping the count of reveal sites small is what
+    /// makes "who can read untrusted text" an auditable question — three call sites, each named after
+    /// its single legitimate consumer.
+    /// </para>
+    /// </remarks>
+    internal string RevealForPersistence() => _value ?? string.Empty;
+
+    /// <summary>
+    /// Shows the characters back to the person who typed them.
+    /// </summary>
+    /// <remarks>
+    /// The requester's own thread renders their own words; a conversation surface that replaced them
+    /// with a placeholder would be unusable. This is the one audience for whom the text was never
+    /// untrusted, and it is a different act from handing the text to a model — which is why it is a
+    /// separately named site rather than a second use of
+    /// <see cref="RevealForRefinementPrompt"/>. It is assembly-internal like the rest, and its only
+    /// caller is the request projection.
+    /// </remarks>
+    internal string RevealForRequesterEcho() => _value ?? string.Empty;
 
     /// <inheritdoc />
     public bool Equals(RequesterText other) =>

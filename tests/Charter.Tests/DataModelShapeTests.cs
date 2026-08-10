@@ -50,6 +50,7 @@ public class DataModelShapeTests : IDisposable
         (typeof(RepoScope), "repo_scopes"),
         (typeof(AutoDispatchPolicy), "auto_dispatch_policies"),
         (typeof(Request), "requests"),
+        (typeof(RequestFeedback), "request_feedback"),
         (typeof(Spec), "specs"),
         (typeof(ConversationRecord), "conversations"),
         (typeof(ConversationTurnRecord), "conversation_turns"),
@@ -221,6 +222,9 @@ public class DataModelShapeTests : IDisposable
         Assert.Equal("jsonb", ColumnType<Spec>(nameof(Spec.AcceptanceCriteria)));
         Assert.Equal("jsonb", ColumnType<Spec>(nameof(Spec.Scope)));
         Assert.Equal("jsonb", ColumnType<Repo>(nameof(Repo.CharterConfigSnapshot)));
+
+        // Section 27.7's kind-specific body: checksums, sizes, capture lists, device data.
+        Assert.Equal("jsonb", ColumnType<VerificationArtifact>(nameof(VerificationArtifact.Payload)));
         Assert.Equal("jsonb", ColumnType<Recap>(nameof(Recap.RiskItems)));
         Assert.Equal("jsonb", ColumnType<AuditLog>(nameof(AuditLog.Metadata)));
     }
@@ -347,6 +351,59 @@ public class DataModelShapeTests : IDisposable
         AssertDelete<ConversationRecord>(nameof(ConversationRecord.OrgId), DeleteBehavior.Cascade);
         AssertDelete<ConversationRecord>(nameof(ConversationRecord.RequestId), DeleteBehavior.SetNull);
         AssertDelete<ConversationRecord>(nameof(ConversationRecord.ConfirmedBy), DeleteBehavior.SetNull);
+    }
+
+    [Fact]
+    public void TheUserRowCarriesEveryPreferenceTheApiAccepts()
+    {
+        // Section 3.1: no browser storage, so a preference with no column is a PATCH that is accepted
+        // and dropped. Section 12 and section 30.4 name all four.
+        var entity = _model.FindEntityType(typeof(User));
+        Assert.NotNull(entity);
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("teaching_level", columns);
+        Assert.Contains("theme", columns);
+        Assert.Contains("pane", columns);
+        Assert.Contains("requester_onboarding_completed_at", columns);
+
+        // Section 12 defaults the pane by role, which is only applicable while nobody has chosen.
+        Assert.True(Property<User>(nameof(User.Pane)).IsNullable);
+        Assert.False(Property<User>(nameof(User.Theme)).IsNullable);
+        Assert.True(Property<User>(nameof(User.RequesterOnboardingCompletedAt)).IsNullable);
+    }
+
+    [Fact]
+    public void ThePullRequestRowCarriesTheHeadBranchTheEngineerDetailsShow()
+    {
+        // Section 27.7: the `Details` disclosure names the branch alongside the PR number and SHA.
+        var entity = _model.FindEntityType(typeof(PullRequest));
+        Assert.NotNull(entity);
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("head_branch", columns);
+        Assert.True(Property<PullRequest>(nameof(PullRequest.HeadBranch)).IsNullable);
+    }
+
+    [Fact]
+    public void FeedbackIsARowAndOutlivesTheSessionItJudged()
+    {
+        // Section 11: one thread per request, forever, and several sessions collapse into it - so the
+        // verdict is a row per round rather than a column that the next round overwrites.
+        AssertDelete<RequestFeedback>(nameof(RequestFeedback.RequestId), DeleteBehavior.Cascade);
+        AssertDelete<RequestFeedback>(nameof(RequestFeedback.SessionId), DeleteBehavior.SetNull);
+        AssertDelete<RequestFeedback>(nameof(RequestFeedback.SubmittedBy), DeleteBehavior.Restrict);
+
+        var entity = _model.FindEntityType(typeof(RequestFeedback));
+        Assert.NotNull(entity);
+
+        Assert.Contains(
+            entity.GetIndexes(),
+            index => index.GetDatabaseName() == "ix_request_feedback_request_id_created_at");
     }
 
     [Fact]

@@ -960,6 +960,11 @@ namespace Charter.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("HeadBranch")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("head_branch");
+
                     b.Property<string>("HeadSha")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -1211,6 +1216,54 @@ namespace Charter.Data.Migrations
                     b.ToTable("requests", (string)null);
                 });
 
+            modelBuilder.Entity("Charter.Domain.RequestFeedback", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(8000)
+                        .HasColumnType("character varying(8000)")
+                        .HasColumnName("note");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<Guid?>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<Guid>("SubmittedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("submitted_by");
+
+                    b.Property<string>("Verdict")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("verdict");
+
+                    b.HasKey("Id")
+                        .HasName("pk_request_feedback");
+
+                    b.HasIndex("SessionId")
+                        .HasDatabaseName("ix_request_feedback_session_id");
+
+                    b.HasIndex("SubmittedBy")
+                        .HasDatabaseName("ix_request_feedback_submitted_by");
+
+                    b.HasIndex("RequestId", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_request_feedback_request_id_created_at");
+
+                    b.ToTable("request_feedback", (string)null);
+                });
+
             modelBuilder.Entity("Charter.Domain.Session", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1382,10 +1435,23 @@ namespace Charter.Data.Migrations
                         .HasColumnType("character varying(320)")
                         .HasColumnName("email");
 
+                    b.Property<string>("Pane")
+                        .HasColumnType("text")
+                        .HasColumnName("pane");
+
+                    b.Property<DateTimeOffset?>("RequesterOnboardingCompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requester_onboarding_completed_at");
+
                     b.Property<string>("TeachingLevel")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("teaching_level");
+
+                    b.Property<string>("Theme")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("theme");
 
                     b.HasKey("Id")
                         .HasName("pk_users");
@@ -1434,6 +1500,10 @@ namespace Charter.Data.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("kind");
+
+                    b.Property<string>("Payload")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
 
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
@@ -1769,6 +1839,29 @@ namespace Charter.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_requests_users_requester_id");
+                });
+
+            modelBuilder.Entity("Charter.Domain.RequestFeedback", b =>
+                {
+                    b.HasOne("Charter.Domain.Request", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_request_feedback_requests_request_id");
+
+                    b.HasOne("Charter.Domain.Session", null)
+                        .WithMany()
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_request_feedback_sessions_session_id");
+
+                    b.HasOne("Charter.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("SubmittedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_request_feedback_users_submitted_by");
                 });
 
             modelBuilder.Entity("Charter.Domain.Session", b =>

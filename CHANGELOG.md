@@ -19,6 +19,16 @@ Expect breaking changes without deprecation cycles until 1.0.
 - Audit log write path, with authorization grants carrying the verb they should be recorded under.
 - Refinement conversations are persisted, so a conversation survives the container restarting under it. Requester turns keep their type through storage: a reloaded turn refuses to be read as model-authored text.
 - Model credentials: a `cursor_api_key` kind for the `cursor-agent` adapter, a separately tracked overflow allowance so the resolution chain's second tier can fire, a recorded reason when a credential is marked invalid, and a `429` with no reset header now records no reset time rather than a far-future placeholder.
+- A refinement conversation read back out of Postgres becomes the live aggregate again, rules and all: the promotion gate, the unread-flag gate, and the confirmation. A confirmation is honoured only while the stored fingerprint still matches the stored spec, so a spec edited behind one comes back unconfirmed rather than dispatchable.
+- The refinement thread is rebuilt from the stored turns. A clarifying question, an answer to it, or a turn submitted through `POST /api/requests/{id}/refinement` now survives a refetch instead of existing only in the live broadcast.
+- User preferences are columns: theme, pane, and the requester onboarding timestamp join teaching level, so `PATCH /api/me/preferences` writes something instead of accepting the change and dropping it. An unchosen pane is stored as unchosen, which is what lets §12's role default — requesters to pane 1, engineers to pane 3 — apply until somebody picks.
+- Requester feedback is recorded. `POST /api/requests/{id}/feedback` writes a row per verdict rather than only enqueueing a job, and the status thread renders the latest one back. Two buttons, *Works* and *Not quite*, as §11 specifies — there is no third.
+- `pull_requests` records the head branch, so the engineer `Details` disclosure on the verification artifact card names it instead of showing a blank.
+- Verification artifacts carry a jsonb payload for §27.7's kind-specific bodies: checksums and sizes for a build, the capture list for screenshots, counts and assertion text for a test report, device identifier and traces for a hardware-in-the-loop run. Nothing is invented at read time — an unrecorded field stays empty, an unprobed preview reports `unknown`, and a hardware run with no recorded outcome does not claim it passed.
+
+### Changed
+
+- **Spec §10b amended.** The requester view of a Spec now renders `open_questions` alongside title, outcome and acceptance criteria. The spec previously listed open questions on the structured Spec and then said the requester view rendered "nothing else"; both could not hold. Open questions are the one field written *to* the requester, they are what blocks the confirm button, and hiding them left a person with a disabled button and no explanation. `technical_approach`, `scope` and `risks` remain engineer-only and are still absent from the requester payload entirely.
 
 ## Versioning
 

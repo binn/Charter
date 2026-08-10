@@ -99,7 +99,8 @@ public static class RequestProjection
     /// <remarks>
     /// <para>
     /// Section 10b: <em>"Requester view renders <c>title</c>, <c>outcome</c>,
-    /// <c>acceptance_criteria</c>. Nothing else."</em> The values are read through
+    /// <c>acceptance_criteria</c>, and any <c>open_questions</c> still addressed to them. Nothing
+    /// else."</em> The values are read through
     /// <see cref="RequesterSpecView"/> — the one requester projection in the codebase, which reads
     /// every member through a reference to the structured <see cref="SpecDocument"/> and so has
     /// nothing of its own that could go stale. There is deliberately no second projection here.
@@ -141,6 +142,10 @@ public static class RequestProjection
             Title = view.Title,
             Outcome = view.Outcome,
             AcceptanceCriteria = criteria,
+
+            // Section 10: what refinement still needs an answer to, and the requester is who can give
+            // it. Absent rather than empty once nothing is open — which is every confirmable spec.
+            OpenQuestions = view.OpenQuestions.Count == 0 ? null : view.OpenQuestions,
             Glossary = glossary.Count == 0 ? null : glossary,
             ApprovedAt = spec.ApprovedAt,
             ApprovedByName = aggregate.ApprovedByName,
@@ -440,8 +445,9 @@ public static class RequestProjection
             PullRequestUrl = pullRequest.Url,
             CommitSha = pullRequest.HeadSha,
 
-            // The head branch is not a column on `pull_requests` yet; see the notes on this endpoint.
-            Branch = string.Empty,
+            // Empty when no ref was recorded. Absent detail reads as "not recorded"; a guessed branch
+            // name would read as a fact somebody could try to `git checkout`.
+            Branch = pullRequest.HeadBranch ?? string.Empty,
             Runner = session.Runner.ToApi(),
 
             // Elapsed, never remaining (section 6). A session still going reads as time-so-far rather

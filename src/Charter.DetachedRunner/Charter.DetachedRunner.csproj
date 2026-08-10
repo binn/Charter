@@ -6,4 +6,24 @@
     <AssemblyName>charter-detached-runner</AssemblyName>
   </PropertyGroup>
 
+  <!--
+    Section 3.1: the shim is a separate project because all three backends need it, and section 7.3
+    requires path scope to be enforced in exactly one place. That one place is
+    `Charter.Runners.Shim`, which lives in the Charter assembly and is referenced here rather than
+    duplicated - a second copy of the enforcement rules is a second copy that can drift.
+
+    Charter's provider package resolves Microsoft.EntityFrameworkCore.* transitively at 10.0.4 while
+    Charter itself compiles against 10.0.10, which the reference assembly unification reports as
+    MSB3277. Pinning both at the version Charter is built against is what keeps this build free of
+    warnings; neither package is new to the restore graph.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Charter\Charter.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -29,6 +29,7 @@ public sealed class PullRequest
         int number,
         string url,
         string headSha,
+        string? headBranch,
         PullRequestState state,
         DateTimeOffset createdAt)
     {
@@ -37,6 +38,7 @@ public sealed class PullRequest
         Number = number;
         Url = url;
         HeadSha = headSha;
+        HeadBranch = headBranch;
         State = state;
         CreatedAt = createdAt;
         UpdatedAt = createdAt;
@@ -51,6 +53,17 @@ public sealed class PullRequest
     public string Url { get; private set; } = string.Empty;
 
     public string HeadSha { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// The branch the session pushed to, as section 27.7's engineer <c>Details</c> disclosure names
+    /// it alongside the PR number and the commit SHA.
+    /// </summary>
+    /// <remarks>
+    /// Nullable rather than empty-defaulted: a pull request row can be created from a webhook that
+    /// carries no ref, and <c>null</c> says "not recorded" where <c>""</c> would read as a branch
+    /// with no name. Nothing invents one at read time.
+    /// </remarks>
+    public string? HeadBranch { get; private set; }
 
     public PullRequestState State { get; private set; }
 
@@ -71,7 +84,8 @@ public sealed class PullRequest
         string headSha,
         PullRequestState state = PullRequestState.Open,
         DateTimeOffset? now = null,
-        Guid? id = null)
+        Guid? id = null,
+        string? headBranch = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(number);
         ArgumentException.ThrowIfNullOrWhiteSpace(url);
@@ -83,11 +97,16 @@ public sealed class PullRequest
             number,
             url.Trim(),
             headSha.Trim(),
+            Clean(headBranch),
             state,
             DomainTime.Resolve(now));
     }
 
-    public void UpdateState(PullRequestState state, string? headSha = null, DateTimeOffset? now = null)
+    public void UpdateState(
+        PullRequestState state,
+        string? headSha = null,
+        DateTimeOffset? now = null,
+        string? headBranch = null)
     {
         State = state;
         if (!string.IsNullOrWhiteSpace(headSha))
@@ -95,6 +114,10 @@ public sealed class PullRequest
             HeadSha = headSha.Trim();
             IsStale = false;
         }
+
+        // A ref that arrives later fills the gap; one that does not arrive leaves what was recorded
+        // before rather than blanking it.
+        HeadBranch = Clean(headBranch) ?? HeadBranch;
 
         UpdatedAt = DomainTime.Resolve(now);
     }
@@ -104,4 +127,7 @@ public sealed class PullRequest
         IsStale = true;
         UpdatedAt = DomainTime.Resolve(now);
     }
+
+    private static string? Clean(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

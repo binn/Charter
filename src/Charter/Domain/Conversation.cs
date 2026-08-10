@@ -134,6 +134,19 @@ public sealed class ConversationRecord
         return Append(ConversationTurnRecord.ForRequester(Id, NextSeq(), rawText, Mode, now));
     }
 
+    /// <summary>
+    /// Appends a turn already typed as untrusted, which is what a caller holding a live
+    /// <see cref="RequesterText"/> has.
+    /// </summary>
+    /// <remarks>
+    /// This is the <em>only</em> place <c>RequesterText.RevealForPersistence</c> is called. A caller
+    /// that had to unwrap the text itself in order to store it would be one more reveal site, and
+    /// "who can read untrusted text" stops being an auditable question the moment the answer is "any
+    /// caller with a column to write" (section 16).
+    /// </remarks>
+    public ConversationTurnRecord AppendRequesterMessage(RequesterText text, DateTimeOffset? now = null)
+        => AppendRequesterMessage(text.RevealForPersistence(), now);
+
     /// <summary>Appends something Charter or the refiner produced.</summary>
     public ConversationTurnRecord AppendCharterTurn(
         ConversationTurnKind kind,

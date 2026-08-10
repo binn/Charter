@@ -18,7 +18,20 @@
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <!--
+      EnableCompressionInSingleFile is deliberately OFF.
+
+      With it on (.NET 10.0.302, osx-arm64) the published binary dies with an
+      AccessViolationException inside Interop.Sys.Fcntl.GetIsNonBlocking the first time it starts a
+      child process with redirected output - which is the very first thing the daemon does, since
+      capabilities are probed by running dotnet/node/xcodebuild (section 32.2). The compressed
+      bundle mis-resolves the bundled native libraries; the same source published without
+      compression probes correctly. A binary that is 44MB smaller and crashes on startup is not a
+      trade worth making, and the failure mode is far enough from its cause to cost an operator a
+      long evening.
+    -->
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <PropertyGroup>

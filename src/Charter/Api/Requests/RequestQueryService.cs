@@ -236,6 +236,22 @@ public sealed class RequestQueryService
             ? await ResolveDisplayNameAsync(approverId, cancellationToken)
             : null;
 
+        // Section 2.3: the refinement thread is rebuilt from rows, not from anything a hub frame left
+        // behind. Turns arrive with the conversation, ordered by the record itself.
+        var conversation = await database.Conversations
+            .AsNoTracking()
+            .Where(row => row.RequestId == request.Id)
+            .OrderByDescending(row => row.StartedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // Section 11: one thread per request, forever, so the verdict shown is the latest of however
+        // many rounds it took.
+        var feedback = await database.RequestFeedback
+            .AsNoTracking()
+            .Where(row => row.RequestId == request.Id)
+            .OrderByDescending(row => row.CreatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
         return new RequestView(
             new RequestAggregate
             {
@@ -248,7 +264,8 @@ public sealed class RequestQueryService
                 Events = events,
                 Artifacts = artifacts,
                 PullRequest = pullRequest,
-                RefinementMessages = RefinementThread.Derive(request, spec),
+                RefinementMessages = RefinementThread.Derive(request, spec, conversation),
+                Feedback = RequestPresentation.Feedback(feedback),
                 ApprovedByName = approvedBy,
                 AwaitingApprovalFrom = await ResolveApproverNameAsync(member.OrgId, cancellationToken),
                 HasEarlierEvents = earlier,

@@ -87,9 +87,13 @@ Setting it exports transcript content to every enabled sink. If any of those sin
 SaaS, that is your code leaving your infrastructure. Enable it for a specific debugging session and
 turn it off afterwards.
 
-Transcripts, specs, and requests are stored in your Postgres. Per-request deletion and organisation
-export are first-class features, not support requests. Event retention is configurable and enforced by
-a pruning job ([spec §20](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
+Transcripts, specs, and requests are stored in your Postgres. So is everything around them: the
+refinement conversation turn by turn — including what a requester typed in their own words — the
+*Works* / *Not quite* verdict and any note that came with it, each person's theme, pane, and teaching
+level, and the metadata describing a verification artifact (filename, size, checksum, capture URLs,
+test counts, device identifier). None of it leaves your instance. Per-request deletion and
+organisation export are first-class features, not support requests. Event retention is configurable
+and enforced by a pruning job ([spec §20](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
 
 ---
 

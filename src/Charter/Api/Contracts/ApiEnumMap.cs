@@ -60,6 +60,58 @@ public static class ApiEnumMap
         _ => throw new ArgumentOutOfRangeException(nameof(level), level, "Unknown teaching level."),
     };
 
+    /// <summary>Section 12.</summary>
+    public static ApiThemePreference ToApi(this ThemePreference theme) => theme switch
+    {
+        ThemePreference.System => ApiThemePreference.System,
+        ThemePreference.Light => ApiThemePreference.Light,
+        ThemePreference.Dark => ApiThemePreference.Dark,
+        _ => throw new ArgumentOutOfRangeException(nameof(theme), theme, "Unknown theme preference."),
+    };
+
+    /// <summary>Section 12, in the other direction.</summary>
+    public static ThemePreference ToDomain(this ApiThemePreference theme) => theme switch
+    {
+        ApiThemePreference.System => ThemePreference.System,
+        ApiThemePreference.Light => ThemePreference.Light,
+        ApiThemePreference.Dark => ThemePreference.Dark,
+        _ => throw new ArgumentOutOfRangeException(nameof(theme), theme, "Unknown theme preference."),
+    };
+
+    /// <summary>Section 12.</summary>
+    public static ApiPanePreference ToApi(this PanePreference pane) => pane switch
+    {
+        PanePreference.Simple => ApiPanePreference.Simple,
+        PanePreference.Detailed => ApiPanePreference.Detailed,
+        PanePreference.Developer => ApiPanePreference.Developer,
+        _ => throw new ArgumentOutOfRangeException(nameof(pane), pane, "Unknown pane preference."),
+    };
+
+    /// <summary>Section 12, in the other direction.</summary>
+    public static PanePreference ToDomain(this ApiPanePreference pane) => pane switch
+    {
+        ApiPanePreference.Simple => PanePreference.Simple,
+        ApiPanePreference.Detailed => PanePreference.Detailed,
+        ApiPanePreference.Developer => PanePreference.Developer,
+        _ => throw new ArgumentOutOfRangeException(nameof(pane), pane, "Unknown pane preference."),
+    };
+
+    /// <summary>Section 11. Two buttons.</summary>
+    public static ApiFeedbackVerdict ToApi(this FeedbackVerdict verdict) => verdict switch
+    {
+        FeedbackVerdict.Works => ApiFeedbackVerdict.Works,
+        FeedbackVerdict.NotQuite => ApiFeedbackVerdict.NotQuite,
+        _ => throw new ArgumentOutOfRangeException(nameof(verdict), verdict, "Unknown feedback verdict."),
+    };
+
+    /// <summary>Section 11, in the other direction.</summary>
+    public static FeedbackVerdict ToDomain(this ApiFeedbackVerdict verdict) => verdict switch
+    {
+        ApiFeedbackVerdict.Works => FeedbackVerdict.Works,
+        ApiFeedbackVerdict.NotQuite => FeedbackVerdict.NotQuite,
+        _ => throw new ArgumentOutOfRangeException(nameof(verdict), verdict, "Unknown feedback verdict."),
+    };
+
     /// <summary>Section 27.1.</summary>
     public static ApiArtifactKind ToApi(this VerificationArtifactKind kind) => kind switch
     {

@@ -120,11 +120,38 @@ public class ApiOmissionTests
         Assert.Equal("Remember the last selected vertical", spec.GetProperty("title").GetString());
         Assert.Equal(2, spec.GetProperty("acceptanceCriteria").GetArrayLength());
 
-        // Section 10b: "Requester view renders title, outcome, acceptance_criteria. Nothing else."
-        foreach (var forbidden in new[] { "technicalApproach", "scope", "risks", "openQuestions" })
+        // Section 10b: the engineer-facing fields are not members of the requester type at all.
+        foreach (var forbidden in new[] { "technicalApproach", "scope", "risks" })
         {
             Assert.False(spec.TryGetProperty(forbidden, out _));
         }
+
+        // Nothing is open on a confirmable spec, and the key is then absent rather than an empty
+        // array — the client's test is presence, never length.
+        Assert.False(spec.TryGetProperty("openQuestions", out _));
+    }
+
+    [Fact]
+    public async Task ARequesterIsToldWhatIsStillOpenRatherThanJustThatSomethingIs()
+    {
+        // Section 10b lists open_questions on the structured spec and then says the requester view
+        // renders "nothing else"; the two cannot both hold. They are resolved in favour of the
+        // requester, because open questions are the one field on a spec addressed *to* them, they are
+        // what blocks the confirm button, and withholding them leaves a person looking at a disabled
+        // button with no way to find out why. Section 10b was amended to match.
+        var scenario = ApiScenario.Build(openQuestions: ["Should archived quotes remember it too?"]);
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+
+        using var document = JsonDocument.Parse(body);
+        var spec = document.RootElement.GetProperty("spec");
+
+        var open = spec.GetProperty("openQuestions").EnumerateArray().Select(item => item.GetString()).ToList();
+        Assert.Equal(["Should archived quotes remember it too?"], open);
+
+        // And it is still not a hole in section 7.4 — nothing engineer-facing came with it.
+        Assert.False(spec.TryGetProperty("technicalApproach", out _));
+        Assert.False(spec.TryGetProperty("risks", out _));
+        Assert.DoesNotContain(ApiScenario.TechnicalApproach, body, StringComparison.Ordinal);
     }
 
     [Fact]

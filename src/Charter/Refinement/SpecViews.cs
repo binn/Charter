@@ -49,6 +49,33 @@ public sealed class RequesterSpecView
     /// </summary>
     public IReadOnlyList<string> AcceptanceCriteria => _spec.AcceptanceCriteria;
 
+    /// <summary>
+    /// Anything still unresolved — <strong>the questions the requester is the one who can answer</strong>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Section 10b lists <c>open_questions[]</c> on the structured spec and then says the requester
+    /// view renders title, outcome and acceptance criteria, "nothing else". Those two statements
+    /// cannot both hold, and the resolution is not to hide the questions: they are the one field on
+    /// the spec that is <em>addressed to</em> the requester rather than about the implementation.
+    /// </para>
+    /// <para>
+    /// <see cref="SpecConfirmationCard"/> refuses to be confirmed while any of these exist, and the
+    /// refusal it hands back — <em>"there are still a couple of things I need to know"</em> — names
+    /// nothing. Withholding the questions would leave a requester looking at a disabled confirm
+    /// button with no way to learn what is blocking it, which is exactly the dead end section 11
+    /// warns about. It would also break section 10b's own load-bearing rule: if the requester cannot
+    /// understand the thing they are approving, approval is theatre.
+    /// </para>
+    /// <para>
+    /// This is not a hole in section 7.4. The engineer-facing fields — <c>technical_approach</c>,
+    /// <c>scope</c>, <c>risks</c> — are still not members of this type, so reaching them through a
+    /// requester view does not compile. Open questions carry no repository path, no SHA and no cost;
+    /// they are plain-language questions written to be read by the person who filed the request.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> OpenQuestions => _spec.OpenQuestions;
+
     /// <summary>The fingerprint of the document this view is projecting.</summary>
     public string SourceContentHash => _spec.ContentHash;
 

@@ -22,7 +22,17 @@ public sealed class SetupModeMiddleware
     /// <summary>The API prefix the setup route lives under.</summary>
     public const string SetupApiPrefix = "/api/setup";
 
-    private static readonly string[] AlwaysAllowed = ["/health", "/ready", "/api/instance", SetupApiPrefix];
+    /// <summary>The prefix the execution plane calls back on.</summary>
+    /// <remarks>
+    /// Allowed through setup mode because these endpoints carry their own HMAC session credential
+    /// rather than a cookie, so gating them adds no protection. Blocking them would strand any
+    /// session that was already running: it could never report a result, and its lease would be
+    /// reclaimed and retried forever.
+    /// </remarks>
+    public const string RunnerApiPrefix = "/api/runners";
+
+    private static readonly string[] AlwaysAllowed =
+        ["/health", "/ready", "/api/instance", SetupApiPrefix, RunnerApiPrefix];
 
     private readonly RequestDelegate next;
     private readonly SetupState state;

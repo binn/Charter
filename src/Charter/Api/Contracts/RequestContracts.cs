@@ -29,12 +29,18 @@ public sealed record GlossaryTermResponse
 /// </summary>
 /// <remarks>
 /// <para>
-/// Section 10b: "Requester view renders <c>title</c>, <c>outcome</c>, <c>acceptance_criteria</c>.
-/// Nothing else." There is deliberately no <c>TechnicalApproach</c>, <c>Scope</c>, <c>Risks</c> or
-/// <c>OpenQuestions</c> property on this type — <em>not even a nullable one</em>. An optional
-/// property invites <c>spec.technicalApproach &amp;&amp; …</c> on the client, and that is exactly the
-/// CSS-hiding pattern section 7.4 forbids. A field that does not exist cannot be leaked by a future
-/// projection bug.
+/// Section 10b: "Requester view renders <c>title</c>, <c>outcome</c>, <c>acceptance_criteria</c>."
+/// There is deliberately no <c>TechnicalApproach</c>, <c>Scope</c> or <c>Risks</c> property on this
+/// type — <em>not even a nullable one</em>. An optional property invites
+/// <c>spec.technicalApproach &amp;&amp; …</c> on the client, and that is exactly the CSS-hiding
+/// pattern section 7.4 forbids. A field that does not exist cannot be leaked by a future projection
+/// bug.
+/// </para>
+/// <para>
+/// <see cref="OpenQuestions"/> is the one exception, and it is a deliberate one: open questions are
+/// written <em>to</em> the requester, they are what blocks their confirm button, and they carry no
+/// repository path, SHA or cost. See <see cref="Charter.Refinement.RequesterSpecView.OpenQuestions"/>
+/// for the reasoning, and section 10b, which was amended to match.
 /// </para>
 /// <para>
 /// Every value here is read through <see cref="Charter.Refinement.RequesterSpecView"/>, the one
@@ -53,6 +59,12 @@ public sealed record RequesterSpecResponse
     public required string Outcome { get; init; }
 
     public required IReadOnlyList<AcceptanceCriterionResponse> AcceptanceCriteria { get; init; }
+
+    /// <summary>
+    /// What refinement still needs an answer to (section 10). Absent — not empty — once nothing is
+    /// open, which is the state every confirmable spec is in.
+    /// </summary>
+    public IReadOnlyList<string>? OpenQuestions { get; init; }
 
     public IReadOnlyList<GlossaryTermResponse>? Glossary { get; init; }
 

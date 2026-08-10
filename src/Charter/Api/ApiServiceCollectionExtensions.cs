@@ -43,8 +43,9 @@ public static class ApiServiceCollectionExtensions
         services.AddScoped<RequestCommandService>();
         services.AddScoped<ViewerService>();
 
-        // The onboarding work owns the columns this default cannot write. TryAdd so a richer store
-        // registered before this call wins rather than being silently replaced.
+        // Every preference is a column on `users`, so this default writes all of them. TryAdd so a
+        // richer store registered before this call — the onboarding work has one in view — wins
+        // rather than being silently replaced.
         services.TryAddScoped<IViewerPreferencesStore, UserRecordPreferencesStore>();
 
         services.AddSingleton<PlainLanguageFailureFilter>();

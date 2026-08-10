@@ -31,6 +31,16 @@ internal sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(user => user.Email).HasMaxLength(320).IsRequired();
         builder.Property(user => user.DisplayName).HasMaxLength(200).IsRequired();
         builder.Property(user => user.TeachingLevel).HasEnumConversion();
+
+        // Section 12. There is no browser storage in this app (section 3.1), so these columns are the
+        // only place a preference exists; a PATCH that had nowhere to land would be a silently
+        // dropped write.
+        builder.Property(user => user.Theme).HasEnumConversion();
+        builder.Property(user => user.Pane).HasEnumConversion();
+
+        // Section 30.4. Null until the three screens are done.
+        builder.Property(user => user.RequesterOnboardingCompletedAt);
+
         builder.Property(user => user.CreatedAt).IsRequired();
 
         builder.HasIndex(user => user.Email).IsUnique().HasDatabaseName("ux_users_email");

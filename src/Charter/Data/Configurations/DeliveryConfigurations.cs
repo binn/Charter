@@ -15,6 +15,11 @@ internal sealed class PullRequestConfiguration : IEntityTypeConfiguration<PullRe
         builder.Property(pullRequest => pullRequest.Number).IsRequired();
         builder.Property(pullRequest => pullRequest.Url).HasMaxLength(500).IsRequired();
         builder.Property(pullRequest => pullRequest.HeadSha).HasMaxLength(64).IsRequired();
+
+        // Section 27.7 names the branch in the engineer `Details` disclosure. 255 is git's own
+        // practical ref limit; optional because a webhook can arrive without a ref.
+        builder.Property(pullRequest => pullRequest.HeadBranch).HasMaxLength(255);
+
         builder.Property(pullRequest => pullRequest.State).HasEnumConversion();
         builder.Property(pullRequest => pullRequest.IsStale).IsRequired();
         builder.Property(pullRequest => pullRequest.CreatedAt).IsRequired();
@@ -74,6 +79,12 @@ internal sealed class VerificationArtifactConfiguration : IEntityTypeConfigurati
         // out the container filesystem entirely.
         builder.Property(artifact => artifact.FileRef).HasMaxLength(500);
         builder.Property(artifact => artifact.ConnectString).HasMaxLength(500);
+
+        // Section 27.7's kind-specific body: checksums, sizes, capture lists, test counts, device
+        // identifiers. jsonb because the eight kinds share almost no fields and the domain owns no
+        // serialiser - the same call as Event.Payload.
+        builder.Property(artifact => artifact.Payload).IsOptionalJsonb();
+
         builder.Property(artifact => artifact.Audience).HasEnumConversion();
         builder.Property(artifact => artifact.CreatedAt).IsRequired();
 
