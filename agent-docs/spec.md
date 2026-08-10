@@ -54,7 +54,7 @@ Railway and comparable platforms prohibit privileged containers and block Docker
 │ EXECUTION PLANE (IAgentRunner)              │
 │  - GitHubActionsRunner  (default on PaaS)   │
 │  - DockerRunner         (VPS / Compose)     │
-│  - DetachedRunner       (v2 — see §21)      │
+│  - AgentRunner          (Charter Agent, §33)│
 └─────────────────────────────────────────────┘
 ```
 
@@ -109,10 +109,20 @@ src/
       vite.config.ts
     Charter.csproj
   Charter.Agent/                 # Charter Agent daemon (§33)
-  Charter.DetachedRunner/        # Detached runner host (§2.2, §27.3)
+  Charter.DetachedRunner/        # Session execution shim (§32.1)
 tests/
   Charter.Tests/
 ```
+
+**Three projects, three distinct jobs.** Earlier drafts used "DetachedRunner" and "Charter Agent" interchangeably; they are not the same thing.
+
+| Project | Runs where | Responsibility |
+|---|---|---|
+| `Charter` | Control plane | The app. Contains the `IAgentRunner` implementations (`GitHubActionsRunner`, `DockerRunner`, `AgentRunner`), which only ever *dispatch* work. |
+| `Charter.Agent` | Operator's own hardware | The long-lived daemon of §33. Dials out, claims jobs by capability, holds the local Docker socket or runs natively. Never executes a session itself — it launches the shim. |
+| `Charter.DetachedRunner` | Inside the session sandbox | The execution shim. Runs the agent CLI, parses its event stream per the adapter (§12b), enforces path scope (§7.3 — enforcement lives here, not in the UI), and streams events back. This is the `charter-runner-shim` baked into every runner image (§32.1), and it is what the GitHub Actions workflow invokes too. |
+
+The shim is a separate project precisely because all three backends need it: GitHub Actions runs it in a workflow container, `DockerRunner` runs it in a sibling container, and `Charter.Agent` runs it on the operator's host. Path scope is enforced in one place as a result.
 
 - **Development** uses the Microsoft SPA Proxy (`Microsoft.AspNetCore.SpaProxy`). `dotnet run` starts Kestrel and launches the Vite dev server, proxying unmatched requests to it. HMR works; there is no second command to remember.
 - **Publish** runs `npm ci` and `npm run build` as an MSBuild target, emitting Vite output into `wwwroot/` so the published app serves API and SPA together from one origin.
@@ -138,7 +148,7 @@ tests/
 | `PORT` | no | `8080` | PaaS convention |
 | `CHARTER_BASE_URL` | yes | — | Public URL, for webhooks and links |
 | `CHARTER_MODE` | no | `personal` | `personal` \| `organization` |
-| `CHARTER_RUNNER` | no | `github-actions` | `github-actions` \| `docker` |
+| `CHARTER_RUNNER` | no | `github-actions` | `agent` \| `github-actions` \| `docker`. Comma-separated to enable several; the dispatcher routes by capability match (§2.2, §27.3). `agent` becomes available in Phase 2 (§23). |
 | `CHARTER_SECRET_KEY` | yes | — | ≥32 bytes, for cookie/token signing |
 | `ANTHROPIC_API_KEY` | no* | — | Instance-level fallback credential |
 | `OPENROUTER_API_KEY` | no* | — | Instance-level fallback credential |
@@ -166,12 +176,22 @@ tests/
 | `CHARTER_SMTP_URL` | no | — | `smtp://user:pass@host:port` |
 | `CHARTER_DEFAULT_SESSION_BUDGET_USD` | no | `5.00` | |
 | `CHARTER_DEFAULT_MONTHLY_BUDGET_USD` | no | `100.00` | |
+| `CHARTER_STORAGE_ENDPOINT` | no† | — | S3-compatible endpoint URL. MinIO, R2, B2, and Wasabi all work. |
+| `CHARTER_STORAGE_BUCKET` | no† | — | Bucket for verification artifacts and large transcripts |
+| `CHARTER_STORAGE_ACCESS_KEY` | no† | — | |
+| `CHARTER_STORAGE_SECRET_KEY` | no† | — | |
+| `CHARTER_STORAGE_REGION` | no | `auto` | Some providers require a real region |
+| `CHARTER_STORAGE_FORCE_PATH_STYLE` | no | `true` | MinIO and most self-hosted gateways need path-style addressing |
 | `CHARTER_UPDATE_CHECK` | no | `true` | §28 — the only outbound call Charter initiates |
 | `CHARTER_UPDATE_CHANNEL` | no | `stable` | `stable` \| `prerelease` |
 | `CHARTER_ALLOW_REPO_CREATION` | no | `false` | §26.10 — repo creation is a privilege escalation |
 | `CHARTER_DEMO` | no | `false` | §30.6 — seeds a fake org, disables outbound calls |
 
 \* At least one model credential must be resolvable at startup — either an instance-level key here or a linked `CredentialGrant` in the database. Startup validation fails if neither exists.
+
+† Object storage is optional only until something needs it. Charter starts without it, but any project type producing a `build_artifact`, `capture`, or `hil_report` (§27.1) requires it, and so does transcript offload on a PaaS with no durable disk (§2.3). When `CHARTER_STORAGE_ENDPOINT` is set, bucket and both keys become required and are validated together. When it is unset, Charter runs with artifacts confined to Postgres and refuses — with a clear message naming these variables — to onboard a repo whose project type needs artifact storage. An IPA is not a database row (§27.5).
+
+**Key length.** `CHARTER_SECRET_KEY` and `CHARTER_CREDENTIAL_KEY` require **≥32 bytes of decoded entropy**, not 32 characters. Validation base64-decodes the value when it parses as base64 and measures the decoded length, otherwise it measures UTF-8 bytes. `openssl rand -base64 32` produces a valid value. The two must differ; startup fails if they match (§20b.2).
 
 Convention: `CHARTER_` prefix except where an ecosystem-standard name already exists (`DATABASE_URL`, `PORT`, `ANTHROPIC_API_KEY`, `OTEL_*`). Prefer the standard name.
 
@@ -881,6 +901,8 @@ Most providers are OpenAI-compatible; only Anthropic and Gemini need bespoke cli
 
 Model identifiers are **provider-qualified strings**: `anthropic/claude-opus-5`, `openrouter/deepseek/deepseek-r1`. The `CHARTER_MODEL_*` env vars accept this form.
 
+An **unqualified identifier is treated as `anthropic/`**, which is why the §4.2 defaults are written bare. Qualify the identifier whenever the model is not Anthropic's; an unqualified name that no Anthropic model matches fails startup validation rather than being guessed at.
+
 ### 20b.2 `CredentialGrant`
 
 ```
@@ -1010,7 +1032,7 @@ Slack/Discord inbound, SAML, remote Docker socket support, demo mode polish.
 - **README with a ~40 second GIF of the requester flow.** For a recruiting-oriented repo this does more than the architecture docs. Budget real time for it.
 - **AGPL §13 compliance is a code requirement, not just a file.** Charter is network-interactive software, so the running instance must offer users a way to obtain its Corresponding Source. Ship a persistent "Source" link in the UI footer pointing at the instance's own version — including any operator modifications. Build the commit SHA and source URL in at compile time.
 - **Independent versioning** for the DB schema and the `.charter/` schema. Migrations must run cleanly on a six-month-old instance.
-- **Commit attribution.** Every commit is authored solely by the maintainer. No AI-attribution trailers, co-author lines, generated-with footers, or references to any assistant or model in commit messages, PR titles, or PR descriptions. Commit messages describe the change. Conventional Commits.
+- **Commit attribution.** Every commit is authored solely by the maintainer, and nothing in the history may suggest otherwise. No co-author trailers naming a tool or model, no generated-with footers, no attribution badges, and no narration of how the change was produced. Commit messages describe the change. Conventional Commits. This bans attribution, not vocabulary — vendor and product names are ordinary technical terms and belong in a message whenever they are what the change is about.
 - **`docs/` versus `agent-docs/`.** `docs/` is user-facing documentation shipped to operators and contributors. `agent-docs/` holds briefs, planning notes, and specifications written for engineers and coding agents. Never mix them.
 
 ---
