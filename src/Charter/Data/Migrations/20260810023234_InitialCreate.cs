@@ -196,6 +196,10 @@ public partial class InitialCreate : Migration
                 expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                 status = table.Column<string>(type: "text", nullable: false),
                 exhausted_until = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                invalid_reason = table.Column<string>(type: "character varying(300)", maxLength: 300, nullable: true),
+                overflow_enabled = table.Column<bool>(type: "boolean", nullable: false),
+                overflow_status = table.Column<string>(type: "text", nullable: false),
+                overflow_exhausted_until = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                 priority = table.Column<int>(type: "integer", nullable: false),
                 max_sessions_per_day_from_others = table.Column<int>(type: "integer", nullable: true),
                 created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
@@ -377,6 +381,47 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "conversations",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                org_id = table.Column<Guid>(type: "uuid", nullable: false),
+                request_id = table.Column<Guid>(type: "uuid", nullable: true),
+                mode = table.Column<string>(type: "text", nullable: false),
+                started_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                flags = table.Column<string>(type: "jsonb", nullable: true),
+                flag_count = table.Column<int>(type: "integer", nullable: false),
+                flags_cleared = table.Column<bool>(type: "boolean", nullable: false),
+                spec = table.Column<string>(type: "jsonb", nullable: true),
+                confirmed_content_hash = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
+                confirmed_by = table.Column<Guid>(type: "uuid", nullable: true),
+                confirmed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_conversations", x => x.id);
+                table.ForeignKey(
+                    name: "fk_conversations_organizations_org_id",
+                    column: x => x.org_id,
+                    principalTable: "organizations",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+                table.ForeignKey(
+                    name: "fk_conversations_requests_request_id",
+                    column: x => x.request_id,
+                    principalTable: "requests",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.SetNull);
+                table.ForeignKey(
+                    name: "fk_conversations_users_confirmed_by",
+                    column: x => x.confirmed_by,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.SetNull);
+            });
+
+        migrationBuilder.CreateTable(
             name: "specs",
             columns: table => new
             {
@@ -410,6 +455,29 @@ public partial class InitialCreate : Migration
                     principalTable: "users",
                     principalColumn: "id",
                     onDelete: ReferentialAction.SetNull);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "conversation_turns",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                conversation_id = table.Column<Guid>(type: "uuid", nullable: false),
+                seq = table.Column<int>(type: "integer", nullable: false),
+                kind = table.Column<string>(type: "text", nullable: false),
+                mode = table.Column<string>(type: "text", nullable: false),
+                at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                body = table.Column<string>(type: "text", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_conversation_turns", x => x.id);
+                table.ForeignKey(
+                    name: "fk_conversation_turns_conversations_conversation_id",
+                    column: x => x.conversation_id,
+                    principalTable: "conversations",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
             });
 
         migrationBuilder.CreateTable(
@@ -707,6 +775,28 @@ public partial class InitialCreate : Migration
             unique: true);
 
         migrationBuilder.CreateIndex(
+            name: "ux_conversation_turns_conversation_id_seq",
+            table: "conversation_turns",
+            columns: new[] { "conversation_id", "seq" },
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "ix_conversations_confirmed_by",
+            table: "conversations",
+            column: "confirmed_by");
+
+        migrationBuilder.CreateIndex(
+            name: "ix_conversations_org_id_updated_at",
+            table: "conversations",
+            columns: new[] { "org_id", "updated_at" },
+            descending: new[] { false, true });
+
+        migrationBuilder.CreateIndex(
+            name: "ix_conversations_request_id",
+            table: "conversations",
+            column: "request_id");
+
+        migrationBuilder.CreateIndex(
             name: "ix_credential_grants_org_id_status_priority",
             table: "credential_grants",
             columns: new[] { "org_id", "status", "priority" },
@@ -957,6 +1047,9 @@ public partial class InitialCreate : Migration
             name: "concept_ledger");
 
         migrationBuilder.DropTable(
+            name: "conversation_turns");
+
+        migrationBuilder.DropTable(
             name: "deployments");
 
         migrationBuilder.DropTable(
@@ -982,6 +1075,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "walkthroughs");
+
+        migrationBuilder.DropTable(
+            name: "conversations");
 
         migrationBuilder.DropTable(
             name: "pull_requests");

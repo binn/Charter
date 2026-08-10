@@ -17,6 +17,8 @@ Expect breaking changes without deprecation cycles until 1.0.
 - Authorization: repository scope with deny by default, additive roles, transcript and code visibility gated on repository read access, and auto-dispatch policy resolution where a repository may only tighten organisation policy.
 - First-run setup mode: an instance with zero users serves only the setup route and prints a one-time setup token to stdout. The token creates exactly one admin account, then setup ends permanently.
 - Audit log write path, with authorization grants carrying the verb they should be recorded under.
+- Refinement conversations are persisted, so a conversation survives the container restarting under it. Requester turns keep their type through storage: a reloaded turn refuses to be read as model-authored text.
+- Model credentials: a `cursor_api_key` kind for the `cursor-agent` adapter, a separately tracked overflow allowance so the resolution chain's second tier can fire, a recorded reason when a credential is marked invalid, and a `429` with no reset header now records no reset time rather than a far-future placeholder.
 
 ## Versioning
 

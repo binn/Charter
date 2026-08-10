@@ -193,7 +193,7 @@ public sealed class CredentialResolver : ICredentialResolver
                 continue;
             }
 
-            if (IsOverflowUsable(overflow, now))
+            if (IsOverflowUsable(credential, overflow, now))
             {
                 return ModelCredentialResolution.Success(
                     new ResolvedModelCredential(
@@ -339,13 +339,32 @@ public sealed class CredentialResolver : ICredentialResolver
             _ => false,
         };
 
-    private static bool IsOverflowUsable(ModelCredentialOverflow overflow, DateTimeOffset now) =>
-        overflow.Status switch
+    /// <summary>
+    /// Whether tier 2 can serve: the overflow allowance's own state, plus the one thing it shares
+    /// with the subscription.
+    /// </summary>
+    /// <remarks>
+    /// Overflow is spent through the same credential, so an expired access token stops it just as it
+    /// stops the primary quota — the reason to reach this tier is that the quota ran out, never that
+    /// the token did.
+    /// </remarks>
+    private static bool IsOverflowUsable(
+        ModelCredential credential,
+        ModelCredentialOverflow overflow,
+        DateTimeOffset now)
+    {
+        if (IsTokenExpired(credential, now))
+        {
+            return false;
+        }
+
+        return overflow.Status switch
         {
             ModelCredentialStatus.Active => true,
             ModelCredentialStatus.Exhausted => overflow.ExhaustedUntil is { } until && until <= now,
             _ => false,
         };
+    }
 
     private static bool IsTokenExpired(ModelCredential credential, DateTimeOffset now) =>
         credential.ExpiresAt is { } expiry && expiry <= now;

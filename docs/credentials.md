@@ -63,7 +63,9 @@ Resolved per session, in this order, skipping anything marked `exhausted` or `in
 
 1. **The requester's own linked subscription credential.**
 2. **Remaining overflow usage on that credential**, where the provider exposes a paid overflow tier
-   beyond the subscription allowance.
+   beyond the subscription allowance. Overflow is tracked separately from the subscription itself:
+   the monthly allowance running out does not spend the overflow, and exhausting the overflow does
+   not change when the subscription resets.
 3. **The organisation shared pool**, in `priority` order — subscription credentials whose owners have
    explicitly opted them in.
 4. **The organisation's metered API key.**
@@ -76,6 +78,9 @@ If everything is exhausted, the session does **not** fail. It moves to `Queued`,
 
 - A `429` marks the grant `exhausted` and records a reset time from the provider's response header.
   Charter does not blind-retry into a rate limit.
+- **A `429` with no reset header records no reset time at all.** The credential stays exhausted until
+  something clears it — a token refresh, a re-link, or an operator — rather than being given an
+  invented far-future date. *Waiting for capacity* shows a time only when a provider gave one.
 - **Charter never fails over mid-session.** A session that swaps models halfway produces incoherent
   work, because half the reasoning came from a different model with different conventions.
 - On mid-session exhaustion, Charter checkpoints and does one of two things, configurable per
@@ -107,6 +112,9 @@ The rules Charter follows:
 - **Revocation is immediate** and kills in-flight sessions using that grant.
 - Each credential carries a status of `active`, `exhausted`, `invalid`, or `revoked`, and Charter acts
   on it rather than retrying blindly.
+- **An `invalid` credential records why**, in short plain language — *"provider rejected the
+  credential with 401"* — so an admin can see what needs fixing without reading container logs. The
+  reason never contains any part of the credential itself.
 
 For what the runner does and does not receive, see [security.md](security.md).
 

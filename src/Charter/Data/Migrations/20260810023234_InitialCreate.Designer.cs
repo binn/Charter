@@ -300,6 +300,121 @@ namespace Charter.Data.Migrations
                     b.ToTable("concept_ledger", (string)null);
                 });
 
+            modelBuilder.Entity("Charter.Domain.ConversationRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<Guid?>("ConfirmedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("confirmed_by");
+
+                    b.Property<string>("ConfirmedContentHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("confirmed_content_hash");
+
+                    b.Property<int>("FlagCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("flag_count");
+
+                    b.Property<string>("Flags")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("flags");
+
+                    b.Property<bool>("FlagsCleared")
+                        .HasColumnType("boolean")
+                        .HasColumnName("flags_cleared");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("mode");
+
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("org_id");
+
+                    b.Property<Guid?>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<string>("Spec")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("spec");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_conversations");
+
+                    b.HasIndex("ConfirmedBy")
+                        .HasDatabaseName("ix_conversations_confirmed_by");
+
+                    b.HasIndex("RequestId")
+                        .HasDatabaseName("ix_conversations_request_id");
+
+                    b.HasIndex("OrgId", "UpdatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_conversations_org_id_updated_at");
+
+                    b.ToTable("conversations", (string)null);
+                });
+
+            modelBuilder.Entity("Charter.Domain.ConversationTurnRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("At")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("at");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("body");
+
+                    b.Property<Guid>("ConversationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("conversation_id");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("mode");
+
+                    b.Property<int>("Seq")
+                        .HasColumnType("integer")
+                        .HasColumnName("seq");
+
+                    b.HasKey("Id")
+                        .HasName("pk_conversation_turns");
+
+                    b.HasIndex("ConversationId", "Seq")
+                        .IsUnique()
+                        .HasDatabaseName("ux_conversation_turns_conversation_id_seq");
+
+                    b.ToTable("conversation_turns", (string)null);
+                });
+
             modelBuilder.Entity("Charter.Domain.CredentialGrant", b =>
                 {
                     b.Property<Guid>("Id")
@@ -323,6 +438,11 @@ namespace Charter.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
 
+                    b.Property<string>("InvalidReason")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("invalid_reason");
+
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasColumnType("text")
@@ -339,6 +459,19 @@ namespace Charter.Data.Migrations
                     b.Property<Guid>("OrgId")
                         .HasColumnType("uuid")
                         .HasColumnName("org_id");
+
+                    b.Property<bool>("OverflowEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("overflow_enabled");
+
+                    b.Property<DateTimeOffset?>("OverflowExhaustedUntil")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("overflow_exhausted_until");
+
+                    b.Property<string>("OverflowStatus")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("overflow_status");
 
                     b.Property<Guid>("OwnerUserId")
                         .HasColumnType("uuid")
@@ -1429,6 +1562,38 @@ namespace Charter.Data.Migrations
                         .HasConstraintName("fk_concept_ledger_users_user_id");
                 });
 
+            modelBuilder.Entity("Charter.Domain.ConversationRecord", b =>
+                {
+                    b.HasOne("Charter.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("ConfirmedBy")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_conversations_users_confirmed_by");
+
+                    b.HasOne("Charter.Domain.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrgId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_conversations_organizations_org_id");
+
+                    b.HasOne("Charter.Domain.Request", null)
+                        .WithMany()
+                        .HasForeignKey("RequestId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_conversations_requests_request_id");
+                });
+
+            modelBuilder.Entity("Charter.Domain.ConversationTurnRecord", b =>
+                {
+                    b.HasOne("Charter.Domain.ConversationRecord", null)
+                        .WithMany("Turns")
+                        .HasForeignKey("ConversationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_conversation_turns_conversations_conversation_id");
+                });
+
             modelBuilder.Entity("Charter.Domain.CredentialGrant", b =>
                 {
                     b.HasOne("Charter.Domain.Organization", null)
@@ -1653,6 +1818,11 @@ namespace Charter.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_walkthroughs_sessions_session_id");
+                });
+
+            modelBuilder.Entity("Charter.Domain.ConversationRecord", b =>
+                {
+                    b.Navigation("Turns");
                 });
 #pragma warning restore 612, 618
         }

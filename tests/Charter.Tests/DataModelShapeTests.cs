@@ -51,6 +51,8 @@ public class DataModelShapeTests : IDisposable
         (typeof(AutoDispatchPolicy), "auto_dispatch_policies"),
         (typeof(Request), "requests"),
         (typeof(Spec), "specs"),
+        (typeof(ConversationRecord), "conversations"),
+        (typeof(ConversationTurnRecord), "conversation_turns"),
         (typeof(Session), "sessions"),
         (typeof(Event), "events"),
         (typeof(Milestone), "milestones"),
@@ -310,6 +312,66 @@ public class DataModelShapeTests : IDisposable
         AssertUniqueIndex<Recap>("ux_recaps_session_id");
         AssertUniqueIndex<Walkthrough>("ux_walkthroughs_session_id_level");
         AssertUniqueIndex<ConceptLedger>("ux_concept_ledger_user_id_concept");
+        AssertUniqueIndex<ConversationTurnRecord>("ux_conversation_turns_conversation_id_seq");
+    }
+
+    [Fact]
+    public void TheConversationTurnBodyIsAColumnAndNotAPublicMember()
+    {
+        // Section 16: persistence must not become the back door that hands a prompt builder raw
+        // requester text. The characters map to a private property, and the type's only public
+        // readers are AuthoredText - which throws on a requester turn - and a typed RequesterText.
+        var entity = _model.FindEntityType(typeof(ConversationTurnRecord));
+        Assert.NotNull(entity);
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("body", columns);
+
+        var body = entity.FindProperty("Body");
+        Assert.NotNull(body);
+        Assert.Null(typeof(ConversationTurnRecord).GetProperty("Body"));
+
+        AssertNotMapped<ConversationTurnRecord>(nameof(ConversationTurnRecord.AuthoredText));
+        AssertNotMapped<ConversationTurnRecord>(nameof(ConversationTurnRecord.RequesterText));
+        AssertNotMapped<ConversationTurnRecord>(nameof(ConversationTurnRecord.IsUntrusted));
+    }
+
+    [Fact]
+    public void AConversationOwnsItsTurnsAndOutlivesItsRequest()
+    {
+        AssertDelete<ConversationTurnRecord>(
+            nameof(ConversationTurnRecord.ConversationId),
+            DeleteBehavior.Cascade);
+        AssertDelete<ConversationRecord>(nameof(ConversationRecord.OrgId), DeleteBehavior.Cascade);
+        AssertDelete<ConversationRecord>(nameof(ConversationRecord.RequestId), DeleteBehavior.SetNull);
+        AssertDelete<ConversationRecord>(nameof(ConversationRecord.ConfirmedBy), DeleteBehavior.SetNull);
+    }
+
+    [Fact]
+    public void TheCredentialGrantCarriesItsOverflowAndItsObituary()
+    {
+        // Tier 2 of section 20b.3 needs its own columns, or the tier can never fire; and "invalid"
+        // without a reason sends an admin to the container logs.
+        var entity = _model.FindEntityType(typeof(CredentialGrant));
+        Assert.NotNull(entity);
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("overflow_enabled", columns);
+        Assert.Contains("overflow_status", columns);
+        Assert.Contains("overflow_exhausted_until", columns);
+        Assert.Contains("invalid_reason", columns);
+
+        // Nullable, because "exhausted with no known reset" is a real state and a far-future sentinel
+        // renders as the year 9999 wherever section 20b.3 shows "waiting for capacity".
+        Assert.True(Property<CredentialGrant>(nameof(CredentialGrant.ExhaustedUntil)).IsNullable);
+        Assert.True(Property<CredentialGrant>(nameof(CredentialGrant.OverflowExhaustedUntil)).IsNullable);
+        Assert.False(Property<CredentialGrant>(nameof(CredentialGrant.OverflowEnabled)).IsNullable);
+
+        AssertNotMapped<CredentialGrant>(nameof(CredentialGrant.IsExhaustedIndefinitely));
     }
 
     [Fact]

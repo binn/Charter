@@ -1,3 +1,4 @@
+using Charter.Api;
 using Charter.Auth;
 using Charter.Configuration;
 using Charter.Data;
@@ -65,6 +66,7 @@ try
     builder.Services.AddCharterPreflight();
     builder.Services.AddCharterData(config.Database.ConnectionString.Reveal());
     builder.Services.AddCharterAuth();
+    builder.Services.AddCharterApi();
     builder.Services.AddCharterModels();
     builder.Services.AddCharterRefinement();
     builder.Services.AddCharterCredentials();
@@ -194,6 +196,9 @@ try
         SourceUrl: BuildInfo.SourceLink,
         License: "AGPL-3.0-only",
         ServiceName: startup.ServiceName)));
+
+    app.MapCharterApi();
+    app.MapCharterHubs();
 
     // Client-side routing: anything not matched above is the SPA's problem.
     app.MapFallbackToFile("index.html");

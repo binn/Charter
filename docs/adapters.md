@@ -20,7 +20,7 @@ Charter release, and you can drop one into your own instance without forking.
 | `gemini-cli` | `text` | Its JSON output mode prints one aggregate object when the run finishes, which is not a stream Charter can classify while the agent works. |
 | `opencode` | `text` | Multi-provider, and its `--model` already takes Charter's `provider/model` form. Prints a human transcript rather than an event stream. |
 | `pi` | `jsonl` | A minimal four-tool core over 20-plus providers, with subscription login. The widest model coverage from a single adapter — a good default when you want provider flexibility. |
-| `cursor-agent` | `jsonl` | Authenticates against a Cursor account rather than a model provider, so it needs a `cursor_api_key` credential. Charter does not store that kind yet, and offers no models for this adapter until it does. |
+| `cursor-agent` | `jsonl` | Authenticates against a Cursor account rather than a model provider, so it needs a `cursor_api_key` credential. That kind buys agent runs only — the control plane never resolves a refinement or recap call onto it. |
 | `aider` | `text` | Resolves models through LiteLLM, so it reads the standard provider keys. No machine-readable output mode. |
 
 Select one per repository, or per session where the repository permits a choice. The `text` adapters

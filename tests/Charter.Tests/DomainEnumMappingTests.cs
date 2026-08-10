@@ -125,8 +125,17 @@ public class DomainEnumMappingTests
             [CredentialKind.GoogleApiKey] = "google_api_key",
             [CredentialKind.XaiApiKey] = "xai_api_key",
             [CredentialKind.OpenRouterKey] = "openrouter_key",
+            [CredentialKind.CursorApiKey] = "cursor_api_key",
             [CredentialKind.CustomOpenAiCompatible] = "custom_openai_compatible",
         });
+
+        // Section 20b.2 lists cursor_api_key, and Charter.Adapters.AdapterCredentialKinds already
+        // named it, so adapters/cursor-agent.yml loaded against a kind no grant could hold. The two
+        // spellings must be the same string or the adapter still resolves nothing.
+        Assert.Contains("cursor_api_key", Charter.Adapters.AdapterCredentialKinds.All);
+        Assert.Equal(
+            "cursor_api_key",
+            EnumDbNames<CredentialKind>.ToDb(CredentialKind.CursorApiKey));
 
         AssertSpelling<CredentialScope>(new()
         {
@@ -270,6 +279,32 @@ public class DomainEnumMappingTests
         });
 
     [Fact]
+    public void ConversationEnumsMatchTheInteractionModesOfSectionTenB()
+    {
+        // Persisted now that a refinement conversation is a row (section 2.3), so these spellings are
+        // schema. Getting a mode wrong on reload is a security question, not a cosmetic one: Build is
+        // the only mode that dispatches an agent.
+        AssertSpelling<Charter.Refinement.InteractionMode>(new()
+        {
+            [Charter.Refinement.InteractionMode.Chat] = "chat",
+            [Charter.Refinement.InteractionMode.Plan] = "plan",
+            [Charter.Refinement.InteractionMode.Build] = "build",
+        });
+
+        AssertSpelling<Charter.Refinement.ConversationTurnKind>(new()
+        {
+            [Charter.Refinement.ConversationTurnKind.RequesterMessage] = "requester_message",
+            [Charter.Refinement.ConversationTurnKind.ClarifyingQuestion] = "clarifying_question",
+            [Charter.Refinement.ConversationTurnKind.Answer] = "answer",
+            [Charter.Refinement.ConversationTurnKind.Refusal] = "refusal",
+            [Charter.Refinement.ConversationTurnKind.SpecProposed] = "spec_proposed",
+            [Charter.Refinement.ConversationTurnKind.SpecConfirmed] = "spec_confirmed",
+            [Charter.Refinement.ConversationTurnKind.ModePromoted] = "mode_promoted",
+            [Charter.Refinement.ConversationTurnKind.EngineerNote] = "engineer_note",
+        });
+    }
+
+    [Fact]
     public void EveryValueRoundTrips()
     {
         AssertRoundTrip<OrganizationMode>();
@@ -293,6 +328,8 @@ public class DomainEnumMappingTests
         AssertRoundTrip<CredentialKind>();
         AssertRoundTrip<CredentialScope>();
         AssertRoundTrip<CredentialStatus>();
+        AssertRoundTrip<Charter.Refinement.InteractionMode>();
+        AssertRoundTrip<Charter.Refinement.ConversationTurnKind>();
         AssertRoundTrip<BudgetScopeType>();
         AssertRoundTrip<BudgetPeriod>();
         AssertRoundTrip<BudgetBehaviour>();

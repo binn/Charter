@@ -41,6 +41,14 @@ public sealed class CharterDbContext : DbContext
 
     public DbSet<Spec> Specs => Set<Spec>();
 
+    /// <summary>
+    /// Refinement conversations. Section 2.3: no in-memory orchestration state, so the conversation a
+    /// requester is halfway through survives the container restarting under it.
+    /// </summary>
+    public DbSet<ConversationRecord> Conversations => Set<ConversationRecord>();
+
+    public DbSet<ConversationTurnRecord> ConversationTurns => Set<ConversationTurnRecord>();
+
     public DbSet<Session> Sessions => Set<Session>();
 
     public DbSet<Event> Events => Set<Event>();
@@ -99,6 +107,8 @@ public sealed class CharterDbContext : DbContext
         modelBuilder.ApplyConfiguration(new AutoDispatchPolicyConfiguration());
         modelBuilder.ApplyConfiguration(new RequestConfiguration());
         modelBuilder.ApplyConfiguration(new SpecConfiguration());
+        modelBuilder.ApplyConfiguration(new ConversationConfiguration());
+        modelBuilder.ApplyConfiguration(new ConversationTurnConfiguration());
         modelBuilder.ApplyConfiguration(new SessionConfiguration());
         modelBuilder.ApplyConfiguration(new EventConfiguration());
         modelBuilder.ApplyConfiguration(new MilestoneConfiguration());

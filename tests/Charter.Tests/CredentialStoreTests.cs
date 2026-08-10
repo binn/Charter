@@ -64,6 +64,7 @@ public class CredentialProjectionTests
     [InlineData(CredentialKind.GoogleApiKey, ModelCredentialKind.GoogleApiKey, ModelProvider.Google)]
     [InlineData(CredentialKind.XaiApiKey, ModelCredentialKind.XaiApiKey, ModelProvider.XAi)]
     [InlineData(CredentialKind.OpenRouterKey, ModelCredentialKind.OpenRouterKey, ModelProvider.OpenRouter)]
+    [InlineData(CredentialKind.CursorApiKey, ModelCredentialKind.CursorApiKey, ModelProvider.OpenAiCompatible)]
     [InlineData(
         CredentialKind.CustomOpenAiCompatible,
         ModelCredentialKind.CustomOpenAiCompatible,
@@ -153,6 +154,146 @@ public class CredentialProjectionTests
                  })
         {
             Assert.Contains(CredentialKind.CustomOpenAiCompatible, EfModelCredentialStore.ServingKinds(provider));
+        }
+    }
+
+    [Fact]
+    public void ACursorKeyBuysAnAgentRunAndNeverAControlPlaneCall()
+    {
+        // Section 20b.2 lists cursor_api_key and the cursor-agent adapter's auth block names it, so
+        // the kind has to exist or that adapter can never resolve a model. What it must not do is
+        // turn up as a candidate for refinement or recap: no IModelClient speaks to Cursor.
+        Assert.Equal(ModelCredentialKind.CursorApiKey, EfModelCredentialStore.MapKind(CredentialKind.CursorApiKey));
+        Assert.False(EfModelCredentialStore.IsSubscriptionKind(CredentialKind.CursorApiKey));
+
+        foreach (var provider in Enum.GetValues<ModelProvider>())
+        {
+            Assert.DoesNotContain(CredentialKind.CursorApiKey, EfModelCredentialStore.ServingKinds(provider));
+        }
+    }
+
+    [Fact]
+    public void AnOverflowAllowanceIsProjectedOnlyWhenTheOwnerConfiguredOne()
+    {
+        // Tier 2 of section 20b.3 was unreachable while this was hardcoded to null.
+        Assert.Null(EfModelCredentialStore.Project(Grant(), default).Overflow);
+
+        var grant = Grant();
+        grant.EnableOverflow();
+        grant.MarkOverflowExhausted(new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.Zero));
+
+        var overflow = EfModelCredentialStore.Project(grant, default).Overflow;
+
+        Assert.NotNull(overflow);
+        Assert.True(overflow.Enabled);
+        Assert.Equal(ModelCredentialStatus.Exhausted, overflow.Status);
+        Assert.Equal(grant.OverflowExhaustedUntil, overflow.ExhaustedUntil);
+    }
+}
+
+/// <summary>
+/// Tier 2 of the section 20b.3 chain, walked without a database.
+/// </summary>
+/// <remarks>
+/// The tier was unreachable while the projection hardcoded <c>Overflow</c> to null, so these are the
+/// first assertions that exercise it at all.
+/// </remarks>
+public class CredentialOverflowResolutionTests
+{
+    private static readonly DateTimeOffset Now = new(2026, 8, 10, 12, 0, 0, TimeSpan.Zero);
+
+    private static readonly ModelIdentifier Claude = ModelIdentifier.Parse("anthropic/claude-opus-5");
+
+    private const string Requester = "11111111-1111-1111-1111-111111111111";
+
+    private static ModelCredential Subscription(
+        ModelCredentialStatus status = ModelCredentialStatus.Active,
+        DateTimeOffset? exhaustedUntil = null,
+        ModelCredentialOverflow? overflow = null,
+        DateTimeOffset? expiresAt = null) =>
+        new()
+        {
+            Id = "grant-1",
+            Kind = ModelCredentialKind.AnthropicOAuth,
+            Secret = new ModelSecret("sk-ant-subscription"),
+            OwnerUserId = Requester,
+            Status = status,
+            ExhaustedUntil = exhaustedUntil,
+            Overflow = overflow,
+            ExpiresAt = expiresAt,
+        };
+
+    private static ModelCredentialResolution Resolve(params ModelCredential[] candidates) =>
+        CredentialResolver.Resolve(new ModelCredentialQuery(Claude, Requester, null), candidates, Now);
+
+    [Fact]
+    public void OverflowIsOnlyReachedOnceThePrimaryQuotaIsSpent()
+    {
+        var overflow = new ModelCredentialOverflow { Enabled = true };
+
+        var whileActive = Resolve(Subscription(overflow: overflow));
+        Assert.Equal(ModelCredentialTier.RequesterSubscription, whileActive.Credential!.Tier);
+        Assert.False(whileActive.Credential.UseOverflow);
+
+        var whenSpent = Resolve(Subscription(
+            ModelCredentialStatus.Exhausted,
+            Now.AddHours(3),
+            overflow));
+
+        Assert.Equal(ModelCredentialTier.RequesterOverflow, whenSpent.Credential!.Tier);
+        Assert.True(whenSpent.Credential.UseOverflow);
+    }
+
+    [Fact]
+    public void AnExpiredAccessTokenStopsTheOverflowToo()
+    {
+        // Overflow is spent through the same credential. The reason to reach this tier is that the
+        // quota ran out, never that the token did.
+        var resolution = Resolve(Subscription(
+            ModelCredentialStatus.Exhausted,
+            Now.AddHours(3),
+            new ModelCredentialOverflow { Enabled = true },
+            expiresAt: Now.AddMinutes(-1)));
+
+        Assert.False(resolution.Resolved);
+        Assert.True(resolution.AllExhausted);
+    }
+
+    [Fact]
+    public void AnExhaustedOverflowContributesItsOwnResetToWaitingForCapacity()
+    {
+        var resolution = Resolve(Subscription(
+            ModelCredentialStatus.Exhausted,
+            Now.AddHours(6),
+            new ModelCredentialOverflow
+            {
+                Enabled = true,
+                Status = ModelCredentialStatus.Exhausted,
+                ExhaustedUntil = Now.AddHours(2),
+            }));
+
+        // Section 20b.3 shows the earliest reset across everything skipped, and the overflow's own
+        // reset is the earliest one here.
+        Assert.False(resolution.Resolved);
+        Assert.Equal(Now.AddHours(2), resolution.WaitingForCapacityUntil);
+    }
+
+    [Fact]
+    public void AnOverflowNobodyConfiguredIsNotAnAllowance()
+    {
+        foreach (var overflow in new ModelCredentialOverflow?[]
+                 {
+                     null,
+                     new ModelCredentialOverflow { Enabled = false },
+                 })
+        {
+            var resolution = Resolve(Subscription(
+                ModelCredentialStatus.Exhausted,
+                Now.AddHours(3),
+                overflow));
+
+            Assert.False(resolution.Resolved);
+            Assert.Equal(Now.AddHours(3), resolution.WaitingForCapacityUntil);
         }
     }
 }
@@ -376,7 +517,7 @@ public class CredentialStoreIntegrationTests
     }
 
     [Fact]
-    public async Task ExhaustionWithoutAResetHeaderStaysExhausted()
+    public async Task ExhaustionWithoutAResetHeaderStoresNullRatherThanAFarFutureSentinel()
     {
         await using var fixture = await StoreFixture.CreateAsync();
         if (fixture is null)
@@ -389,13 +530,126 @@ public class CredentialStoreIntegrationTests
         await fixture.Store.MarkExhaustedAsync(
             grant.Id.ToString(),
             exhaustedUntil: null,
-            useOverflow: true,
+            useOverflow: false,
             TestContext.Current.CancellationToken);
 
         var reloaded = await fixture.ReloadAsync(grant.Id);
 
         Assert.Equal(CredentialStatus.Exhausted, reloaded.Status);
+
+        // The whole point: a UI reading this column must be able to tell "resets at 14:05" from
+        // "nobody knows", and never render "waiting for capacity until the year 9999".
+        Assert.Null(reloaded.ExhaustedUntil);
+        Assert.True(reloaded.IsExhaustedIndefinitely);
         Assert.False(reloaded.IsUsableAt(DateTimeOffset.UtcNow.AddYears(50)));
+
+        // The resolver has nothing to show as a reset instant either, rather than a bogus one.
+        var resolution = await new CredentialResolver(
+                fixture.Store,
+                TimeProvider.System,
+                NullLogger<CredentialResolver>.Instance)
+            .ResolveAsync(fixture.Query(), TestContext.Current.CancellationToken);
+
+        Assert.False(resolution.Resolved);
+        Assert.True(resolution.AllExhausted);
+        Assert.Null(resolution.WaitingForCapacityUntil);
+    }
+
+    [Fact]
+    public async Task OverflowExhaustionIsRecordedAgainstTheOverflowAndNotTheWholeGrant()
+    {
+        await using var fixture = await StoreFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var grant = await fixture.AddGrantAsync(
+            CredentialKind.AnthropicOauth,
+            "sk-ant-overflow",
+            overflowEnabled: true);
+
+        var primaryReset = DateTimeOffset.UtcNow.AddHours(6);
+        await fixture.Store.MarkExhaustedAsync(
+            grant.Id.ToString(),
+            primaryReset,
+            useOverflow: false,
+            TestContext.Current.CancellationToken);
+
+        await fixture.Store.MarkExhaustedAsync(
+            grant.Id.ToString(),
+            exhaustedUntil: null,
+            useOverflow: true,
+            TestContext.Current.CancellationToken);
+
+        var reloaded = await fixture.ReloadAsync(grant.Id);
+
+        // The subscription's own reset survives: widening an overflow 429 onto the whole grant would
+        // have overwritten it and lost the earliest-capacity answer section 20b.3 needs.
+        Assert.Equal(CredentialStatus.Exhausted, reloaded.Status);
+        Assert.NotNull(reloaded.ExhaustedUntil);
+        Assert.Equal(primaryReset.ToUnixTimeSeconds(), reloaded.ExhaustedUntil.Value.ToUnixTimeSeconds());
+
+        Assert.Equal(CredentialStatus.Exhausted, reloaded.OverflowStatus);
+        Assert.Null(reloaded.OverflowExhaustedUntil);
+        Assert.False(reloaded.IsOverflowUsableAt(DateTimeOffset.UtcNow.AddYears(50)));
+    }
+
+    [Fact]
+    public async Task TierTwoFiresWhenTheSubscriptionIsSpentButItsOverflowIsNot()
+    {
+        await using var fixture = await StoreFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var own = await fixture.AddGrantAsync(
+            CredentialKind.AnthropicOauth,
+            "sk-ant-mine-with-overflow",
+            overflowEnabled: true);
+        await fixture.AddGrantAsync(
+            CredentialKind.AnthropicApiKey,
+            "sk-ant-org-metered",
+            ownerId: fixture.OtherUserId);
+
+        var resolver = new CredentialResolver(
+            fixture.Store,
+            TimeProvider.System,
+            NullLogger<CredentialResolver>.Instance);
+
+        // Tier 1 while the subscription still has quota.
+        var first = await resolver.ResolveAsync(fixture.Query(), TestContext.Current.CancellationToken);
+        Assert.Equal(ModelCredentialTier.RequesterSubscription, first.Credential!.Tier);
+        Assert.False(first.Credential.UseOverflow);
+
+        await fixture.Store.MarkExhaustedAsync(
+            own.Id.ToString(),
+            DateTimeOffset.UtcNow.AddHours(4),
+            useOverflow: false,
+            TestContext.Current.CancellationToken);
+
+        // Tier 2: the same credential, its overflow allowance, ahead of the organisation's key.
+        var second = await resolver.ResolveAsync(fixture.Query(), TestContext.Current.CancellationToken);
+
+        Assert.True(second.Resolved);
+        Assert.Equal(ModelCredentialTier.RequesterOverflow, second.Credential!.Tier);
+        Assert.True(second.Credential.UseOverflow);
+        Assert.Equal(own.Id.ToString(), second.Credential.Credential.Id);
+
+        // Reporting that failure exhausts the overflow, and only then does the chain fall through.
+        await resolver.ReportFailureAsync(
+            second.Credential,
+            new ModelRateLimitException(
+                "Rate limited.",
+                ModelProvider.Anthropic,
+                new RateLimitReset(DateTimeOffset.UtcNow.AddHours(2), null)),
+            TestContext.Current.CancellationToken);
+
+        var third = await resolver.ResolveAsync(fixture.Query(), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ModelCredentialTier.OrganizationMeteredKey, third.Credential!.Tier);
+        Assert.Equal("sk-ant-org-metered", third.Credential.Credential.Secret.Reveal());
     }
 
     [Fact]
@@ -419,6 +673,38 @@ public class CredentialStoreIntegrationTests
         Assert.Equal(CredentialStatus.Invalid, reloaded.Status);
         Assert.Null(reloaded.ExhaustedUntil);
         Assert.False(reloaded.IsUsableAt(DateTimeOffset.UtcNow.AddYears(1)));
+
+        // The reason is a column, not just a log line: an admin looking at a dead credential in the
+        // UI should not have to go digging through container logs to learn it was a 401.
+        Assert.Equal("Provider rejected the credential with 401.", reloaded.InvalidReason);
+    }
+
+    [Fact]
+    public async Task TheInvalidationReasonIsPersistedAndCarriesNoCredentialMaterial()
+    {
+        await using var fixture = await StoreFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        const string secret = "sk-ant-never-in-the-reason";
+        var grant = await fixture.AddGrantAsync(CredentialKind.AnthropicOauth, secret);
+
+        await fixture.Store.MarkInvalidAsync(
+            grant.Id.ToString(),
+            "The linked subscription was cancelled; re-link it to carry on.",
+            TestContext.Current.CancellationToken);
+
+        // Read the column out of Postgres rather than off a tracked entity.
+        var stored = await fixture.Db.CredentialGrants
+            .AsNoTracking()
+            .Where(candidate => candidate.Id == grant.Id)
+            .Select(candidate => candidate.InvalidReason)
+            .SingleAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal("The linked subscription was cancelled; re-link it to carry on.", stored);
+        Assert.DoesNotContain(secret, stored, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -615,7 +901,8 @@ public class CredentialStoreIntegrationTests
             string secret,
             Guid? ownerId = null,
             CredentialScope scope = CredentialScope.Personal,
-            int priority = 0)
+            int priority = 0,
+            bool overflowEnabled = false)
         {
             var grant = CredentialGrant.Create(
                 OrgId,
@@ -623,7 +910,8 @@ public class CredentialStoreIntegrationTests
                 kind,
                 Protector.Protect(secret),
                 scope,
-                priority: priority);
+                priority: priority,
+                overflowEnabled: overflowEnabled);
 
             Db.CredentialGrants.Add(grant);
             await Db.SaveChangesAsync(TestContext.Current.CancellationToken);

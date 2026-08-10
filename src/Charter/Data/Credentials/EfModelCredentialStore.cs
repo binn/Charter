@@ -23,18 +23,6 @@ namespace Charter.Data.Credentials;
 /// </remarks>
 public sealed class EfModelCredentialStore : IModelCredentialStore
 {
-    /// <summary>
-    /// What <c>exhausted_until</c> becomes when the provider sent a 429 without a reset header.
-    /// </summary>
-    /// <remarks>
-    /// The interface allows a null reset, meaning "stays exhausted until something clears it", but
-    /// <see cref="CredentialGrant.MarkExhausted"/> requires an instant, and the column is what
-    /// <see cref="CredentialGrant.IsUsableAt"/> reads. A far-future sentinel is the only spelling of
-    /// "indefinitely" available without changing the entity: it never elapses on its own, so the
-    /// grant stays skipped until a refresh, a re-link or an operator clears it.
-    /// </remarks>
-    public static readonly DateTimeOffset IndefiniteExhaustion = DateTimeOffset.MaxValue;
-
     private readonly CharterDbContext _db;
     private readonly ICredentialProtector _protector;
     private readonly TimeProvider _timeProvider;
@@ -139,24 +127,26 @@ public sealed class EfModelCredentialStore : IModelCredentialStore
 
         if (useOverflow)
         {
-            // CredentialGrant has no overflow columns, so an exhausted overflow allowance cannot be
-            // recorded apart from the subscription itself. Marking the whole grant is the safe
-            // direction - the resolver only reaches the overflow tier once the primary quota was
-            // already unusable - but it is a widening, so it is said out loud rather than dropped.
-            _logger.LogWarning(
-                "Credential grant {GrantId} exhausted its overflow allowance. The entity tracks no " +
-                "separate overflow state, so the whole grant is being marked exhausted.",
-                grant.Id);
+            // Tier 2 of section 20b.3 has its own columns, so an exhausted overflow allowance is
+            // recorded against the overflow and the subscription's own state is left where it was.
+            // Widening it to the whole grant would throw away the distinction the resolver walks on.
+            grant.MarkOverflowExhausted(exhaustedUntil);
         }
-
-        grant.MarkExhausted(exhaustedUntil ?? IndefiniteExhaustion);
+        else
+        {
+            grant.MarkExhausted(exhaustedUntil);
+        }
 
         if (exhaustedUntil is null)
         {
+            // Null is stored as null: "exhausted, no idea when it comes back". A far-future sentinel
+            // would read out as "waiting for capacity until the year 9999" wherever section 20b.3
+            // renders the instant.
             _logger.LogWarning(
-                "Credential grant {GrantId} was exhausted without a reset header; it stays skipped " +
-                "until it is refreshed or cleared.",
-                grant.Id);
+                "Credential grant {GrantId} was exhausted without a reset header ({Allowance}); it " +
+                "stays skipped until it is refreshed or cleared.",
+                grant.Id,
+                useOverflow ? "overflow allowance" : "primary quota");
         }
 
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -176,10 +166,12 @@ public sealed class EfModelCredentialStore : IModelCredentialStore
             return;
         }
 
-        grant.MarkInvalid();
+        // The reason is persisted, not just logged: an admin looking at a dead credential in the UI
+        // needs to know whether the provider rejected the key or the subscription lapsed, and a log
+        // line is not where they are looking. The interface guarantees this is short human-readable
+        // prose and never credential material, and the entity truncates it either way.
+        grant.MarkInvalid(reason);
 
-        // The entity carries no reason column, so the reason survives only in the log. The interface
-        // guarantees it is a short human-readable string and never credential material.
         _logger.LogError(
             "Credential grant {GrantId} marked invalid: {Reason}. It needs a human, not a wait.",
             grant.Id,
@@ -283,10 +275,17 @@ public sealed class EfModelCredentialStore : IModelCredentialStore
             // first, instead of dead last.
             Priority = grant.Priority == int.MinValue ? int.MaxValue : -grant.Priority,
             MaxSessionsPerDayFromOthers = grant.MaxSessionsPerDayFromOthers,
-            // Section 20b.3's tier 2 has no columns on CredentialGrant, so no overflow allowance can
-            // be described. Null is honest: the resolver reads it as "no overflow configured" and
-            // moves to the shared pool rather than inventing an allowance.
-            Overflow = null,
+            // Section 20b.3's tier 2. Null when the owner configured no overflow, which the resolver
+            // reads as "skip to the shared pool"; otherwise the allowance's own status and reset,
+            // which is what makes the tier reachable at all.
+            Overflow = grant.OverflowEnabled
+                ? new ModelCredentialOverflow
+                {
+                    Enabled = true,
+                    Status = MapStatus(grant.OverflowStatus),
+                    ExhaustedUntil = grant.OverflowExhaustedUntil,
+                }
+                : null,
             ExpiresAt = grant.ExpiresAt,
         };
     }
@@ -314,6 +313,7 @@ public sealed class EfModelCredentialStore : IModelCredentialStore
         CredentialKind.GoogleApiKey => ModelCredentialKind.GoogleApiKey,
         CredentialKind.XaiApiKey => ModelCredentialKind.XaiApiKey,
         CredentialKind.OpenRouterKey => ModelCredentialKind.OpenRouterKey,
+        CredentialKind.CursorApiKey => ModelCredentialKind.CursorApiKey,
         CredentialKind.CustomOpenAiCompatible => ModelCredentialKind.CustomOpenAiCompatible,
     };
 
@@ -347,6 +347,12 @@ public sealed class EfModelCredentialStore : IModelCredentialStore
     /// discard: an <c>openrouter/</c>-qualified model can only be served by an OpenRouter key, an
     /// OpenRouter key can serve anything else, and a custom OpenAI-compatible endpoint covers the
     /// providers that speak <c>/chat/completions</c> through a configured base URL.
+    /// <para>
+    /// <see cref="CredentialKind.CursorApiKey"/> is deliberately absent from every arm. It buys an
+    /// agent run through the <c>cursor-agent</c> CLI, not a control-plane call — there is no Cursor
+    /// <c>IModelClient</c> — so offering it as a candidate here would resolve a refinement or recap
+    /// call onto a key that cannot make one.
+    /// </para>
     /// </remarks>
     internal static IReadOnlyList<CredentialKind> ServingKinds(ModelProvider provider)
     {

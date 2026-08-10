@@ -1,0 +1,225 @@
+using System.Text.Json;
+using Charter.Api.Contracts;
+using Charter.Api.Requests;
+
+namespace Charter.Tests;
+
+/// <summary>
+/// Section 7.4, checked on the wire.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <em>"Authorisation is not a rendering concern."</em> These tests read the raw response body — the
+/// bytes <see cref="System.Text.Json.JsonSerializer"/> actually produced — and assert that the keys
+/// a requester may not see <strong>are not in it</strong>. Deserialising into
+/// <c>RequestDetailResponse</c> and asserting <c>Transcript is null</c> would pass just as happily
+/// for a body containing <c>"transcript": null</c>, and that body would be a leak of the fact that a
+/// transcript exists at all.
+/// </para>
+/// <para>
+/// The visibility driving the projection comes from
+/// <see cref="Charter.Auth.Authorization.SessionVisibilityPolicy"/> through
+/// <see cref="RequestVisibility"/> — the same call the endpoint makes. There is no second rule being
+/// tested here.
+/// </para>
+/// </remarks>
+public class ApiOmissionTests
+{
+    /// <summary>Every key section 7.4 and section 27.7 withhold from a viewer without repo read.</summary>
+    public static TheoryData<string> EngineerOnlyKeys =>
+    [
+        "transcript",
+        "changes",
+        "details",
+        "pullRequestNumber",
+        "pullRequestUrl",
+        "commitSha",
+        "branch",
+        "runner",
+        "durationMs",
+        "costUsd",
+        "eventSeq",
+        "technicalApproach",
+        "scope",
+        "risks",
+    ];
+
+    [Theory]
+    [MemberData(nameof(EngineerOnlyKeys))]
+    public async Task ARequestersBodyDoesNotCarryTheKeyAtAll(string key)
+    {
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+
+        Assert.DoesNotContain(key, ApiPayloads.Keys(body));
+    }
+
+    [Fact]
+    public async Task ARequestersBodyDoesNotCarryTheCommitShaOrTheCostAsValuesEither()
+    {
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+
+        // Section 7.1: "a requester never sees a SHA". Checked against the text, not the shape, so a
+        // SHA smuggled into a summary string would fail this too.
+        Assert.DoesNotContain(ApiScenario.CommitSha, body, StringComparison.Ordinal);
+        Assert.DoesNotContain(ApiScenario.TechnicalApproach, body, StringComparison.Ordinal);
+        Assert.DoesNotContain("1.42", body, StringComparison.Ordinal);
+
+        // Nor the repository's own name (section 7.1: never `owner/repo`).
+        Assert.DoesNotContain("northbeam/quote-tool", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnEngineersBodyCarriesAllOfIt()
+    {
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Engineer);
+        var keys = ApiPayloads.Keys(body);
+
+        Assert.Contains("transcript", keys);
+        Assert.Contains("changes", keys);
+        Assert.Contains("details", keys);
+        Assert.Contains("commitSha", keys);
+        Assert.Contains("costUsd", keys);
+        Assert.Contains("eventSeq", keys);
+        Assert.Contains(ApiScenario.CommitSha, body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheOmissionIsAbsenceRatherThanANullProperty()
+    {
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+
+        // `TryGetProperty` returning false is the assertion. A JSON null would return true.
+        Assert.False(root.TryGetProperty("transcript", out _));
+        Assert.False(root.TryGetProperty("changes", out _));
+
+        var artifact = root.GetProperty("artifacts")[0];
+        Assert.False(artifact.TryGetProperty("details", out _));
+
+        // And the artifact is still fully usable — omission removed the engineer block, not the card.
+        Assert.Equal("hosted_preview", artifact.GetProperty("kind").GetString());
+        Assert.True(artifact.GetProperty("primary").GetBoolean());
+        Assert.NotNull(artifact.GetProperty("payload").GetProperty("url").GetString());
+    }
+
+    [Fact]
+    public async Task TheRequesterSpecIsTheRefinementRequesterViewAndCarriesNothingElse()
+    {
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+
+        using var document = JsonDocument.Parse(body);
+        var spec = document.RootElement.GetProperty("spec");
+
+        Assert.Equal("Remember the last selected vertical", spec.GetProperty("title").GetString());
+        Assert.Equal(2, spec.GetProperty("acceptanceCriteria").GetArrayLength());
+
+        // Section 10b: "Requester view renders title, outcome, acceptance_criteria. Nothing else."
+        foreach (var forbidden in new[] { "technicalApproach", "scope", "risks", "openQuestions" })
+        {
+            Assert.False(spec.TryGetProperty(forbidden, out _));
+        }
+    }
+
+    [Fact]
+    public void TheRequesterSpecTypeHasNoEngineerPropertyToLeakInTheFirstPlace()
+    {
+        // An optional property invites `spec.technicalApproach && …` on the client, which is the
+        // CSS-hiding pattern section 7.4 forbids. The strongest guarantee is that there is nothing to
+        // read: this fails at compile time for anyone who adds one, and here for anyone who does it
+        // by reflection-friendly means.
+        var properties = typeof(RequesterSpecResponse).GetProperties().Select(property => property.Name).ToList();
+
+        Assert.DoesNotContain("TechnicalApproach", properties);
+        Assert.DoesNotContain("Scope", properties);
+        Assert.DoesNotContain("Risks", properties);
+        Assert.DoesNotContain("BodyMd", properties);
+    }
+
+    [Fact]
+    public async Task TheAcceptanceCriteriaAreTheSameTextInBothRenderings()
+    {
+        // Section 10b: they are the contract, shared verbatim. The requester view returns the engineer
+        // view's own list instance, so this is really asserting that nothing re-wrote them on the way
+        // out of the projection.
+        var scenario = ApiScenario.Build();
+        var document = Charter.Refinement.SpecDocumentMapper.ToDocument(scenario.Spec);
+
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+        using var parsed = JsonDocument.Parse(body);
+
+        var wire = parsed.RootElement
+            .GetProperty("spec")
+            .GetProperty("acceptanceCriteria")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("text").GetString()!)
+            .ToList();
+
+        Assert.Equal(document.ForEngineer().AcceptanceCriteria, wire);
+        Assert.Equal(document.ForRequester().AcceptanceCriteria, wire);
+    }
+
+    [Fact]
+    public async Task AMemberOfAnotherOrganisationIsProjectedNothingAtAll()
+    {
+        var scenario = ApiScenario.Build();
+        var visibility = scenario.VisibilityFor(scenario.Outsider);
+
+        Assert.True(visibility.IsEmpty);
+
+        // The endpoint turns an empty visibility into a 404 before projecting, so what follows is the
+        // belt to that braces: even projected, nothing engineer-shaped comes out.
+        var body = await ApiPayloads.RenderAsync(
+            RequestProjection.Detail(scenario.AggregateFor(scenario.Outsider), visibility, DateTimeOffset.UtcNow));
+
+        var keys = ApiPayloads.Keys(body);
+        Assert.DoesNotContain("transcript", keys);
+        Assert.DoesNotContain("details", keys);
+    }
+
+    [Fact]
+    public async Task TheCancelButtonIsOfferedOnlyWhileThereIsARunnerToKill()
+    {
+        // Section 11: "Must actually kill the runner and settle token cost." A preview waiting to be
+        // tried has nothing left to stop, and offering the button there would be a lie.
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+
+        using var settled = JsonDocument.Parse(body);
+        Assert.False(settled.RootElement.GetProperty("cancellable").GetBoolean());
+        Assert.False(settled.RootElement.GetProperty("thread").GetProperty("live").GetBoolean());
+
+        var running = ApiScenario.Build();
+        running.Session.TransitionTo(Charter.Domain.SessionStatus.Running);
+
+        using var mid = JsonDocument.Parse(await running.RenderDetailAsync(running.Requester));
+        Assert.True(mid.RootElement.GetProperty("cancellable").GetBoolean());
+        Assert.True(mid.RootElement.GetProperty("thread").GetProperty("live").GetBoolean());
+    }
+
+    [Fact]
+    public async Task ARequesterStillGetsTheThingsSectionElevenPromisesThem()
+    {
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+        var keys = ApiPayloads.Keys(body);
+
+        // Omission must not be over-applied: the status thread, the milestones, the spec and the
+        // artifact card are the requester's whole product.
+        Assert.Contains("thread", keys);
+        Assert.Contains("milestones", keys);
+        Assert.Contains("spec", keys);
+        Assert.Contains("artifacts", keys);
+        Assert.Contains("acceptanceCriteria", keys);
+
+        using var document = JsonDocument.Parse(body);
+        Assert.Equal("Quote tool", document.RootElement.GetProperty("projectName").GetString());
+        Assert.NotEmpty(document.RootElement.GetProperty("thread").GetProperty("milestones").EnumerateArray());
+    }
+}

@@ -25,6 +25,16 @@ public enum ModelCredentialKind
     OpenRouterKey,
 
     /// <summary>
+    /// A Cursor account key, read by the <c>cursor-agent</c> CLI (sections 12b, 20b.2).
+    /// </summary>
+    /// <remarks>
+    /// It authenticates against a Cursor account rather than a model provider, so it buys an
+    /// <em>agent run</em> and never a control-plane call: no <see cref="IModelClient"/> speaks to
+    /// Cursor, and the credential store never offers this kind as a candidate for one.
+    /// </remarks>
+    CursorApiKey,
+
+    /// <summary>
     /// Any other endpoint speaking <c>/chat/completions</c> at a configured
     /// <see cref="ModelCredential.BaseUrl"/> - a self-hosted gateway, Groq, DeepSeek, Ollama.
     /// </summary>
@@ -149,6 +159,10 @@ public sealed record ModelCredential
         ModelCredentialKind.GoogleApiKey => ModelProvider.Google,
         ModelCredentialKind.XaiApiKey => ModelProvider.XAi,
         ModelCredentialKind.OpenRouterKey => ModelProvider.OpenRouter,
+        // Cursor has no control-plane transport. The value is the least-surprising fallback rather
+        // than a claim: nothing resolves a Cursor key onto an IModelClient, because the store never
+        // offers the kind as a candidate for one.
+        ModelCredentialKind.CursorApiKey => ModelProvider.OpenAiCompatible,
         ModelCredentialKind.CustomOpenAiCompatible => ModelProvider.OpenAiCompatible,
         _ => ModelProvider.OpenAiCompatible,
     };

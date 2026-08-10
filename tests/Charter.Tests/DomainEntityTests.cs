@@ -323,6 +323,119 @@ public class DomainEntityTests
     }
 
     [Fact]
+    public void AGrantExhaustedWithNoResetInstantStaysExhaustedAndSaysSo()
+    {
+        // Section 20b.4: a 429 without a reset header means "no idea when capacity returns", which is
+        // a null rather than a far-future sentinel. Section 20b.3 renders this instant to a requester
+        // as "waiting for capacity", and the year 9999 is not a thing to show a person.
+        var grant = CredentialGrant.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            CredentialKind.AnthropicOauth,
+            [1, 2, 3],
+            now: Now);
+
+        grant.MarkExhausted(null);
+
+        Assert.Equal(CredentialStatus.Exhausted, grant.Status);
+        Assert.Null(grant.ExhaustedUntil);
+        Assert.True(grant.IsExhaustedIndefinitely);
+        Assert.False(grant.IsUsableAt(Now.AddYears(100)));
+
+        // And the known-reset case is distinguishable from it, not merely a different number.
+        grant.MarkExhausted(Now.AddHours(2));
+
+        Assert.False(grant.IsExhaustedIndefinitely);
+        Assert.Equal(Now.AddHours(2), grant.ExhaustedUntil);
+    }
+
+    [Fact]
+    public void TheOverflowAllowanceRunsOutSeparatelyFromTheSubscription()
+    {
+        // Section 20b.3 tier 2: extra usage on the requester's own credential. It is spent through the
+        // same grant but exhausts on its own schedule, so one status column would make the resolver
+        // guess which allowance a 429 belonged to.
+        var grant = CredentialGrant.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            CredentialKind.AnthropicOauth,
+            [1, 2, 3],
+            overflowEnabled: true,
+            now: Now);
+
+        Assert.True(grant.OverflowEnabled);
+        Assert.True(grant.IsOverflowUsableAt(Now));
+
+        grant.MarkExhausted(Now.AddHours(5));
+
+        Assert.False(grant.IsUsableAt(Now));
+        Assert.True(grant.IsOverflowUsableAt(Now));
+
+        grant.MarkOverflowExhausted(Now.AddHours(1));
+
+        Assert.Equal(CredentialStatus.Exhausted, grant.OverflowStatus);
+        Assert.Equal(CredentialStatus.Exhausted, grant.Status);
+        Assert.Equal(Now.AddHours(5), grant.ExhaustedUntil);
+        Assert.False(grant.IsOverflowUsableAt(Now));
+        Assert.True(grant.IsOverflowUsableAt(Now.AddHours(2)));
+
+        // Overflow is billed through the same account, so revocation and invalidation take it too.
+        grant.Revoke();
+        Assert.False(grant.IsOverflowUsableAt(Now.AddHours(2)));
+    }
+
+    [Fact]
+    public void OverflowIsOffUnlessTheOwnerTurnedItOn()
+    {
+        var grant = CredentialGrant.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            CredentialKind.AnthropicOauth,
+            [1],
+            now: Now);
+
+        Assert.False(grant.OverflowEnabled);
+        Assert.False(grant.IsOverflowUsableAt(Now));
+
+        grant.EnableOverflow();
+        Assert.True(grant.IsOverflowUsableAt(Now));
+
+        grant.MarkOverflowExhausted(null);
+        Assert.False(grant.IsOverflowUsableAt(Now.AddYears(100)));
+
+        grant.DisableOverflow();
+        Assert.False(grant.IsOverflowUsableAt(Now));
+    }
+
+    [Fact]
+    public void AnInvalidGrantRemembersWhyItDied()
+    {
+        var grant = CredentialGrant.Create(
+            Guid.CreateVersion7(),
+            Guid.CreateVersion7(),
+            CredentialKind.AnthropicApiKey,
+            [1],
+            now: Now);
+
+        grant.MarkInvalid("  Provider rejected the credential with 401.  ");
+
+        Assert.Equal(CredentialStatus.Invalid, grant.Status);
+        Assert.Equal("Provider rejected the credential with 401.", grant.InvalidReason);
+        Assert.Null(grant.ExhaustedUntil);
+
+        // Capped, so nothing large can be smuggled into a column an admin reads.
+        grant.MarkInvalid(new string('x', CredentialGrant.MaxInvalidReasonLength + 500));
+        Assert.Equal(CredentialGrant.MaxInvalidReasonLength, grant.InvalidReason!.Length);
+
+        // And a re-linked credential is not still wearing the old obituary.
+        grant.ReplaceSecret([9, 9], null, null);
+
+        Assert.Equal(CredentialStatus.Active, grant.Status);
+        Assert.Null(grant.InvalidReason);
+        Assert.Equal(CredentialStatus.Active, grant.OverflowStatus);
+    }
+
+    [Fact]
     public void SharedPoolingIsNeverTheDefault()
     {
         // Section 20b.7: opting in is an explicit action, with a one-time warning.

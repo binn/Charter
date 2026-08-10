@@ -22,8 +22,27 @@ internal sealed class CredentialGrantConfiguration : IEntityTypeConfiguration<Cr
         builder.Property(grant => grant.RefreshTokenEncrypted);
 
         builder.Property(grant => grant.Status).HasEnumConversion();
+
+        // Nullable, and the null means "exhausted, with no idea when it comes back" rather than a
+        // far-future sentinel. Section 20b.3 shows this instant to a requester as "waiting for
+        // capacity", and a sentinel would render as the year 9999.
+        builder.Property(grant => grant.ExhaustedUntil);
+
+        // Why a credential died, so an admin does not have to go to the logs (section 20b.2 shows
+        // provider, owner, status, last used - a dead one needs the reason too). Never a token: the
+        // store is handed prose, and CredentialGrant truncates it.
+        builder.Property(grant => grant.InvalidReason).HasMaxLength(CredentialGrant.MaxInvalidReasonLength);
+
+        // Tier 2 of section 20b.3. Tracked apart from the subscription because the two run out
+        // separately, so one status column would make the resolver guess which allowance a 429 hit.
+        builder.Property(grant => grant.OverflowEnabled).IsRequired();
+        builder.Property(grant => grant.OverflowStatus).HasEnumConversion();
+        builder.Property(grant => grant.OverflowExhaustedUntil);
+
         builder.Property(grant => grant.Priority).IsRequired();
         builder.Property(grant => grant.CreatedAt).IsRequired();
+
+        builder.Ignore(grant => grant.IsExhaustedIndefinitely);
 
         builder.HasOne<Organization>()
             .WithMany()
