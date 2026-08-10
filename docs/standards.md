@@ -1,3 +1,8 @@
+---
+title: "Organisation standards"
+description: "Declaring how your organisation builds software in a designated standards repository: standards.yml, project types, deviations, versioning, templates, and the new project flow."
+---
+
 # Organisation standards
 
 Standards are a declarative statement of how your organisation builds software. They live in a
@@ -276,4 +281,4 @@ capitalised, never a bare lowercase "charter".
 - [charter-folder.md](charter-folder.md) — where a project's own config, deviations, and pinned version live
 - [runners.md](runners.md) — capability matching for project types
 - [configuration.md](configuration.md) — `CHARTER_ALLOW_REPO_CREATION`
-- [spec §26 and §27](../agent-docs/spec.md) — the full standards and project-type specification
+- [spec §26 and §27](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — the full standards and project-type specification

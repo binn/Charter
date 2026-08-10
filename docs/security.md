@@ -1,3 +1,8 @@
+---
+title: "Security"
+description: "Charter's full threat model: the trust boundary, why the agent never sees raw user input, prompt injection, toolchain supply chain, secrets, audit, and what it does not protect against."
+---
+
 # Security
 
 Charter runs an AI coding agent against your source code on behalf of people who cannot read it. This
@@ -5,7 +10,7 @@ page is the full threat model: what Charter is structurally protected against, w
 layers, and what it does not fix.
 
 To report a vulnerability, follow the private disclosure instructions in
-[`SECURITY.md`](../SECURITY.md) at the repository root. Please do not open a public issue.
+[`SECURITY.md`](https://github.com/binn/Charter/blob/master/SECURITY.md) at the repository root. Please do not open a public issue.
 
 ## The strongest property: the agent never sees raw user input
 
@@ -26,7 +31,7 @@ does not weaken when someone invents a new phrasing.
 
 Two caveats, stated plainly:
 
-- Auto-dispatch can skip the human step ([spec §7.5](../agent-docs/spec.md)). The model-authored
+- Auto-dispatch can skip the human step ([spec §7.5](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)). The model-authored
   sanitisation boundary still applies; the human review of it does not. Auto-dispatched sessions are
   flagged `auto_dispatched`, their pull requests are labelled `unreviewed-spec`, and the engineer recap
   **leads** with the fact that no human approved the specification, including it in full rather than
@@ -255,9 +260,9 @@ Stated so you can plan for it:
 
 ## Related
 
-- [`SECURITY.md`](../SECURITY.md) — supported versions and private vulnerability reporting
+- [`SECURITY.md`](https://github.com/binn/Charter/blob/master/SECURITY.md) — supported versions and private vulnerability reporting
 - [runners.md](runners.md) — execution modes and isolation
 - [credentials.md](credentials.md) — credential storage and the resolution chain
 - [charter-folder.md](charter-folder.md) — path scope and migration policy
 - [privacy.md](privacy.md) — what leaves your infrastructure
-- [spec §7.4, §15, §16, §20b.2, §32, §33](../agent-docs/spec.md) — the full specification
+- [spec §7.4, §15, §16, §20b.2, §32, §33](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — the full specification

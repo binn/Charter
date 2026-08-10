@@ -1,3 +1,8 @@
+---
+title: "Model credentials"
+description: "Providers, subscriptions versus API keys, how a credential is chosen per session, failover on exhaustion, shared pools, storage and handling, and provider terms of service."
+---
+
 # Model credentials
 
 Charter consumes models on two distinct surfaces, and they authenticate differently. Keeping them
@@ -137,7 +142,7 @@ named person. Charter tracks both units and never reports the second as zero dol
 
 Reporting also shows an **imputed USD** figure for subscription sessions — what the same work would
 have cost on metered API — so the two are comparable and the value of the subscription is visible.
-Budgets can be denominated in either unit ([spec §34](../agent-docs/spec.md)).
+Budgets can be denominated in either unit ([spec §34](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
 
 ## Terms of service: check your provider's
 
@@ -182,4 +187,4 @@ Charter does not tell you what to conclude, and it will not make this call silen
 - [configuration.md](configuration.md) — `CHARTER_CREDENTIAL_KEY`, `CHARTER_ALLOW_SHARED_POOL`, `CHARTER_MODEL_*`
 - [adapters.md](adapters.md) — which models your chosen agent can actually build with
 - [security.md](security.md) — what reaches a runner and what does not
-- [spec §20b](../agent-docs/spec.md) — the full credentials specification
+- [spec §20b](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — the full credentials specification

@@ -1,3 +1,8 @@
+---
+title: "Runners"
+description: "The three execution backends - Charter Agent, GitHub Actions, and Docker - plus capability matching, agent registration, runner images and caching, and honest performance numbers."
+---
+
 # Runners
 
 A runner is where agent sessions actually execute. Charter's control plane never runs agent code
@@ -73,7 +78,7 @@ instead — it gives you the same thing with an outbound connection and no expos
 ## Which project types need which backend
 
 Not every project can be verified by clicking a URL, and the runner requirements follow from that
-([spec §27.2](../agent-docs/spec.md)):
+([spec §27.2](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)):
 
 | Project type | Runner capabilities required | Charter Agent required? |
 |---|---|---|
@@ -261,4 +266,4 @@ alongside the token cap.
 - [self-hosting.md](self-hosting.md) — which backend fits which platform
 - [charter-folder.md](charter-folder.md) — `runner_image`, `setup`, and `cache` in `.charter/config.yml`
 - [security.md](security.md) — what a runner receives and what it cannot see
-- [spec §2.2, §27.3, §32, §33](../agent-docs/spec.md) — the full runner specification
+- [spec §2.2, §27.3, §32, §33](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — the full runner specification

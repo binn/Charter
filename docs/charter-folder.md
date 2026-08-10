@@ -1,3 +1,8 @@
+---
+title: "The .charter/ folder"
+description: "The committed guardrail folder in the repository Charter builds against: config.yml scopes, conventions, primer, glossary, templates, checks, and migration policy."
+---
+
 # The `.charter/` folder
 
 `.charter/` lives in the repository Charter builds against, not in Charter's database.
@@ -254,4 +259,4 @@ plugin system**, and none is planned for v1.
 - [standards.md](standards.md) — deviations, pinning, and project types
 - [adapters.md](adapters.md) — choosing an agent and models per repository
 - [security.md](security.md) — why path scope is enforced in the runner
-- [spec §8, §15, §32](../agent-docs/spec.md) — the full specification for this folder
+- [spec §8, §15, §32](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — the full specification for this folder

@@ -29,6 +29,10 @@ pnpm-debug.log*
 # the built assets are a publish artifact and are never committed.
 src/Charter/wwwroot/
 
+# VitePress. The docs site is built and deployed by .github/workflows/docs.yml.
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
 # Environment
 .env
 .env.local

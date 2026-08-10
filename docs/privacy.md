@@ -1,3 +1,8 @@
+---
+title: "Privacy"
+description: "What Charter never collects, the one outbound request it makes and how to turn it off, and where your observability data goes."
+---
+
 # Privacy
 
 Charter is self-hosted. Your code stays in your repositories, your data stays in your Postgres, and
@@ -84,9 +89,9 @@ turn it off afterwards.
 
 Transcripts, specs, and requests are stored in your Postgres. Per-request deletion and organisation
 export are first-class features, not support requests. Event retention is configurable and enforced by
-a pruning job ([spec §20](../agent-docs/spec.md)).
+a pruning job ([spec §20](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
 
 ---
 
 See [configuration.md](configuration.md) for every variable named here, and
-[spec §19 and §28](../agent-docs/spec.md) for the underlying design.
+[spec §19 and §28](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) for the underlying design.

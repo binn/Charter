@@ -1,3 +1,8 @@
+---
+title: "Self-hosting"
+description: "Running Charter with Docker Compose or on Railway, Render, and Fly, plus which runner backend suits each platform, backup and restore, and graceful shutdown behaviour."
+---
+
 # Self-hosting
 
 Charter's control plane needs exactly two things: one HTTP port and a Postgres URL. Everything else is
@@ -117,7 +122,7 @@ a separate host entirely. See [runners.md](runners.md).
 ### What PaaS constrains
 
 Railway and comparable platforms prohibit privileged containers and block Docker daemon access, and
-these constraints shape how Charter behaves everywhere ([spec §2.3](../agent-docs/spec.md)):
+these constraints shape how Charter behaves everywhere ([spec §2.3](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)):
 
 - **No durable local disk.** Transcripts, diffs, and artifacts go to Postgres or S3-compatible storage,
   never the container filesystem. Anything written to the container is gone on the next deploy.
@@ -287,7 +292,7 @@ Do this against a restored copy on a spare database, not your live one.
 
 ## Graceful shutdown
 
-On `SIGTERM`, Charter drains rather than dropping work ([spec §31](../agent-docs/spec.md)):
+On `SIGTERM`, Charter drains rather than dropping work ([spec §31](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)):
 
 - Stops claiming new jobs from the queue.
 - Lets in-flight control-plane work finish.
@@ -313,4 +318,4 @@ schema migrations.
 - [runners.md](runners.md) — backends and the Charter Agent
 - [upgrading.md](upgrading.md) — migrations and backups before an upgrade
 - [security.md](security.md) — threat model and trust boundary
-- [spec §2 and §31](../agent-docs/spec.md) — architecture and operational requirements
+- [spec §2 and §31](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — architecture and operational requirements

@@ -1,0 +1,86 @@
+name: Docs
+
+# Builds the VitePress site in docs/ and deploys it to GitHub Pages.
+#
+# This requires Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# Without that, the deploy step fails with a 404 on the Pages API.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time. In-progress runs are allowed to finish so a half-uploaded
+# artifact is never published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # VitePress reads git history for the "last updated" timestamp on each page.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fails the build on dead links, so a broken cross-reference cannot ship.
+      - name: Build the site
+        run: npm run docs:build
+
+      - name: Upload the Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: Deploy
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Kept in this job rather than in build, so that pages:write and id-token:write
+      # stay scoped to the only job that actually needs them. The site's base path is
+      # hardcoded in docs/.vitepress/config.ts, so the build needs no output from here.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

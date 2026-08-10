@@ -1,3 +1,8 @@
+---
+title: "Upgrading"
+description: "Pre-upgrade checks, upgrading on Docker Compose and PaaS, Charter Agents, migrations and what to do when one fails, rolling back, version conventions, and update notifications."
+---
+
 # Upgrading
 
 Charter is pre-1.0 and moving quickly. Expect breaking changes, read the release notes, and take a
@@ -141,7 +146,7 @@ Breaking-change conventions:
 ## Two schemas, versioned independently
 
 Charter has two schemas that change at different rates and for different reasons. **They are versioned
-independently and neither implies the other** ([spec §24](../agent-docs/spec.md)).
+independently and neither implies the other** ([spec §24](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
 
 | Schema | Where it lives | How it changes |
 |---|---|---|
@@ -183,4 +188,4 @@ Turn the check off with `CHARTER_UPDATE_CHECK=false`. What it does and does not 
 - [configuration.md](configuration.md) — variables referenced here
 - [privacy.md](privacy.md) — the update check
 - [charter-folder.md](charter-folder.md) — `.charter/` versioning and forward compatibility
-- [spec §24 and §28](../agent-docs/spec.md) — repository conventions and update notification
+- [spec §24 and §28](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — repository conventions and update notification

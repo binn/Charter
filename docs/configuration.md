@@ -1,3 +1,8 @@
+---
+title: "Configuration"
+description: "Every environment variable Charter reads, the flat-variable convention that replaces appsettings.json, and exactly what startup validation checks before the app will boot."
+---
+
 # Configuration
 
 Charter is configured entirely through flat environment variables. There is no `appsettings.json`, no
@@ -5,7 +10,7 @@ Charter is configured entirely through flat environment variables. There is no `
 
 Every variable is read once at startup into an immutable config object. If anything is missing or
 malformed, Charter prints **all** of the problems at once and exits with a non-zero status. It never
-starts in a half-working state and never fails lazily on first use. See [spec §4.1](../agent-docs/spec.md).
+starts in a half-working state and never fails lazily on first use. See [spec §4.1](https://github.com/binn/Charter/blob/master/agent-docs/spec.md).
 
 ## Minimum viable configuration
 
@@ -52,7 +57,7 @@ EF Core migrations run automatically on boot.
 ### DATABASE_URL parsing
 
 Npgsql does not accept URI-form connection strings, so Charter converts the URL itself. The rules
-([spec §4.3](../agent-docs/spec.md)):
+([spec §4.3](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)):
 
 - Both `postgres://` and `postgresql://` schemes are accepted. Anything else is a startup error.
 - Username and password are URL-decoded, so passwords containing `@`, `/`, or `:` work if they are
@@ -210,7 +215,7 @@ and OTLP. Turn it on for a specific debugging session, then turn it off.
 | `CHARTER_DEFAULT_MONTHLY_BUDGET_USD` | no | `100.00` | |
 
 These are starting defaults, not the budget system. Nested budgets by team, repo, project, user, and
-role are configured in the admin UI and stored in the database ([spec §34](../agent-docs/spec.md)).
+role are configured in the admin UI and stored in the database ([spec §34](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
 
 ## Privacy and updates
 
@@ -243,7 +248,7 @@ pass, then exits non-zero. Among the checks:
 
 Separately, first-run preflight checks report on database reachability, applied migrations, whether
 `CHARTER_BASE_URL` resolves, and whether at least one model credential actually works
-([spec §30.1](../agent-docs/spec.md)). Preflight failures name the failing check and what to change.
+([spec §30.1](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)). Preflight failures name the failing check and what to change.
 
 ## Related
 
@@ -251,4 +256,4 @@ Separately, first-run preflight checks report on database reachability, applied 
 - [privacy.md](privacy.md) — the outbound update check
 - [credentials.md](credentials.md) — linking accounts instead of using instance-level keys
 - [runners.md](runners.md) — choosing `CHARTER_RUNNER`
-- [spec §4](../agent-docs/spec.md) — the full configuration specification
+- [spec §4](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — the full configuration specification

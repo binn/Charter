@@ -1,3 +1,8 @@
+---
+title: "Agent adapters"
+description: "How Charter drives existing coding-agent CLIs through declarative YAML adapters: the schema, event mapping, how text-format adapters degrade, and how to add your own."
+---
+
 # Agent adapters
 
 Charter does not implement a coding agent. It drives the ones that already exist — Claude Code, Codex,
@@ -176,4 +181,4 @@ models:
 - [credentials.md](credentials.md) — what fills the `auth` block at run time
 - [runners.md](runners.md) — where the agent CLI is actually installed
 - [charter-folder.md](charter-folder.md) — selecting an adapter and model per repository
-- [spec §12b and §20b.6](../agent-docs/spec.md) — the full adapter specification
+- [spec §12b and §20b.6](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — the full adapter specification
