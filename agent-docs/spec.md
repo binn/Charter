@@ -202,8 +202,10 @@ Npgsql does **not** natively accept URI-form connection strings. Charter must co
 - Accept both `postgres://` and `postgresql://` schemes.
 - URL-decode username and password (passwords routinely contain `@`, `/`, `:`).
 - Default port to `5432` when absent.
-- Map query params: `sslmode=require|verify-full|disable` → Npgsql `SSL Mode`; treat `require` as `SSL Mode=Require;Trust Server Certificate=true` unless `verify-full`.
+- Map query params: `sslmode=require|verify-full|disable` → Npgsql `SSL Mode`.
 - Reject with a clear error if scheme, host, or database is missing.
+
+**Do not set `Trust Server Certificate`.** Npgsql 8 folded that behaviour into `SslMode` itself — `Require` encrypts without validating the certificate, while `VerifyCA` and `VerifyFull` validate — and Npgsql 10 marks the keyword `[Obsolete]` ("no longer needed and does nothing"), which is a hard error under warnings-as-errors. `SslMode.Require` alone now produces exactly the semantics this section originally described.
 
 ```csharp
 public static string ToNpgsql(string url)
@@ -234,7 +236,6 @@ public static string ToNpgsql(string url)
         "require" or null or "" => SslMode.Require,
         var other => throw new ConfigException($"Unsupported sslmode: {other}")
     };
-    if (b.SslMode == SslMode.Require) b.TrustServerCertificate = true;
 
     return b.ConnectionString;
 }

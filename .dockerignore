@@ -1,0 +1,56 @@
+# Keep the build context small and deterministic. Anything the image needs is copied explicitly
+# by the Dockerfile; everything else is noise that busts layer caches.
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# .NET build output
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+**/*.user
+**/*.suo
+.vs/
+.vscode/
+.idea/
+
+# Node
+**/node_modules/
+**/dist/
+**/.vite/
+**/*.tsbuildinfo
+**/npm-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+
+# The SPA is rebuilt inside the image by the client stage; a local build would shadow it.
+src/Charter/wwwroot/
+
+# Secrets and local environment. .env must never enter an image layer.
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.pfx
+
+# Docs and repository furniture the runtime does not need
+docs/
+agent-docs/
+assets/
+*.md
+LICENSE
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+.editorconfig
+
+# Tests are not published into the image
+tests/
+
+# macOS
+**/.DS_Store

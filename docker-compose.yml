@@ -1,0 +1,72 @@
+# Charter self-hosted stack (spec sections 2.1 and 29).
+#
+# Two services and nothing else: the control plane needs an HTTP port and Postgres, and every
+# additional container is a self-host support burden (section 2.3).
+#
+#   cp .env.example .env      # then fill in the secrets it asks for
+#   docker compose up -d
+#
+# Compose reads .env from this directory for the ${...} substitutions below, and passes it to
+# charter-app as its environment.
+
+name: charter
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-charter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-charter}
+      # Deterministic collation, so an index built on one host behaves the same on another.
+      POSTGRES_INITDB_ARGS: "--locale-provider=icu --icu-locale=en-US --encoding=UTF8"
+    volumes:
+      # The only named volume in the stack. Everything else is disposable by design: section 2.3
+      # rules out durable local disk for the control plane.
+      - charter-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-charter} -d ${POSTGRES_DB:-charter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # Not published to the host by default. Uncomment to attach psql from outside the network.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+  charter-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${CHARTER_VERSION:-0.1.0-dev}
+        COMMIT_SHA: ${CHARTER_COMMIT_SHA:-unknown}
+        SOURCE_URL: ${CHARTER_SOURCE_URL:-https://github.com/binn/Charter}
+        BUILD_DATE: ${CHARTER_BUILD_DATE:-unknown}
+    image: ghcr.io/binn/charter:${CHARTER_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Every variable from section 4.2 lives here. Flat names, no nesting, no appsettings.json.
+    env_file:
+      - .env
+    environment:
+      # Composed from the Postgres credentials above so the two services cannot drift apart.
+      DATABASE_URL: postgres://${POSTGRES_USER:-charter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-charter}?sslmode=disable
+      PORT: 8080
+      LOGGING_MODE: ${LOGGING_MODE:-DEFAULT}
+    ports:
+      - "${CHARTER_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    # Section 31: graceful shutdown drains in-flight work and releases advisory locks.
+    stop_grace_period: 40s
+
+volumes:
+  charter-postgres:

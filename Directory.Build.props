@@ -1,0 +1,65 @@
+<Project>
+
+  <!--
+    Shared MSBuild properties for every project in the solution.
+    See agent-docs/spec.md sections 24 and 28 for the build version / commit SHA requirements.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1848</NoWarn>
+  </PropertyGroup>
+
+  <!-- Deterministic, reproducible builds. -->
+  <PropertyGroup>
+    <Deterministic>true</Deterministic>
+    <DeterministicSourcePaths Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</DeterministicSourcePaths>
+    <ContinuousIntegrationBuild Condition="'$(ContinuousIntegrationBuild)' == '' AND '$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>portable</DebugType>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!--
+    Build identity. AGPL section 13 (spec section 24) requires the running instance to be able to
+    point users at its own Corresponding Source, so the version, commit SHA and source URL are
+    compiled in rather than read from configuration. Section 28 compares CharterVersion against the
+    latest GitHub release tag.
+
+    Override at build time:
+      dotnet build -p:CharterVersion=1.2.3 -p:CharterCommitSha=$(git rev-parse HEAD)
+  -->
+  <PropertyGroup>
+    <CharterVersion Condition="'$(CharterVersion)' == ''">0.1.0-dev</CharterVersion>
+    <CharterCommitSha Condition="'$(CharterCommitSha)' == ''">unknown</CharterCommitSha>
+    <CharterSourceUrl Condition="'$(CharterSourceUrl)' == ''">https://github.com/binn/Charter</CharterSourceUrl>
+    <CharterBuildDate Condition="'$(CharterBuildDate)' == ''">unknown</CharterBuildDate>
+
+    <Version>$(CharterVersion)</Version>
+    <SourceRevisionId>$(CharterCommitSha)</SourceRevisionId>
+    <RepositoryUrl>$(CharterSourceUrl)</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <Product>Charter</Product>
+    <Company>Charter</Company>
+    <Authors>Sarmad</Authors>
+    <Copyright>Copyright (c) Sarmad</Copyright>
+    <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="Charter.Version" Value="$(CharterVersion)" />
+    <AssemblyMetadata Include="Charter.CommitSha" Value="$(CharterCommitSha)" />
+    <AssemblyMetadata Include="Charter.SourceUrl" Value="$(CharterSourceUrl)" />
+    <AssemblyMetadata Include="Charter.BuildDate" Value="$(CharterBuildDate)" />
+  </ItemGroup>
+
+</Project>

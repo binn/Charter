@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Charter.Agent</RootNamespace>
+    <AssemblyName>charter-agent</AssemblyName>
+  </PropertyGroup>
+
+  <!--
+    Section 33.7: a single static binary per platform (linux/amd64, linux/arm64, darwin/arm64,
+    windows/amd64), published to GitHub Releases, plus a container image for Docker mode.
+    Installation is one command; that is the adoption bar for a companion daemon.
+
+      dotnet publish src/Charter.Agent -c Release -r linux-x64
+
+    These only apply once a RID is chosen, so a plain `dotnet build` of the solution stays portable.
+  -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RuntimeIdentifiers>linux-x64;linux-arm64;osx-arm64;win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+</Project>

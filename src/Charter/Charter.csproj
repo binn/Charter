@@ -1,0 +1,91 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>Charter</RootNamespace>
+    <AssemblyName>Charter</AssemblyName>
+    <UserSecretsId>charter-control-plane</UserSecretsId>
+
+    <!--
+      Section 3.1: the SPA is bundled with the application. One container, one port, one artifact.
+      Development uses Microsoft.AspNetCore.SpaProxy so `dotnet run` starts Kestrel *and* the Vite
+      dev server. Publish runs `npm ci` + `npm run build` and emits into wwwroot/.
+    -->
+    <SpaRoot>ClientApp\</SpaRoot>
+    <SpaDistRoot>wwwroot\</SpaDistRoot>
+    <SpaProxyServerUrl>http://localhost:5173</SpaProxyServerUrl>
+    <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Charter.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Serilog is the logging pipeline (section 19). Configured in code, never from a config file. -->
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <PackageReference Include="Serilog.Sinks.Seq" Version="9.1.0" />
+    <PackageReference Include="Serilog.Sinks.OpenTelemetry" Version="4.2.0" />
+
+    <!-- OpenTelemetry traces + metrics (section 19.2). -->
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.17.0" />
+
+    <!-- Postgres is the only external dependency (section 3). -->
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />
+
+    <!-- Development-time SPA proxy (section 3.1). -->
+    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      wwwroot is generated Vite output, not a checked-in static web asset. Removing it from the
+      default Content glob keeps `dotnet build` independent of whether the SPA has been built yet,
+      and CharterIncludeClientAppOutput below adds it back at publish time.
+    -->
+    <Content Remove="$(SpaDistRoot)**" />
+    <None Remove="$(SpaDistRoot)**" />
+
+    <!-- Surface the SPA sources in the IDE without treating them as build inputs. -->
+    <None Include="$(SpaRoot)**"
+          Exclude="$(SpaRoot)node_modules\**;$(SpaRoot)dist\**"
+          Visible="true" />
+  </ItemGroup>
+
+  <!-- wwwroot is gitignored, so a fresh clone has no such directory. Create it before build. -->
+  <Target Name="CharterEnsureWebRoot" BeforeTargets="BeforeBuild">
+    <MakeDir Directories="$(SpaDistRoot)" />
+  </Target>
+
+  <!--
+    Publish-time SPA build (section 3.1). Set SkipClientAppBuild=true when the SPA has already been
+    built by a separate step - the Dockerfile does exactly this, because the .NET SDK image has no
+    Node runtime.
+  -->
+  <Target Name="CharterBuildClientApp"
+          Condition="'$(SkipClientAppBuild)' != 'true'"
+          BeforeTargets="ComputeFilesToPublish">
+    <Message Importance="high" Text="Charter: building the SPA in $(SpaRoot) (npm ci &amp;&amp; npm run build)" />
+    <Exec WorkingDirectory="$(SpaRoot)" Command="npm ci" />
+    <Exec WorkingDirectory="$(SpaRoot)" Command="npm run build" />
+  </Target>
+
+  <Target Name="CharterIncludeClientAppOutput" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <CharterSpaDist Include="$(SpaDistRoot)**" Exclude="$(SpaDistRoot).gitignore" />
+      <ResolvedFileToPublish Include="@(CharterSpaDist->'%(FullPath)')" Exclude="@(ResolvedFileToPublish)">
+        <RelativePath>wwwroot\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+    <Error Condition="'@(CharterSpaDist)' == ''"
+           Text="Charter: no SPA build output found in $(SpaDistRoot). Run `npm run build` in $(SpaRoot), or publish without -p:SkipClientAppBuild=true." />
+  </Target>
+
+</Project>

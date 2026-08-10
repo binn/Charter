@@ -44,6 +44,41 @@ uses the Microsoft SPA Proxy, so `dotnet run` starts Kestrel *and* the Vite dev 
 `agent-docs/` is for briefs, planning notes, specs, and anything written for engineers or coding
 agents. Never put working notes, scratch analysis, or agent instructions in `docs/`. Spec §24, §29.
 
+`docs/` is a published documentation site, built with VitePress and deployed to GitHub Pages. Run it
+locally with `npm run docs:dev` from the repository root. Adding a page means adding it to the
+sidebar in `docs/.vitepress/config.ts` — an orphaned page is invisible to readers even though the
+file exists.
+
+### Documentation is part of the change, not a follow-up
+
+**Update the docs in the same commit as the behaviour.** Documentation written later is documentation
+written from memory, and it is wrong in ways nobody notices until an operator hits it.
+
+Before you consider a change done, check whether it touched any of these, and update the matching
+page if so:
+
+| You changed | Update |
+|---|---|
+| An environment variable — added, renamed, defaulted differently | `docs/configuration.md`, `.env.example`, spec §4.2 |
+| Anything that makes a network call, or changes what is stored or logged | `docs/privacy.md`, `docs/security.md` |
+| Runner behaviour, capabilities, or registration | `docs/runners.md` |
+| The adapter schema or the set of shipped adapters | `docs/adapters.md` |
+| Credential kinds, the resolution chain, or pooling | `docs/credentials.md` |
+| The `.charter/` file format | `docs/charter-folder.md` |
+| `standards.yml`, project types, scaffolding | `docs/standards.md` |
+| A migration that is not purely additive, or any upgrade step | `docs/upgrading.md`, `CHANGELOG.md` |
+| Deployment topology, ports, services, health checks | `docs/self-hosting.md` |
+| A user-visible behaviour change or a new limitation | `CHANGELOG.md` under `Unreleased` |
+
+Two standing rules for that work:
+
+- **A limitation you discovered is documentation.** If something does not work, works only under
+  conditions, or degrades for a project type, write it down where the reader will hit it. A docs set
+  that oversells costs more trust than the limitation ever would.
+- **The spec is the source of truth; docs are derived.** When implementation reveals the spec is
+  wrong, fix `agent-docs/spec.md` first and note the correction in the commit — do not let `docs/`
+  and the spec disagree, and do not silently implement something the spec contradicts.
+
 ## Commands
 
 ```bash

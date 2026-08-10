@@ -25,6 +25,10 @@ npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Vite build output. The SPA is bundled into the app at publish time (spec section 3.1);
+# the built assets are a publish artifact and are never committed.
+src/Charter/wwwroot/
+
 # Environment
 .env
 .env.local
