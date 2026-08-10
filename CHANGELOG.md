@@ -13,6 +13,10 @@ Expect breaking changes without deprecation cycles until 1.0.
 ### Added
 
 - Repository groundwork: license, contributor license agreement, trademark policy, security policy, contribution guide, and code of conduct.
+- Identity behind a single provider seam: email and password (always available), plus GitHub, Google, Discord, and Slack OAuth when configured. Password verifiers use ASP.NET Core's `PasswordHasher`; the plaintext is never stored or logged. A federated sign-in links to an existing account and never creates one.
+- Authorization: repository scope with deny by default, additive roles, transcript and code visibility gated on repository read access, and auto-dispatch policy resolution where a repository may only tighten organisation policy.
+- First-run setup mode: an instance with zero users serves only the setup route and prints a one-time setup token to stdout. The token creates exactly one admin account, then setup ends permanently.
+- Audit log write path, with authorization grants carrying the verb they should be recorded under.
 
 ## Versioning
 

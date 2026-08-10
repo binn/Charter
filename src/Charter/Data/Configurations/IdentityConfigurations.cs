@@ -90,6 +90,12 @@ internal sealed class IdentityConfiguration : IEntityTypeConfiguration<Domain.Id
         builder.Property(identity => identity.Id).ValueGeneratedNever();
         builder.Property(identity => identity.Provider).HasEnumConversion();
         builder.Property(identity => identity.ProviderUserId).HasMaxLength(200).IsRequired();
+
+        // Section 21: the password provider's verifier. Sized for an ASP.NET Core PasswordHasher V3
+        // string (84 base64 characters today) with room for a future format, and deliberately not
+        // indexed - nothing ever looks a user up by their hash.
+        builder.Property(identity => identity.SecretHash).HasMaxLength(400);
+
         builder.Property(identity => identity.CreatedAt).IsRequired();
 
         builder.HasOne<User>()

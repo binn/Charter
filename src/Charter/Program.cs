@@ -1,3 +1,4 @@
+using Charter.Auth;
 using Charter.Configuration;
 using Charter.Data;
 using Charter.Diagnostics;
@@ -63,6 +64,7 @@ try
     builder.Services.AddCharterConfig(config);
     builder.Services.AddCharterPreflight();
     builder.Services.AddCharterData(config.Database.ConnectionString.Reveal());
+    builder.Services.AddCharterAuth();
     builder.Services.AddCharterModels();
     builder.Services.AddCharterRefinement();
     builder.Services.AddCharterCredentials();
@@ -127,6 +129,12 @@ try
                 ? LogEventLevel.Verbose
                 : LogEventLevel.Information;
     });
+
+    // Section 30.1: an unclaimed instance serves only the setup route, so a self-hosted Charter
+    // cannot be claimed by whoever finds it first. This must run before anything else routes.
+    app.UseCharterSetupMode();
+    app.UseAuthentication();
+    app.UseAuthorization();
 
     // Section 3.1: the SPA is served from the same origin as the API. In Development,
     // Microsoft.AspNetCore.SpaProxy starts Vite and proxies unmatched requests to it, so HMR works

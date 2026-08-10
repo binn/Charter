@@ -211,6 +211,41 @@ entitlements.
 human must set. When promoting a repository between organisations, it emits the list of secret names
 and you set the values.
 
+## Sign-in
+
+Every sign-in method sits behind one identity provider seam. Email and password is always available;
+GitHub, Google, Discord, and Slack appear only when both halves of their credential pair are
+configured. A user may hold several linked identities at once — one row per provider.
+
+**Passwords are never stored and never logged.** What is stored is an ASP.NET Core `PasswordHasher`
+verifier — PBKDF2-HMAC-SHA256, per-password salt, 600,000 iterations — on the password provider's
+identity row. Nothing hand-rolled, and no password reaches a log statement: the value is carried in a
+type whose string representation is a placeholder. Passwords must be at least 12 characters, and there
+are no composition rules, following NIST 800-63B.
+
+**Sign-in refusals are indistinguishable.** A wrong password and an unknown address return the same
+message, and an attempt against an address with no account still performs the full hashing work, so
+response time is not a user-enumeration oracle.
+
+**Repeated failures are throttled** per address and client, in process. This is a brake on guessing,
+not a distributed rate limiter; a horizontally scaled deployment throttles per instance.
+
+**Signing in with a configured OAuth provider never creates an account.** A verified external subject
+resolves to an existing user by its provider subject id, or by an email address that already belongs to
+someone here — otherwise it is refused. Accounts come from the setup token or from an invitation, both
+of which are deliberate acts by a named human. Open registration through a side door would undo the
+first-run guarantee below.
+
+**SAML is not available in this build.** The seam is shaped for it, and `CHARTER_SAML_METADATA_URL` is
+parsed and validated, but no SAML button is offered and a warning is logged at startup if the variable
+is set.
+
+The session cookie is `HttpOnly`, `SameSite=Lax`, and — on an `https` deployment — `Secure` and
+`__Host-` prefixed. The frontend never reads it: Charter writes no browser storage and no cookies from
+JavaScript. Roles ride in the cookie for cheap rendering decisions, but nothing security-relevant trusts
+them; the member row is re-read for every authorization decision, so a cookie that outlives a revoked
+role grants nothing.
+
 ## Deployment security
 
 **First run is closed by default.** A self-hosted application that boots with open registration gets

@@ -252,7 +252,9 @@ Note for Railway: `DATABASE_URL` resolves to the private network address. `DATAB
 Organization      id, name, mode, created_at
 Member            org_id, user_id, role[]              -- multiple roles per member
 User              id, email, display_name, teaching_level, created_at
-Identity          user_id, provider, provider_user_id  -- one row per linked OAuth/SAML identity
+Identity          user_id, provider, provider_user_id, secret_hash
+                  -- one row per linked identity; secret_hash is the password verifier
+                  -- for provider=password and null for every federated provider
 
 Repo              org_id, github_installation_id, full_name, base_branch,
                   status(pending|recon|configuring|smoke_test|ready|disabled),
@@ -987,6 +989,10 @@ Behind a single `IIdentityProvider` seam **from the start**. Retrofitting SAML i
 - Discord OAuth
 - Slack OAuth
 - SAML SSO (org mode only)
+
+Password verifiers are ASP.NET Core's `PasswordHasher` (PBKDF2-HMAC-SHA256, per-password salt), stored on the `Identity` row for `provider=password`. Never hand-rolled, never logged, and the plaintext is never persisted.
+
+**A successful federated sign-in never creates a user.** It resolves to an existing account by provider subject, or by an email address that already belongs to someone. Accounts come from the §30.1 setup token or from an invitation — otherwise OAuth is open registration through a side door and §30.1 buys nothing.
 
 Slack and Discord OAuth pull double duty: the identity link maps a Slack/Discord user to a Charter requester, which is what makes **inbound** requests from those platforms work.
 

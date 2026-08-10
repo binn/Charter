@@ -226,6 +226,7 @@ public partial class InitialCreate : Migration
                 user_id = table.Column<Guid>(type: "uuid", nullable: false),
                 provider = table.Column<string>(type: "text", nullable: false),
                 provider_user_id = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                secret_hash = table.Column<string>(type: "character varying(400)", maxLength: 400, nullable: true),
                 created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                 last_used_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
             },

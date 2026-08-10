@@ -487,6 +487,11 @@ namespace Charter.Data.Migrations
                         .HasColumnType("character varying(200)")
                         .HasColumnName("provider_user_id");
 
+                    b.Property<string>("SecretHash")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("secret_hash");
+
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
