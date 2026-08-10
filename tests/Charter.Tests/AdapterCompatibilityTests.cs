@@ -85,6 +85,100 @@ public class AdapterCompatibilityTests
     }
 
     [Fact]
+    public void ClaudeCodeIsNotOfferedAnOpenRouterModelAndPiIs()
+    {
+        // The Phase 1 trap, stated in section 20b and change spec 001: OpenRouter is a control-plane
+        // default, not an agent-run one. Claude Code authenticates against the Anthropic API or a
+        // gateway presenting it; reaching an aggregator needs a proxy. Pi is provider-agnostic and
+        // reaches it natively. The resolver has to say so before dispatch, not after.
+        var result = Resolver.Resolve(
+            [Adapter("claude-code"), Adapter("pi")],
+            ["openrouter/anthropic/claude-sonnet-5", "openrouter/deepseek/deepseek-r1"],
+            CredentialInventory.OfKinds("anthropic_api_key", "openrouter_key"),
+            RepoModelPolicy.Unrestricted);
+
+        Assert.Equal(["pi"], result.AdapterIds);
+        Assert.Equal(
+            ["openrouter/anthropic/claude-sonnet-5", "openrouter/deepseek/deepseek-r1"],
+            result.ModelsFor("pi"));
+        Assert.Empty(result.ModelsFor("claude-code"));
+
+        Assert.All(
+            result.Exclusions,
+            exclusion =>
+            {
+                Assert.Equal("claude-code", exclusion.AdapterId);
+                Assert.Equal(AdapterModelExclusionReason.AdapterCannotUseProvider, exclusion.Reason);
+            });
+    }
+
+    [Fact]
+    public void ARefusalNamesAnAdapterThatCanRunTheModelInstead()
+    {
+        // "Claude Code cannot use OpenRouter" is a dead end for a requester. "Claude Code cannot use
+        // OpenRouter; pi can" is the Phase 1 answer, and it is the resolver that knows it.
+        var result = Resolver.Resolve(
+            [Adapter("claude-code"), Adapter("pi")],
+            ["openrouter/deepseek/deepseek-r1"],
+            CredentialInventory.OfKinds("openrouter_key"),
+            RepoModelPolicy.Unrestricted);
+
+        var exclusion = Assert.Single(result.Exclusions);
+        Assert.Contains("'pi' can", exclusion.Explanation, StringComparison.Ordinal);
+        Assert.Equal(["pi"], result.AdaptersFor("openrouter/deepseek/deepseek-r1"));
+    }
+
+    [Fact]
+    public void AnOpenRouterCredentialAloneDoesNotMakeClaudeCodeUsable()
+    {
+        // Both halves of the intersection have to hold. An OpenRouter key is a credential Claude Code
+        // has no way to present, so the pairing stays refused however many keys the org has.
+        var result = Resolver.Resolve(
+            [Adapter("claude-code")],
+            ["openrouter/anthropic/claude-opus-5"],
+            CredentialInventory.OfKinds("openrouter_key"),
+            RepoModelPolicy.Unrestricted);
+
+        Assert.True(result.IsEmpty);
+        Assert.Equal(
+            AdapterModelExclusionReason.AdapterCannotUseProvider,
+            Assert.Single(result.Exclusions).Reason);
+    }
+
+    [Fact]
+    public void TheDefaultBuildModelIsOfferedByBothPhaseOneAdapters()
+    {
+        // CHARTER_MODEL_BUILD stays unqualified - Anthropic's - precisely so the default pairing is
+        // one that exists. If this ever fails, the default has been changed without the adapter that
+        // would have to run it.
+        var result = Resolver.Resolve(
+            [Adapter("claude-code"), Adapter("pi")],
+            [Charter.Configuration.ModelConfig.DefaultBuild],
+            CredentialInventory.OfKinds("anthropic_api_key"),
+            RepoModelPolicy.Unrestricted);
+
+        Assert.Equal(["claude-code", "pi"], result.AdaptersFor(Charter.Configuration.ModelConfig.DefaultBuild));
+        Assert.Empty(result.Exclusions);
+    }
+
+    [Fact]
+    public void ACustomOpenAiCompatibleEndpointResolvesUnderEitherSpelling()
+    {
+        // The model layer prints `openai-compatible/` for a self-hosted endpoint; CredentialGrant calls
+        // the kind `custom_openai_compatible`. They are the same thing, and codex declares that kind.
+        foreach (var spelling in new[] { "openai-compatible/my-deployment", "custom/my-deployment" })
+        {
+            var result = Resolver.Resolve(
+                [Adapter("codex")],
+                [spelling],
+                CredentialInventory.OfKinds("custom_openai_compatible"),
+                RepoModelPolicy.Unrestricted);
+
+            Assert.Equal(spelling, Assert.Single(result.Options).Model);
+        }
+    }
+
+    [Fact]
     public void RepoPolicyCanDenyAModelEveryoneOtherwiseHasAccessTo()
     {
         var result = Resolver.Resolve(

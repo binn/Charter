@@ -1,7 +1,13 @@
 namespace Charter.Domain;
 
-/// <summary>The pull request states Charter observes. It never sets them: it has no merge button.</summary>
-public enum PullRequestState
+/// <summary>The change request states Charter observes. It never sets them: it has no merge button.</summary>
+/// <remarks>
+/// Named for the provider-neutral concept of change spec 001 part A.2 rather than for GitHub's
+/// spelling of it. What a user is shown is the provider's own word — <em>pull request</em> on GitHub
+/// and Gitea, <em>merge request</em> on GitLab, <em>changelist</em> on Perforce — which arrives from
+/// <c>IVersionControlProvider.Terms</c> and never from this enum.
+/// </remarks>
+public enum ChangeRequestState
 {
     Draft,
 
@@ -13,24 +19,30 @@ public enum PullRequestState
 }
 
 /// <summary>
-/// The pull request a session opened (section 5). Charter observes it and never merges it — merge
-/// authority lives in GitHub branch protection and CODEOWNERS, outside Charter's trust boundary
-/// (section 7.4).
+/// The change request a session opened (section 5, as amended by change spec 001 part A.2). Charter
+/// observes it and never merges it — merge authority lives in provider-side branch protection and
+/// CODEOWNERS, outside Charter's trust boundary (section 7.4).
 /// </summary>
-public sealed class PullRequest
+/// <remarks>
+/// A change request is deliberately <em>not</em> modelled as a branch. Part A.7 records why: a
+/// Perforce shelved changelist is a change request with no branch behind it, so
+/// <see cref="HeadBranch"/> is a fact some providers report and others do not, rather than the
+/// identity of the row.
+/// </remarks>
+public sealed class ChangeRequest
 {
-    private PullRequest()
+    private ChangeRequest()
     {
     }
 
-    private PullRequest(
+    private ChangeRequest(
         Guid id,
         Guid sessionId,
         int number,
         string url,
         string headSha,
         string? headBranch,
-        PullRequestState state,
+        ChangeRequestState state,
         DateTimeOffset createdAt)
     {
         Id = id;
@@ -56,16 +68,17 @@ public sealed class PullRequest
 
     /// <summary>
     /// The branch the session pushed to, as section 27.7's engineer <c>Details</c> disclosure names
-    /// it alongside the PR number and the commit SHA.
+    /// it alongside the change request number and the commit SHA.
     /// </summary>
     /// <remarks>
-    /// Nullable rather than empty-defaulted: a pull request row can be created from a webhook that
-    /// carries no ref, and <c>null</c> says "not recorded" where <c>""</c> would read as a branch
-    /// with no name. Nothing invents one at read time.
+    /// Nullable rather than empty-defaulted: a change request row can be created from a webhook that
+    /// carries no ref — and on a provider with no branches there is none to carry — so <c>null</c>
+    /// says "not recorded" where <c>""</c> would read as a branch with no name. Nothing invents one
+    /// at read time.
     /// </remarks>
     public string? HeadBranch { get; private set; }
 
-    public PullRequestState State { get; private set; }
+    public ChangeRequestState State { get; private set; }
 
     /// <summary>
     /// Section 17: set when the base branch moved ahead <em>and</em> the changed files overlap.
@@ -77,12 +90,12 @@ public sealed class PullRequest
 
     public DateTimeOffset UpdatedAt { get; private set; }
 
-    public static PullRequest Open(
+    public static ChangeRequest Open(
         Guid sessionId,
         int number,
         string url,
         string headSha,
-        PullRequestState state = PullRequestState.Open,
+        ChangeRequestState state = ChangeRequestState.Open,
         DateTimeOffset? now = null,
         Guid? id = null,
         string? headBranch = null)
@@ -91,7 +104,7 @@ public sealed class PullRequest
         ArgumentException.ThrowIfNullOrWhiteSpace(url);
         ArgumentException.ThrowIfNullOrWhiteSpace(headSha);
 
-        return new PullRequest(
+        return new ChangeRequest(
             id ?? Guid.CreateVersion7(),
             sessionId,
             number,
@@ -103,7 +116,7 @@ public sealed class PullRequest
     }
 
     public void UpdateState(
-        PullRequestState state,
+        ChangeRequestState state,
         string? headSha = null,
         DateTimeOffset? now = null,
         string? headBranch = null)

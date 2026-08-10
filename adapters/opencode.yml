@@ -21,6 +21,8 @@ auth:
   google_api_key:    { env: "GOOGLE_GENERATIVE_AI_API_KEY" }
   xai_api_key:       { env: "XAI_API_KEY" }
 model_arg: ["--model", "{model}"]
+# The one shipped adapter that wants Charter's qualified form rather than the provider-local name.
+model_format: qualified
 events:
   format: text
 capabilities: []

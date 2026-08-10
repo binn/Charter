@@ -3,7 +3,10 @@
 #
 # A gateway or proxy is configured on the credential's base URL, which the runner injects as
 # ANTHROPIC_BASE_URL. That is a property of the credential, not a separate credential kind, so it
-# does not appear in the auth block below.
+# does not appear in the auth block below. Note what that does and does not buy: Claude Code speaks
+# the Anthropic Messages API, so a gateway has to present that API. It is not a route to an
+# aggregator's own API, which is why an `openrouter/...` model is not offered for this adapter and
+# the compatibility resolver points at pi instead (change spec 001, "Why OpenRouter first").
 id: claude-code
 display_name: "Claude Code"
 version: 1
@@ -17,13 +20,33 @@ auth:
   anthropic_oauth:   { env: "CLAUDE_CODE_OAUTH_TOKEN" }
   anthropic_api_key: { env: "ANTHROPIC_API_KEY" }
 model_arg: ["--model", "{model}"]
+# `claude --help`: "Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a
+# model's full name (e.g. 'claude-fable-5')." A provider-qualified identifier is not a model name it
+# knows, so Charter's anthropic/claude-opus-5 dispatches as claude-opus-5.
+model_format: bare
 events:
   format: jsonl
   # stream-json emits assistant turns as {"type":"assistant","message":{"content":[...]}}, where each
-  # content block is either {"type":"text",...} or {"type":"tool_use","name":"Edit",...}. Charter
-  # inspects the first content block: Claude Code emits one block per streamed message object.
+  # content block is either {"type":"text",...}, {"type":"thinking",...} or
+  # {"type":"tool_use","name":"Edit",...}.
+  #
+  # Charter inspects the first content block, and that is correct rather than merely convenient: the
+  # CLI emits a separate assistant line per content block, each with a single-element content array.
+  # Verified against a real run of `claude --print --verbose --output-format stream-json` on a turn
+  # that produced text, a tool call, thinking, and a second tool call - four lines, one block each.
+  # If a future version batches blocks into one line this mapping would miss all but the first, and
+  # the expression language has no wildcard to fix it with; that is a known limit, recorded here and
+  # in docs/adapters.md rather than papered over.
+  #
+  # Other top-level types on the stream - system, user (tool results), rate_limit_event, result,
+  # and stream_event under --include-partial-messages - are deliberately unmatched.
   map:
     tool_use:   "$.type == 'assistant' && $.message.content[0].type == 'tool_use'"
-    file_write: "$.message.content[0].name == 'Write' || $.message.content[0].name == 'Edit' || $.message.content[0].name == 'NotebookEdit'"
+    file_write: "$.type == 'assistant' && ($.message.content[0].name == 'Write' || $.message.content[0].name == 'Edit' || $.message.content[0].name == 'NotebookEdit')"
     message:    "$.type == 'assistant' && $.message.content[0].type == 'text'"
-capabilities: [steering, resume, cost_reporting]
+# `steering` is not claimed. Mid-run instructions need `--input-format stream-json` ("realtime
+# streaming input", per `claude --help`), which also changes the prompt on stdin from text into a
+# JSON message envelope. Charter's shim writes the spec as text, so there is no channel to steer
+# down today. `resume` is `--resume <session-id>`; `cost_reporting` is `total_cost_usd` on the
+# result line.
+capabilities: [resume, cost_reporting]

@@ -107,7 +107,8 @@ public sealed class AdapterCompatibilityResolver
                         display,
                         AdapterModelExclusionReason.AdapterCannotUseProvider,
                         $"the '{adapter.Id}' adapter cannot authenticate against the '{model.Provider}' "
-                        + $"provider, so it cannot build with '{display}'."));
+                        + $"provider, so it cannot build with '{display}'"
+                        + Alternatives(adapters, adapter.Id, model.Provider)));
                     continue;
                 }
 
@@ -134,6 +135,36 @@ public sealed class AdapterCompatibilityResolver
         }
 
         return new AdapterCompatibility(options, exclusions);
+    }
+
+    /// <summary>
+    /// Names the loaded adapters that <em>can</em> reach a provider, so a refusal points somewhere.
+    /// </summary>
+    /// <remarks>
+    /// This is the difference between "Claude Code cannot use OpenRouter" and "Claude Code cannot use
+    /// OpenRouter; pi can". The first is a dead end for the requester, the second is the Phase 1
+    /// answer: Claude Code authenticates against the Anthropic API or a gateway presenting it, and pi
+    /// is provider-agnostic and reaches an aggregator natively.
+    /// </remarks>
+    private static string Alternatives(
+        IReadOnlyList<AdapterDocument> adapters,
+        string excludedAdapterId,
+        string provider)
+    {
+        var able = adapters
+            .Where(candidate => !string.Equals(candidate.Id, excludedAdapterId, StringComparison.Ordinal))
+            .Where(candidate => candidate.Auth.Any(binding => string.Equals(
+                AdapterCredentialKinds.ProviderFor(binding.CredentialKind),
+                provider,
+                StringComparison.Ordinal)))
+            .Select(candidate => candidate.Id)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+        return able.Count == 0
+            ? "."
+            : $". {string.Join(" and ", able.Select(id => $"'{id}'"))} can.";
     }
 
     /// <summary>Ordinal match, with an optional trailing <c>*</c>.</summary>

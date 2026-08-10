@@ -61,7 +61,12 @@ public class GitHubFixtureTests
     {
         // Section 7.4. Charter has no merge button and no reason to read a secret, so a scope that
         // could do either would be a widening nobody asked for.
-        foreach (var scope in new[] { GitHubTokenScope.ReadOnly, GitHubTokenScope.Contribute })
+        //
+        // The everyday scopes are the ones a session, a recon run or a request path can reach. The
+        // privileged scopes added for change spec 001 part A — reading branch protection, and the
+        // optional create / transfer / protect operations — are deliberately not in this list and
+        // are asserted separately below.
+        foreach (var scope in GitHubTokenScope.Everyday)
         {
             Assert.DoesNotContain("administration", scope.Permissions.Keys, StringComparer.Ordinal);
             Assert.DoesNotContain("secrets", scope.Permissions.Keys, StringComparer.Ordinal);
@@ -71,6 +76,30 @@ public class GitHubFixtureTests
 
         Assert.Equal("read", GitHubTokenScope.ReadOnly.Permissions["contents"]);
         Assert.Equal("write", GitHubTokenScope.Contribute.Permissions["contents"]);
+    }
+
+    [Fact]
+    public void ThePrivilegedScopesAreNarrowAndStillCannotMerge()
+    {
+        // Change spec 001 part A.5 needs to read a branch protection rule, and GitHub will not report
+        // one to a token without `administration`. That scope reads and never writes, and it carries
+        // nothing else — a token that could read protection should not also be able to read code.
+        Assert.Equal("read", GitHubTokenScope.Inspect.Permissions["administration"]);
+        Assert.DoesNotContain("contents", GitHubTokenScope.Inspect.Permissions.Keys, StringComparer.Ordinal);
+
+        // The optional operations of part A.2 write a setting. Nothing else reaches this scope, and
+        // there is no permission in it that would let anything merge.
+        Assert.Equal("write", GitHubTokenScope.Administer.Permissions["administration"]);
+        Assert.DoesNotContain("contents", GitHubTokenScope.Administer.Permissions.Keys, StringComparer.Ordinal);
+
+        Assert.Equal("write", GitHubTokenScope.Webhooks.Permissions["repository_hooks"]);
+
+        foreach (var scope in new[] { GitHubTokenScope.Inspect, GitHubTokenScope.Administer, GitHubTokenScope.Webhooks })
+        {
+            Assert.DoesNotContain("secrets", scope.Permissions.Keys, StringComparer.Ordinal);
+            Assert.DoesNotContain("members", scope.Permissions.Keys, StringComparer.Ordinal);
+            Assert.DoesNotContain("workflows", scope.Permissions.Keys, StringComparer.Ordinal);
+        }
     }
 }
 

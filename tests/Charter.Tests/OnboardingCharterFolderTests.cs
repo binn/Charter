@@ -423,6 +423,20 @@ internal sealed class FakeRepositoryClient : IGitHubRepositoryClient
 
     public int TreeListings { get; private set; }
 
+    public Dictionary<int, List<string>> Labels { get; } = [];
+
+    public List<(int Number, string Body)> Comments { get; } = [];
+
+    public Dictionary<(string Base, string Head), GitHubComparison> Comparisons { get; } = [];
+
+    public Dictionary<string, GitHubBranchProtection> Protection { get; } = new(StringComparer.Ordinal);
+
+    public HashSet<string> Webhooks { get; } = new(StringComparer.Ordinal);
+
+    public List<string> Created { get; } = [];
+
+    public List<(string Repository, string Owner)> Transferred { get; } = [];
+
     /// <summary>When set, every call throws it — the "GitHub is unreachable" path.</summary>
     public GitHubApiException? Failure { get; set; }
 
@@ -521,6 +535,161 @@ internal sealed class FakeRepositoryClient : IGitHubRepositoryClient
             $"https://github.com/{repository.FullName}/pull/{PullRequests.Count}",
             "headsha",
             headBranch));
+    }
+
+    public Task<GitHubCommitResult> UpdateBranchAsync(
+        GitHubRepository repository,
+        string branch,
+        string sha,
+        bool force = false,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+        BranchHeads[branch] = sha;
+
+        return Task.FromResult(new GitHubCommitResult(sha, branch));
+    }
+
+    public Task<GitHubPullRequestDetail?> GetPullRequestAsync(
+        GitHubRepository repository,
+        int number,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+
+        if (number < 1 || number > PullRequests.Count)
+        {
+            return Task.FromResult<GitHubPullRequestDetail?>(null);
+        }
+
+        var (head, target, _, _) = PullRequests[number - 1];
+
+        return Task.FromResult<GitHubPullRequestDetail?>(new GitHubPullRequestDetail(
+            number,
+            $"https://github.com/{repository.FullName}/pull/{number}",
+            "open",
+            false,
+            false,
+            BranchHeads.TryGetValue(head, out var sha) ? sha : "headsha",
+            head,
+            target,
+            Labels.TryGetValue(number, out var labels) ? labels : []));
+    }
+
+    public Task CommentOnPullRequestAsync(
+        GitHubRepository repository,
+        int number,
+        string body,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+        Comments.Add((number, body));
+
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<string>> AddLabelsAsync(
+        GitHubRepository repository,
+        int number,
+        IReadOnlyList<string> labels,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+
+        var applied = Labels.TryGetValue(number, out var existing) ? [.. existing] : new List<string>();
+        applied.AddRange(labels.Where(label => !applied.Contains(label, StringComparer.Ordinal)));
+        Labels[number] = applied;
+
+        return Task.FromResult<IReadOnlyList<string>>(applied);
+    }
+
+    public Task<GitHubComparison> CompareAsync(
+        GitHubRepository repository,
+        string baseRevision,
+        string headRevision,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+
+        return Task.FromResult(Comparisons.TryGetValue((baseRevision, headRevision), out var comparison)
+            ? comparison
+            : new GitHubComparison(0, 0, []));
+    }
+
+    public Task<GitHubBranchProtection> GetBranchProtectionAsync(
+        GitHubRepository repository,
+        string branch,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+
+        return Task.FromResult(Protection.TryGetValue(branch, out var protection)
+            ? protection
+            : new GitHubBranchProtection(false, Detail: $"no branch protection rule covers '{branch}'"));
+    }
+
+    public Task ApplyBranchProtectionAsync(
+        GitHubRepository repository,
+        string branch,
+        int requiredApprovals,
+        bool requireCodeOwnerReview,
+        bool dismissStaleReviews,
+        bool enforceForAdministrators,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+
+        Protection[branch] = new GitHubBranchProtection(
+            true,
+            requiredApprovals,
+            requireCodeOwnerReview,
+            dismissStaleReviews,
+            enforceForAdministrators,
+            $"'{branch}' requires review before merge");
+
+        return Task.CompletedTask;
+    }
+
+    public Task<GitHubWebhookHook> RegisterWebhookAsync(
+        GitHubRepository repository,
+        Uri callbackUrl,
+        string secret,
+        IReadOnlyList<string> events,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+
+        var created = Webhooks.Add(callbackUrl.ToString());
+
+        return Task.FromResult(new GitHubWebhookHook(Webhooks.Count, callbackUrl.ToString(), created));
+    }
+
+    public Task<GitHubRepositorySummary> CreateRepositoryAsync(
+        long installationId,
+        string owner,
+        string name,
+        bool isPrivate,
+        string? description,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+        Created.Add($"{owner}/{name}");
+
+        return Task.FromResult(new GitHubRepositorySummary($"{owner}/{name}", "main", isPrivate));
+    }
+
+    public Task<GitHubRepositorySummary> TransferRepositoryAsync(
+        GitHubRepository repository,
+        string newOwner,
+        CancellationToken cancellationToken = default)
+    {
+        Throw();
+        Transferred.Add((repository.FullName, newOwner));
+
+        return Task.FromResult(new GitHubRepositorySummary(
+            $"{newOwner}/{repository.Name}",
+            "main",
+            true));
     }
 
     private void Throw()

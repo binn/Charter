@@ -584,7 +584,7 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
-            name: "pull_requests",
+            name: "change_requests",
             columns: table => new
             {
                 id = table.Column<Guid>(type: "uuid", nullable: false),
@@ -600,9 +600,9 @@ public partial class InitialCreate : Migration
             },
             constraints: table =>
             {
-                table.PrimaryKey("pk_pull_requests", x => x.id);
+                table.PrimaryKey("pk_change_requests", x => x.id);
                 table.ForeignKey(
-                    name: "fk_pull_requests_sessions_session_id",
+                    name: "fk_change_requests_sessions_session_id",
                     column: x => x.session_id,
                     principalTable: "sessions",
                     principalColumn: "id",
@@ -749,7 +749,7 @@ public partial class InitialCreate : Migration
             columns: table => new
             {
                 id = table.Column<Guid>(type: "uuid", nullable: false),
-                pull_request_id = table.Column<Guid>(type: "uuid", nullable: false),
+                change_request_id = table.Column<Guid>(type: "uuid", nullable: false),
                 provider = table.Column<string>(type: "character varying(60)", maxLength: 60, nullable: false),
                 url = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: true),
                 state = table.Column<string>(type: "text", nullable: false),
@@ -759,12 +759,75 @@ public partial class InitialCreate : Migration
             {
                 table.PrimaryKey("pk_deployments", x => x.id);
                 table.ForeignKey(
-                    name: "fk_deployments_pull_requests_pull_request_id",
-                    column: x => x.pull_request_id,
-                    principalTable: "pull_requests",
+                    name: "fk_deployments_change_requests_change_request_id",
+                    column: x => x.change_request_id,
+                    principalTable: "change_requests",
                     principalColumn: "id",
                     onDelete: ReferentialAction.Cascade);
             });
+
+        migrationBuilder.CreateTable(
+            name: "runner_agents",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                org_id = table.Column<Guid>(type: "uuid", nullable: false),
+                name = table.Column<string>(type: "character varying(200)", maxLength: 200, nullable: false),
+                mode = table.Column<string>(type: "text", nullable: false),
+                agent_version = table.Column<string>(type: "character varying(60)", maxLength: 60, nullable: false),
+                protocol_version = table.Column<int>(type: "integer", nullable: false),
+                capabilities = table.Column<string[]>(type: "text[]", nullable: false),
+                capabilities_hash = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
+                capabilities_probed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                concurrency = table.Column<int>(type: "integer", nullable: false),
+                status = table.Column<string>(type: "text", nullable: false),
+                last_heartbeat_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                credential_hash = table.Column<string>(type: "character varying(400)", maxLength: 400, nullable: true),
+                pairing_token_hash = table.Column<string>(type: "character varying(400)", maxLength: 400, nullable: true),
+                pairing_token_expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                os = table.Column<string>(type: "character varying(40)", maxLength: 40, nullable: true),
+                arch = table.Column<string>(type: "character varying(40)", maxLength: 40, nullable: true),
+                rid = table.Column<string>(type: "character varying(60)", maxLength: 60, nullable: true),
+                hostname = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
+                cpu_count = table.Column<int>(type: "integer", nullable: false),
+                created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                paired_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                revoked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                revoked_reason = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: true),
+                version = table.Column<int>(type: "integer", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_runner_agents", x => x.id);
+                table.ForeignKey(
+                    name: "fk_runner_agents_organizations_org_id",
+                    column: x => x.org_id,
+                    principalTable: "organizations",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateIndex(
+            name: "ix_runner_agents_capabilities",
+            table: "runner_agents",
+            column: "capabilities")
+            .Annotation("Npgsql:IndexMethod", "gin");
+
+        migrationBuilder.CreateIndex(
+            name: "ix_runner_agents_org_id_name",
+            table: "runner_agents",
+            columns: new[] { "org_id", "name" });
+
+        migrationBuilder.CreateIndex(
+            name: "ix_runner_agents_pairing_token_expires_at",
+            table: "runner_agents",
+            column: "pairing_token_expires_at",
+            filter: "pairing_token_hash IS NOT NULL");
+
+        migrationBuilder.CreateIndex(
+            name: "ix_runner_agents_status",
+            table: "runner_agents",
+            column: "status");
 
         migrationBuilder.CreateIndex(
             name: "ix_audit_logs_actor_user_id",
@@ -848,9 +911,9 @@ public partial class InitialCreate : Migration
             column: "owner_user_id");
 
         migrationBuilder.CreateIndex(
-            name: "ix_deployments_pull_request_id_reported_at",
+            name: "ix_deployments_change_request_id_reported_at",
             table: "deployments",
-            columns: new[] { "pull_request_id", "reported_at" },
+            columns: new[] { "change_request_id", "reported_at" },
             descending: new[] { false, true });
 
         migrationBuilder.CreateIndex(
@@ -963,13 +1026,13 @@ public partial class InitialCreate : Migration
             unique: true);
 
         migrationBuilder.CreateIndex(
-            name: "ix_pull_requests_head_sha",
-            table: "pull_requests",
+            name: "ix_change_requests_head_sha",
+            table: "change_requests",
             column: "head_sha");
 
         migrationBuilder.CreateIndex(
-            name: "ux_pull_requests_session_id_number",
-            table: "pull_requests",
+            name: "ux_change_requests_session_id_number",
+            table: "change_requests",
             columns: new[] { "session_id", "number" },
             unique: true);
 
@@ -1139,7 +1202,7 @@ public partial class InitialCreate : Migration
             name: "conversations");
 
         migrationBuilder.DropTable(
-            name: "pull_requests");
+            name: "change_requests");
 
         migrationBuilder.DropTable(
             name: "credential_grants");
@@ -1164,6 +1227,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "users");
+
+        migrationBuilder.DropTable(
+            name: "runner_agents");
 
         migrationBuilder.DropTable(
             name: "organizations");

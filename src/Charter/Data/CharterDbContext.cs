@@ -58,7 +58,11 @@ public sealed class CharterDbContext : DbContext
 
     public DbSet<Milestone> Milestones => Set<Milestone>();
 
-    public DbSet<PullRequest> PullRequests => Set<PullRequest>();
+    /// <summary>
+    /// The change requests sessions opened (change spec 001 part A.2). Charter observes them and
+    /// never merges one.
+    /// </summary>
+    public DbSet<ChangeRequest> ChangeRequests => Set<ChangeRequest>();
 
     public DbSet<Deployment> Deployments => Set<Deployment>();
 
@@ -79,6 +83,16 @@ public sealed class CharterDbContext : DbContext
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     public DbSet<Job> Jobs => Set<Job>();
+
+    /// <summary>
+    /// The Charter Agents registered against this instance (section 33.3).
+    /// </summary>
+    /// <remarks>
+    /// Holds verifiers for the pairing token and the long-lived credential, never the values. An
+    /// agent's whole lifecycle — invited, paired, online, revoked — is this one row, so revocation
+    /// survives a restart and a reconnect with an old credential is refused rather than resumed.
+    /// </remarks>
+    public DbSet<RunnerAgent> RunnerAgents => Set<RunnerAgent>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -116,7 +130,7 @@ public sealed class CharterDbContext : DbContext
         modelBuilder.ApplyConfiguration(new SessionConfiguration());
         modelBuilder.ApplyConfiguration(new EventConfiguration());
         modelBuilder.ApplyConfiguration(new MilestoneConfiguration());
-        modelBuilder.ApplyConfiguration(new PullRequestConfiguration());
+        modelBuilder.ApplyConfiguration(new ChangeRequestConfiguration());
         modelBuilder.ApplyConfiguration(new DeploymentConfiguration());
         modelBuilder.ApplyConfiguration(new VerificationArtifactConfiguration());
         modelBuilder.ApplyConfiguration(new WalkthroughConfiguration());
@@ -127,6 +141,7 @@ public sealed class CharterDbContext : DbContext
         modelBuilder.ApplyConfiguration(new BudgetConfiguration());
         modelBuilder.ApplyConfiguration(new AuditLogConfiguration());
         modelBuilder.ApplyConfiguration(new JobConfiguration());
+        modelBuilder.ApplyConfiguration(new RunnerAgentConfiguration());
 
         ApplySnakeCaseNames(modelBuilder);
     }

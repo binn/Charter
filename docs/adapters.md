@@ -13,15 +13,19 @@ Charter release, and you can drop one into your own instance without forking.
 
 ## Adapters shipped in-tree
 
-| Adapter | Output | Notes |
-|---|---|---|
-| `claude-code` | `jsonl` | Subscription OAuth or API key. Point it at a gateway with `ANTHROPIC_BASE_URL`. Reports cost, resumes, and steers. |
-| `codex` | `jsonl` | OpenAI-compatible endpoints. Reports token counts but not a dollar figure, so cost is estimated. |
-| `gemini-cli` | `text` | Its JSON output mode prints one aggregate object when the run finishes, which is not a stream Charter can classify while the agent works. |
-| `opencode` | `text` | Multi-provider, and its `--model` already takes Charter's `provider/model` form. Prints a human transcript rather than an event stream. |
-| `pi` | `jsonl` | A minimal four-tool core over 20-plus providers, with subscription login. The widest model coverage from a single adapter — a good default when you want provider flexibility. |
-| `cursor-agent` | `jsonl` | Authenticates against a Cursor account rather than a model provider, so it needs a `cursor_api_key` credential. That kind buys agent runs only — the control plane never resolves a refinement or recap call onto it. |
-| `aider` | `text` | Resolves models through LiteLLM, so it reads the standard provider keys. No machine-readable output mode. |
+| Adapter | Output | Reaches OpenRouter | Notes |
+|---|---|---|---|
+| `claude-code` | `jsonl` | no | Subscription OAuth or API key. `ANTHROPIC_BASE_URL` points it at a gateway, but that gateway has to present the Anthropic API — it is not a route to an aggregator's own API. Reports cost and resumes. |
+| `codex` | `jsonl` | no | OpenAI-compatible endpoints. Reports token counts but not a dollar figure, so cost is estimated. |
+| `gemini-cli` | `text` | no | Its JSON output mode prints one aggregate object when the run finishes, which is not a stream Charter can classify while the agent works. |
+| `opencode` | `text` | yes | Multi-provider, and its `--model` takes Charter's `provider/model` form. Prints a human transcript rather than an event stream. |
+| `pi` | `jsonl` | **yes** | A minimal core over 20-plus providers, with subscription login. The widest model coverage from a single adapter, and the one adapter that makes an OpenRouter model usable for builds rather than only for refinement. |
+| `cursor-agent` | `jsonl` | no | Authenticates against a Cursor account rather than a model provider, so it needs a `cursor_api_key` credential. That kind buys agent runs only — the control plane never resolves a refinement or recap call onto it. |
+| `aider` | `text` | yes | Resolves models through LiteLLM, so it reads the standard provider keys. No machine-readable output mode. |
+
+The "reaches OpenRouter" column is not decoration: it is the difference between a model you can build
+with and a model you can only refine with. It is derived from each adapter's `auth` block, so it
+cannot drift away from what Charter will actually inject.
 
 Select one per repository, or per session where the repository permits a choice. The `text` adapters
 still build and still open pull requests — see
@@ -37,24 +41,25 @@ display_name: "Pi"
 version: 1
 install:
   check: "pi --version"
-  hint: "npx @earendil-works/pi-coding-agent"
+  hint: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 invoke:
-  command: ["pi", "--print", "--output-format", "jsonl"]
-  prompt: stdin
+  command: ["pi", "--mode", "json"]
+  prompt: "{prompt}"
 auth:
   anthropic_api_key:  { env: "ANTHROPIC_API_KEY" }
   openai_api_key:     { env: "OPENAI_API_KEY" }
   openrouter_key:     { env: "OPENROUTER_API_KEY" }
   google_api_key:     { env: "GEMINI_API_KEY" }
   xai_api_key:        { env: "XAI_API_KEY" }
-model_arg: ["--model", "{model}"]
+model_arg: ["--provider", "{provider}", "--model", "{model}"]
+model_format: bare
 events:
   format: jsonl
   map:
-    tool_use:   "$.type == 'tool_call'"
-    file_write: "$.tool == 'edit' || $.tool == 'write'"
-    message:    "$.type == 'assistant'"
-capabilities: [steering, resume, cost_reporting]
+    tool_use:   "$.type == 'tool_execution_start'"
+    file_write: "$.type == 'tool_execution_start' && ($.toolName == 'edit' || $.toolName == 'write')"
+    message:    "$.type == 'message_end' && $.message.role == 'assistant'"
+capabilities: [resume, cost_reporting]
 ```
 
 ### Fields
@@ -69,10 +74,46 @@ capabilities: [steering, resume, cost_reporting]
 | `invoke.command` | yes | Argument vector used to start the agent. Not a shell string — no shell is involved, so quoting and `&&` do not work. |
 | `invoke.prompt` | yes | How the spec reaches the agent. Either the literal `stdin`, or a template containing `{prompt}` that is appended to the argument vector — `"{prompt}"` for a positional argument, `"--message={prompt}"` for a flag. |
 | `auth` | yes | Maps credential kinds Charter knows about to the environment variable this CLI reads. |
-| `model_arg` | no | Arguments appended to select a model. `{model}` is substituted with the resolved model identifier. Omit if the CLI takes its model from configuration only — but if you include it, one of the arguments must contain `{model}`, or the model you chose would never reach the CLI. |
+| `model_arg` | no | Arguments appended to select a model. `{model}` is substituted with the resolved model, rendered per `model_format`; `{provider}` with its provider segment, for a CLI that selects the provider with its own flag. Omit if the CLI takes its model from configuration only — but if you include it, one of the arguments must contain `{model}`, or the model you chose would never reach the CLI. |
+| `model_format` | no | The form of identifier this CLI expects: `bare` (default), `qualified`, or `verbatim`. See below. |
 | `events.format` | yes | `jsonl` or `text`. See below — this is the field that decides how good the experience is. |
 | `events.map` | for `jsonl` | Predicates mapping the agent's output lines onto Charter's event types. Required when the format is `jsonl`, and rejected when it is `text` — a text stream has no structured lines to match. |
 | `capabilities` | yes | What the adapter supports: `steering`, `resume`, `cost_reporting`. Anything absent is treated as unsupported. Declare an empty list rather than omitting the key. |
+
+### `model_format`: the CLIs disagree about how to spell a model
+
+Charter resolves one canonical identifier — `anthropic/claude-opus-5`,
+`openrouter/deepseek/deepseek-r1` — and each adapter says how its CLI wants it written. The
+disagreement is real and it fails silently: `claude --model anthropic/claude-opus-5` is not a model
+Claude Code knows, and `opencode run --model claude-opus-5` is not a model OpenCode knows.
+
+| `model_format` | `anthropic/claude-opus-5` becomes | `openrouter/deepseek/deepseek-r1` becomes | Used by |
+|---|---|---|---|
+| `bare` (default) | `claude-opus-5` | `deepseek/deepseek-r1` | `claude-code`, `codex`, `gemini-cli`, `cursor-agent`, `pi` |
+| `qualified` | `anthropic/claude-opus-5` | `openrouter/deepseek/deepseek-r1` | `opencode` |
+| `verbatim` | unchanged | unchanged | `aider` |
+
+`bare` strips only Charter's provider prefix. An OpenRouter model id contains its own vendor segment
+and keeps it — losing that would leave a name no provider can route. Because an unqualified name is
+already Anthropic's, `bare` is idempotent: a caller may pass either form and the dispatched command is
+the same. That also makes `bare` the safe default, and an adapter file written before this key existed
+keeps producing exactly the command it did before.
+
+`verbatim` is for a CLI whose model names follow a scheme Charter cannot derive. Aider resolves through
+LiteLLM, which wants `claude-sonnet-4-5` for Anthropic but `openrouter/anthropic/claude-sonnet-4.5` for
+OpenRouter — neither Charter form is right for every provider, so the operator writes the exact string.
+`{provider}` cannot be used with `verbatim`: naming the provider means interpreting the identifier, and
+`verbatim` is the instruction not to.
+
+Where a CLI takes the provider separately, use both placeholders. Pi does, and it removes any question
+of how it would split a model id that contains a slash of its own:
+
+```yaml
+model_arg: ["--provider", "{provider}", "--model", "{model}"]
+model_format: bare
+# openrouter/deepseek/deepseek-r1 dispatches as:
+#   pi --mode json --provider openrouter --model deepseek/deepseek-r1
+```
 
 ### Versioning and unknown keys
 
@@ -102,6 +143,14 @@ pretending parity is worse than documenting a degraded experience:
 | `cost_reporting` | `events.format: jsonl` | There is no machine-readable line to read a cost from otherwise. Drop the capability and Charter estimates from token counts instead. |
 | `steering` | `invoke.prompt: stdin` | An argument-delivered prompt leaves no open channel to send further instructions down. |
 | `resume` | nothing | Charter takes your word for it. |
+
+The `steering` check is necessary, not sufficient — stdin being open is not the same as the CLI
+accepting further instructions on it. Neither shipped Phase 1 adapter claims steering today, and both
+refusals are for that reason: Claude Code needs `--input-format stream-json`, which also turns the
+prompt on stdin into a JSON envelope rather than the text the shim writes, and pi steers through
+`--mode rpc`, a command protocol rather than an event stream. Both are additive changes to the shim,
+not to the schema. Until then, declaring the capability would only mean a steering box in the UI that
+does nothing.
 
 ### Event mapping
 
@@ -144,6 +193,19 @@ Not supported, and rejected at load: `>`, `<`, `>=`, `<=`, `=~`, `=`, recursive 
 wildcards (`[*]`), filter expressions (`[?(...)]`), and functions. Bare identifiers are not paths —
 write `$.type`, not `type`.
 
+#### The consequence of having no wildcard, and why it is survivable
+
+There is no `[*]`, so a predicate can only ask about a content block at a fixed index. The shipped
+`claude-code` mapping matches `$.message.content[0]`, and that is correct rather than merely
+convenient: Claude Code emits a *separate* `{"type":"assistant"}` line per content block, each with a
+single-element `content` array. A turn that produced text, a tool call, thinking, and a second tool
+call arrives as four lines, and each classifies on its own.
+
+Check this before you write `content[0]` for a new agent. If a CLI batches several blocks into one
+line, index `0` silently classifies the first and drops the rest — the worst kind of mapping bug,
+because the stream looks like it is working. The honest options are to map an event the CLI emits once
+per block, or to declare `events.format: text` and take the documented degradation.
+
 Predicates are parsed once when the adapter loads. After that, evaluation cannot fail: a line that is
 blank, unmatched, or not valid JSON at all is classified as such rather than ending the session.
 
@@ -182,10 +244,13 @@ where you have the choice, and use `text` adapters knowing what the requester wi
 2. **Run the agent by hand first** and capture its output:
 
    ```bash
-   echo "list the files in this directory" | pi --print --output-format jsonl
+   pi --mode json "list the files in this directory"
    ```
 
-   Read the actual lines it emits. Build `events.map` from those, not from its documentation.
+   Read the actual lines it emits. Build `events.map` from those, not from its documentation — and
+   not from an example in this file. Every shipped adapter has been checked against its CLI's own
+   published reference, and the first version of `pi.yml` was wrong in four places precisely because
+   it was written from a plausible-looking sketch.
 
 3. **Check the install detection.** `install.check` must exit zero when the CLI is present and
    non-zero when it is not. `pi --version` is right; `which pi` is usually right; anything that prints
@@ -194,7 +259,7 @@ where you have the choice, and use `text` adapters knowing what the requester wi
 4. **Verify it is headless.** Run it with no TTY attached and confirm it completes without prompting:
 
    ```bash
-   echo "add a comment to README.md" | pi --print --output-format jsonl < /dev/null
+   pi --mode json "add a comment to README.md" < /dev/null
    ```
 
 5. **Make it available to your instance.** See [where adapters are loaded from](#where-adapters-are-loaded-from)
@@ -258,14 +323,42 @@ The constraint worth understanding before you plan around OpenRouter:
 
 - **Control-plane calls** — refinement, chat, plan mode, teaching, recap, recon — go through Charter's
   own model client. Here you have full model freedom: Anthropic, OpenAI, Gemini, xAI, DeepSeek, Groq,
-  Azure OpenAI, Ollama, OpenRouter, or any OpenAI-compatible endpoint.
-- **Agent runs** — the actual build — are limited to what the agent CLI itself supports. Claude Code
-  can be pointed at a compatible gateway through `ANTHROPIC_BASE_URL`. Codex accepts OpenAI-compatible
-  endpoints. Beyond that, a model needs a shim, and Charter does not ship one.
+  Azure OpenAI, Ollama, OpenRouter, or any OpenAI-compatible endpoint. This is why
+  `CHARTER_MODEL_REFINE` and `CHARTER_MODEL_TEACH` default to an OpenRouter identifier.
+- **Agent runs** — the actual build — are limited to what the agent CLI itself supports. This is why
+  `CHARTER_MODEL_BUILD` does *not* default to one.
+
+Concretely, for the two adapters a Phase 1 instance runs on:
+
+| | `claude-code` | `pi` |
+|---|---|---|
+| `anthropic/claude-opus-5` | offered | offered |
+| `openrouter/deepseek/deepseek-r1` | **not offered** | offered |
+
+Claude Code authenticates against the Anthropic API. `ANTHROPIC_BASE_URL` moves that to a gateway, but
+the gateway must present the Anthropic API — pointing it at an aggregator needs a translating proxy,
+and Charter does not ship one, so it will not pretend the pairing works. Pi is provider-agnostic and
+reads `OPENROUTER_API_KEY` directly, which is what makes Kimi, DeepSeek, or GLM usable for builds and
+not only for refinement.
+
+Charter tells you this at the point you choose, and names the alternative:
+
+> the 'claude-code' adapter cannot authenticate against the 'openrouter' provider, so it cannot build
+> with 'openrouter/deepseek/deepseek-r1'. 'pi' can.
 
 So "OpenRouter means any model" is true for refinement and teaching, and only partly true for builds.
-Choose the adapter for the models you want to build with, and use a cheap model for refinement
-independently:
+Builds are also where the money goes — refinement is cheaper per call but higher volume — so the
+configuration that actually moves the bill is a cheap build model through `pi` with a strong model
+kept for recap:
+
+```yaml
+# .charter/config.yml — with the pi adapter selected for this repository
+models:
+  refine: "openrouter/anthropic/claude-sonnet-5"
+  build:  "openrouter/deepseek/deepseek-r1"
+```
+
+Or, staying on Claude Code for the build and taking the saving on the higher-volume surface:
 
 ```yaml
 models:

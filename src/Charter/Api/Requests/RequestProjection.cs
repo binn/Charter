@@ -434,20 +434,22 @@ public static class RequestProjection
 
     private static EngineerDetailsResponse? EngineerDetails(RequestAggregate aggregate, DateTimeOffset now)
     {
-        if (aggregate.PullRequest is not { } pullRequest || aggregate.Session is not { } session)
+        if (aggregate.ChangeRequest is not { } changeRequest || aggregate.Session is not { } session)
         {
             return null;
         }
 
         return new EngineerDetailsResponse
         {
-            PullRequestNumber = pullRequest.Number,
-            PullRequestUrl = pullRequest.Url,
-            CommitSha = pullRequest.HeadSha,
+            ChangeRequestNumber = changeRequest.Number,
+            ChangeRequestUrl = changeRequest.Url,
+            ChangeRequestTerm = aggregate.ChangeRequestTerm,
+            ChangeRequestTermShort = aggregate.ChangeRequestTermShort,
+            CommitSha = changeRequest.HeadSha,
 
             // Empty when no ref was recorded. Absent detail reads as "not recorded"; a guessed branch
             // name would read as a fact somebody could try to `git checkout`.
-            Branch = pullRequest.HeadBranch ?? string.Empty,
+            Branch = changeRequest.HeadBranch ?? string.Empty,
             Runner = session.Runner.ToApi(),
 
             // Elapsed, never remaining (section 6). A session still going reads as time-so-far rather

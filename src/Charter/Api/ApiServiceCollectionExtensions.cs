@@ -2,6 +2,7 @@ using Charter.Api.Endpoints;
 using Charter.Api.Requests;
 using Charter.Api.Viewer;
 using Charter.Hubs;
+using Charter.VersionControl;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -38,6 +39,12 @@ public static class ApiServiceCollectionExtensions
 
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(limits);
+
+        // The read path names a change request by the provider's own word (change spec 001 part
+        // A.2), so the registry has to resolve even in a host that wired no provider — with none, it
+        // is empty and the wording falls back to Charter's neutral term. TryAdd throughout, so a host
+        // that already called AddCharterVersionControl() keeps its registrations.
+        services.AddCharterVersionControl();
 
         services.AddScoped<RequestQueryService>();
         services.AddScoped<RequestCommandService>();

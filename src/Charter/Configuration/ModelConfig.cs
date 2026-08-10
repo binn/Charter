@@ -97,13 +97,24 @@ public sealed record ModelIdentifier(string Provider, string Model)
 /// </summary>
 public sealed record ModelConfig
 {
-    /// <summary><c>CHARTER_MODEL_REFINE</c>, default <c>claude-sonnet-5</c>.</summary>
+    /// <summary>
+    /// <c>CHARTER_MODEL_REFINE</c>, default <c>openrouter/anthropic/claude-sonnet-5</c>. A
+    /// control-plane call: Charter's own HTTP client makes it, so any OpenRouter model works.
+    /// </summary>
     public required ModelIdentifier Refine { get; init; }
 
-    /// <summary><c>CHARTER_MODEL_BUILD</c>, default <c>claude-opus-5</c>. Passed to the agent CLI.</summary>
+    /// <summary>
+    /// <c>CHARTER_MODEL_BUILD</c>, default <c>claude-opus-5</c>. Passed to the agent CLI, and
+    /// therefore bounded by what that CLI can authenticate against rather than by what Charter can
+    /// reach - which is why this default is not OpenRouter-qualified while the other two are
+    /// (sections 20b, 12b).
+    /// </summary>
     public required ModelIdentifier Build { get; init; }
 
-    /// <summary><c>CHARTER_MODEL_TEACH</c>, default <c>claude-sonnet-5</c>.</summary>
+    /// <summary>
+    /// <c>CHARTER_MODEL_TEACH</c>, default <c>openrouter/anthropic/claude-sonnet-5</c>. A
+    /// control-plane call, like refinement.
+    /// </summary>
     public required ModelIdentifier Teach { get; init; }
 
     /// <summary><c>ANTHROPIC_API_KEY</c>. Instance-level fallback credential.</summary>
@@ -121,13 +132,29 @@ public sealed record ModelConfig
     /// <summary>True when an instance-level key is configured, before consulting the database.</summary>
     public bool HasInstanceCredential => AnthropicApiKey is not null || OpenRouterApiKey is not null;
 
+    /// <summary>
+    /// The section 4.2 default for <c>CHARTER_MODEL_REFINE</c>. Phase 1 reaches models through one
+    /// implementation - <c>OpenAiCompatibleModelClient</c> against OpenRouter - which covers more
+    /// models than a first-party client and is less code, not more (change spec 001).
+    /// </summary>
+    public const string DefaultRefine = "openrouter/anthropic/claude-sonnet-5";
+
+    /// <summary>
+    /// The section 4.2 default for <c>CHARTER_MODEL_BUILD</c>. Unqualified, and therefore Anthropic's:
+    /// this one is dispatched to an agent CLI, not called by Charter.
+    /// </summary>
+    public const string DefaultBuild = "claude-opus-5";
+
+    /// <summary>The section 4.2 default for <c>CHARTER_MODEL_TEACH</c>.</summary>
+    public const string DefaultTeach = "openrouter/anthropic/claude-sonnet-5";
+
     internal static ModelConfig Parse(EnvReader reader)
     {
         var config = new ModelConfig
         {
-            Refine = ParseModel(reader, "CHARTER_MODEL_REFINE", "claude-sonnet-5"),
-            Build = ParseModel(reader, "CHARTER_MODEL_BUILD", "claude-opus-5"),
-            Teach = ParseModel(reader, "CHARTER_MODEL_TEACH", "claude-sonnet-5"),
+            Refine = ParseModel(reader, "CHARTER_MODEL_REFINE", DefaultRefine),
+            Build = ParseModel(reader, "CHARTER_MODEL_BUILD", DefaultBuild),
+            Teach = ParseModel(reader, "CHARTER_MODEL_TEACH", DefaultTeach),
             AnthropicApiKey = reader.OptionalSecret("ANTHROPIC_API_KEY"),
             OpenRouterApiKey = reader.OptionalSecret("OPENROUTER_API_KEY"),
             AllowSharedPool = reader.Bool("CHARTER_ALLOW_SHARED_POOL", false),
@@ -159,6 +186,11 @@ public sealed record ModelConfig
         }
 
         reader.Error(variable, $"{variable} is not a usable model identifier: {problem}");
-        return new ModelIdentifier(ModelIdentifier.DefaultProvider, fallback);
+
+        // Startup is already failing; this placeholder only keeps the record constructible so every
+        // other problem is reported in the same pass (section 4.1).
+        return ModelIdentifier.TryParse(fallback, out var defaulted, out _) && defaulted is not null
+            ? defaulted
+            : new ModelIdentifier(ModelIdentifier.DefaultProvider, fallback);
     }
 }

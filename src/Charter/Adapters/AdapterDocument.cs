@@ -38,6 +38,40 @@ public enum AdapterCapability
     CostReporting,
 }
 
+/// <summary>
+/// The form of model identifier the agent CLI expects on its command line (section 12b,
+/// <c>model_format</c>).
+/// </summary>
+/// <remarks>
+/// The CLIs disagree, and the disagreement is not cosmetic: <c>claude --model anthropic/claude-opus-5</c>
+/// is not a model Claude Code knows, and <c>opencode run --model claude-opus-5</c> is not a model
+/// OpenCode knows. Charter therefore holds one canonical identifier (section 20b.1) and each adapter
+/// declares how to render it, rather than every caller guessing per agent.
+/// </remarks>
+public enum AdapterModelFormat
+{
+    /// <summary>
+    /// The provider-local model name, with Charter's provider prefix removed: <c>claude-opus-5</c>,
+    /// and <c>deepseek/deepseek-r1</c> for <c>openrouter/deepseek/deepseek-r1</c> - an OpenRouter model
+    /// id keeps its own vendor segment. The default, and what every CLI that talks to one provider at a
+    /// time wants.
+    /// </summary>
+    Bare,
+
+    /// <summary>
+    /// Charter's full provider-qualified identifier, <c>anthropic/claude-opus-5</c>. OpenCode's
+    /// <c>--model</c> takes exactly this shape.
+    /// </summary>
+    Qualified,
+
+    /// <summary>
+    /// Substituted exactly as the caller supplied it, with no reinterpretation. For a CLI whose model
+    /// names follow a third-party scheme Charter cannot derive - aider resolves through LiteLLM, whose
+    /// names are neither Charter's bare form nor Charter's qualified form for every provider.
+    /// </summary>
+    Verbatim,
+}
+
 /// <summary>How the refined spec reaches the agent (section 12b, <c>invoke.prompt</c>).</summary>
 public enum AdapterPromptDelivery
 {
@@ -87,10 +121,18 @@ public sealed record AdapterDocument(
     IReadOnlyList<string> ModelArg,
     AdapterEvents Events,
     IReadOnlyList<AdapterCapability> Capabilities,
-    string SourcePath)
+    string SourcePath,
+    AdapterModelFormat ModelFormat = AdapterModelFormat.Bare)
 {
     /// <summary>The placeholder substituted with the resolved model identifier in <c>model_arg</c>.</summary>
     public const string ModelPlaceholder = "{model}";
+
+    /// <summary>
+    /// The placeholder substituted with the model's provider segment in <c>model_arg</c>, for a CLI
+    /// that selects the provider with its own flag. Pi's <c>--provider openrouter --model
+    /// deepseek/deepseek-r1</c> is the case this exists for.
+    /// </summary>
+    public const string ProviderPlaceholder = "{provider}";
 
     /// <summary>The placeholder substituted with the refined spec in an argument-delivered prompt.</summary>
     public const string PromptPlaceholder = "{prompt}";
@@ -122,15 +164,35 @@ public sealed record AdapterDocument(
     }
 
     /// <summary>
+    /// Renders Charter's canonical model identifier in the form this CLI expects.
+    /// </summary>
+    /// <remarks>
+    /// Idempotent for <see cref="AdapterModelFormat.Bare"/>: a name that already carries no provider
+    /// is Anthropic's (section 20b.1), and stripping a prefix that is not there leaves it alone. That
+    /// is what lets a caller pass either form without the dispatched command changing.
+    /// </remarks>
+    public string FormatModel(string model)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(model);
+
+        if (ModelFormat == AdapterModelFormat.Verbatim)
+        {
+            return model.Trim();
+        }
+
+        var identifier = ModelIdentifier.Parse(model);
+        return ModelFormat == AdapterModelFormat.Qualified ? identifier.ToString() : identifier.Name;
+    }
+
+    /// <summary>
     /// Builds the argument vector and standard input for one run. No shell is involved, so nothing
     /// here is quoted or escaped and <c>&amp;&amp;</c> in a command would be a literal argument.
     /// </summary>
     /// <param name="prompt">The refined spec.</param>
     /// <param name="model">
-    /// Substituted into <c>model_arg</c> verbatim. The caller decides the form, because the CLIs
-    /// disagree: <c>opencode</c> wants the provider-qualified <c>anthropic/claude-opus-5</c> while
-    /// <c>claude</c> wants the bare <c>claude-opus-5</c>. Use <see cref="ModelIdentifier.Parse"/> and
-    /// pass <c>Name</c> for the latter.
+    /// Charter's canonical model identifier, qualified or bare (section 20b.1). It is rendered into
+    /// <c>model_arg</c> in the form this adapter declared through <see cref="ModelFormat"/>, so the
+    /// caller passes one identifier and never has to know which agent it is dispatching to.
     /// </param>
     public AdapterInvocation BuildInvocation(string prompt, string? model = null)
     {
@@ -140,9 +202,14 @@ public sealed record AdapterDocument(
 
         if (model is not null)
         {
+            var rendered = FormatModel(model);
+            var provider = ModelIdentifier.Parse(model).Provider;
+
             foreach (var argument in ModelArg)
             {
-                arguments.Add(argument.Replace(ModelPlaceholder, model, StringComparison.Ordinal));
+                arguments.Add(argument
+                    .Replace(ModelPlaceholder, rendered, StringComparison.Ordinal)
+                    .Replace(ProviderPlaceholder, provider, StringComparison.Ordinal));
             }
         }
 

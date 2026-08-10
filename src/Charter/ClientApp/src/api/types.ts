@@ -390,8 +390,18 @@ export type ArtifactAudience = 'requester' | 'engineer_only';
  * never see a SHA. The client's only test is `artifact.details !== undefined`.
  */
 export interface EngineerDetails {
-  pullRequestNumber: number;
-  pullRequestUrl: string;
+  changeRequestNumber: number;
+  changeRequestUrl: string;
+
+  /**
+   * What this provider calls a change request, supplied by the server rather than hardcoded:
+   * "pull request" on GitHub and Gitea, "merge request" on GitLab, "changelist" on Perforce.
+   * Never assume GitHub's vocabulary in the UI.
+   */
+  changeRequestTerm: string;
+
+  /** The short form of the same term - "PR", "MR", "CL". */
+  changeRequestTermShort: string;
   commitSha: string;
   branch: string;
   runner: string;

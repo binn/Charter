@@ -95,7 +95,7 @@ public class OrchestrationRecoveryTests
     }
 
     [Fact]
-    public void ACompletedRunIsNotSettledBecauseOpeningThePullRequestIsPhaseThree()
+    public void ACompletedRunIsNotSettledBecauseOpeningTheChangeRequestIsPhaseThree()
     {
         // Section 6 puts PROpen after Running. Claiming a pull request exists because the agent
         // process exited zero would be a claim Charter cannot back up.

@@ -57,7 +57,7 @@ public class DataModelShapeTests : IDisposable
         (typeof(Session), "sessions"),
         (typeof(Event), "events"),
         (typeof(Milestone), "milestones"),
-        (typeof(PullRequest), "pull_requests"),
+        (typeof(ChangeRequest), "change_requests"),
         (typeof(Deployment), "deployments"),
         (typeof(VerificationArtifact), "verification_artifacts"),
         (typeof(Walkthrough), "walkthroughs"),
@@ -68,6 +68,10 @@ public class DataModelShapeTests : IDisposable
         (typeof(Budget), "budgets"),
         (typeof(AuditLog), "audit_logs"),
         (typeof(Job), "jobs"),
+
+        // Section 33.3: the registered Charter Agents, holding verifiers for the pairing token and
+        // the long-lived credential rather than either value.
+        (typeof(RunnerAgent), "runner_agents"),
     ];
 
     public static TheoryData<Type, string> ExpectedTableNames
@@ -312,7 +316,7 @@ public class DataModelShapeTests : IDisposable
         AssertUniqueIndex<Repo>("ux_repos_org_id_full_name");
         AssertUniqueIndex<Spec>("ux_specs_request_id_version");
         AssertUniqueIndex<Event>("ux_events_session_id_seq");
-        AssertUniqueIndex<PullRequest>("ux_pull_requests_session_id_number");
+        AssertUniqueIndex<ChangeRequest>("ux_change_requests_session_id_number");
         AssertUniqueIndex<Recap>("ux_recaps_session_id");
         AssertUniqueIndex<Walkthrough>("ux_walkthroughs_session_id_level");
         AssertUniqueIndex<ConceptLedger>("ux_concept_ledger_user_id_concept");
@@ -376,17 +380,17 @@ public class DataModelShapeTests : IDisposable
     }
 
     [Fact]
-    public void ThePullRequestRowCarriesTheHeadBranchTheEngineerDetailsShow()
+    public void TheChangeRequestRowCarriesTheHeadBranchTheEngineerDetailsShow()
     {
         // Section 27.7: the `Details` disclosure names the branch alongside the PR number and SHA.
-        var entity = _model.FindEntityType(typeof(PullRequest));
+        var entity = _model.FindEntityType(typeof(ChangeRequest));
         Assert.NotNull(entity);
 
         var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
         var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
 
         Assert.Contains("head_branch", columns);
-        Assert.True(Property<PullRequest>(nameof(PullRequest.HeadBranch)).IsNullable);
+        Assert.True(Property<ChangeRequest>(nameof(ChangeRequest.HeadBranch)).IsNullable);
     }
 
     [Fact]
@@ -439,7 +443,7 @@ public class DataModelShapeTests : IDisposable
         AssertDelete<Event>(nameof(Event.SessionId), DeleteBehavior.Cascade);
         AssertDelete<Milestone>(nameof(Milestone.EventId), DeleteBehavior.Cascade);
         AssertDelete<Session>(nameof(Session.SpecId), DeleteBehavior.Cascade);
-        AssertDelete<Deployment>(nameof(Deployment.PullRequestId), DeleteBehavior.Cascade);
+        AssertDelete<Deployment>(nameof(Deployment.ChangeRequestId), DeleteBehavior.Cascade);
         AssertDelete<VerificationArtifact>(nameof(VerificationArtifact.SessionId), DeleteBehavior.Cascade);
     }
 

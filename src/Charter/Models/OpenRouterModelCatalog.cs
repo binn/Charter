@@ -36,6 +36,7 @@ public sealed class OpenRouterModelCatalog : IModelPriceCatalog
         new Dictionary<string, OpenRouterModel>(StringComparer.OrdinalIgnoreCase);
 
     private DateTimeOffset _fetchedAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _failedAt = DateTimeOffset.MinValue;
 
     /// <summary>Creates a catalog.</summary>
     public OpenRouterModelCatalog(
@@ -89,11 +90,21 @@ public sealed class OpenRouterModelCatalog : IModelPriceCatalog
         return models.TryGetValue(openRouterModelId, out var entry) ? entry : null;
     }
 
+    /// <summary>
+    /// How long a failed fetch is left alone before another is attempted. Without this, an endpoint
+    /// that is down turns every price lookup into a fresh connection attempt, and the degradation
+    /// section 20b.6 asks for - fall back to the shipped table - would cost a timeout each time.
+    /// </summary>
+    public static TimeSpan FailureBackoff { get; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>True while a failed fetch is still inside <see cref="FailureBackoff"/>.</summary>
+    public bool IsBackingOff => _timeProvider.GetUtcNow() - _failedAt < FailureBackoff;
+
     /// <summary>Returns the whole catalog, refreshing it first if it has gone stale.</summary>
     public async ValueTask<IReadOnlyDictionary<string, OpenRouterModel>> GetModelsAsync(
         CancellationToken cancellationToken = default)
     {
-        if (IsFresh)
+        if (IsFresh || IsBackingOff)
         {
             return _models;
         }
@@ -101,7 +112,7 @@ public sealed class OpenRouterModelCatalog : IModelPriceCatalog
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (IsFresh)
+            if (IsFresh || IsBackingOff)
             {
                 return _models;
             }
@@ -139,6 +150,7 @@ public sealed class OpenRouterModelCatalog : IModelPriceCatalog
 
             if (payload?.Data is null || payload.Data.Count == 0)
             {
+                _failedAt = _timeProvider.GetUtcNow();
                 _logger.LogWarning("The OpenRouter model catalog returned no entries; keeping the previous cache.");
                 return;
             }
@@ -160,12 +172,14 @@ public sealed class OpenRouterModelCatalog : IModelPriceCatalog
 
             _models = parsed;
             _fetchedAt = _timeProvider.GetUtcNow();
+            _failedAt = DateTimeOffset.MinValue;
             _logger.LogInformation("Cached {ModelCount} models from the OpenRouter catalog.", parsed.Count);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
         {
             // A pricing catalog that cannot be fetched must not take the control plane down with it.
             // A stale cache still prices better than nothing, and an empty one degrades to Unpriced.
+            _failedAt = _timeProvider.GetUtcNow();
             _logger.LogWarning(
                 ex,
                 "Could not refresh the OpenRouter model catalog; {ModelCount} cached entries remain in use.",

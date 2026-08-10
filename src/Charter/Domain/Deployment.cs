@@ -21,8 +21,9 @@ public enum DeploymentState
 }
 
 /// <summary>
-/// A preview environment bound to a pull request (section 5), ingested either from the generic
-/// webhook <c>POST /api/deployments/{prSha}</c> or from pull request comment parsing (section 18).
+/// A preview environment bound to a change request (section 5, as amended by change spec 001 part
+/// A.2), ingested either from the generic webhook <c>POST /api/deployments/{prSha}</c> or from
+/// change request comment parsing (section 18).
 /// </summary>
 public sealed class Deployment
 {
@@ -32,14 +33,14 @@ public sealed class Deployment
 
     private Deployment(
         Guid id,
-        Guid pullRequestId,
+        Guid changeRequestId,
         string provider,
         string? url,
         DeploymentState state,
         DateTimeOffset reportedAt)
     {
         Id = id;
-        PullRequestId = pullRequestId;
+        ChangeRequestId = changeRequestId;
         Provider = provider;
         Url = url;
         State = state;
@@ -48,7 +49,7 @@ public sealed class Deployment
 
     public Guid Id { get; private set; }
 
-    public Guid PullRequestId { get; private set; }
+    public Guid ChangeRequestId { get; private set; }
 
     /// <summary>Free text: <c>railway</c>, <c>render</c>, <c>fly</c>, <c>coolify</c>, anything.</summary>
     public string Provider { get; private set; } = string.Empty;
@@ -60,7 +61,7 @@ public sealed class Deployment
     public DateTimeOffset ReportedAt { get; private set; }
 
     public static Deployment Report(
-        Guid pullRequestId,
+        Guid changeRequestId,
         string provider,
         DeploymentState state,
         string? url = null,
@@ -76,7 +77,7 @@ public sealed class Deployment
 
         return new Deployment(
             id ?? Guid.CreateVersion7(),
-            pullRequestId,
+            changeRequestId,
             provider.Trim().ToLowerInvariant(),
             url?.Trim(),
             state,

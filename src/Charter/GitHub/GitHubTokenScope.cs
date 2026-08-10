@@ -49,6 +49,59 @@ public sealed record GitHubTokenScope
             ["checks"] = "read",
         });
 
+    /// <summary>
+    /// Reads the repository's administrative settings, and nothing else. What the merge gate check
+    /// of change spec 001 part A.5 needs: GitHub will not report a branch protection rule to a token
+    /// without <c>administration</c>, and verifying that protection is <em>configured</em> rather
+    /// than merely supported is the whole point of the onboarding step.
+    /// </summary>
+    /// <remarks>
+    /// Read, never write. An installation that was not granted <c>administration</c> gets a token
+    /// without it and the check reports "not verified", which is the correct answer — it is never
+    /// reported as protected.
+    /// </remarks>
+    public static GitHubTokenScope Inspect { get; } = new(
+        "inspect",
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["administration"] = "read",
+            ["metadata"] = "read",
+        });
+
+    /// <summary>
+    /// Administers the repository: creating one, transferring one, applying branch protection
+    /// (sections 26.9, 26.10, and part A.2's optional operations).
+    /// </summary>
+    /// <remarks>
+    /// The only scope that can write a setting, and it is reachable only through operations that a
+    /// capability gates and an admin triggers. It still cannot merge: there is no permission that
+    /// would let it, and no code path that asks.
+    /// </remarks>
+    public static GitHubTokenScope Administer { get; } = new(
+        "administer",
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["administration"] = "write",
+            ["metadata"] = "read",
+        });
+
+    /// <summary>Registers the repository webhook, and nothing else.</summary>
+    public static GitHubTokenScope Webhooks { get; } = new(
+        "webhooks",
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["repository_hooks"] = "write",
+            ["metadata"] = "read",
+        });
+
+    /// <summary>The scopes an ordinary session or request path may use.</summary>
+    /// <remarks>
+    /// Neither can administer anything. The privileged scopes above are deliberately not in this
+    /// list, so a test can assert the everyday paths stay narrow without asserting that the optional
+    /// operations do not exist.
+    /// </remarks>
+    public static IReadOnlyList<GitHubTokenScope> Everyday { get; } = [ReadOnly, Contribute];
+
     /// <summary>A short name, used as part of the cache key and in logs.</summary>
     public string Name { get; }
 

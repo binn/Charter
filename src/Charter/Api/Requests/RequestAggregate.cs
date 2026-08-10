@@ -1,6 +1,7 @@
 using Charter.Api.Contracts;
 using Charter.Api.Projects;
 using Charter.Domain;
+using Charter.VersionControl;
 
 namespace Charter.Api.Requests;
 
@@ -34,7 +35,20 @@ public sealed record RequestAggregate
 
     public IReadOnlyList<VerificationArtifact> Artifacts { get; init; } = [];
 
-    public PullRequest? PullRequest { get; init; }
+    public ChangeRequest? ChangeRequest { get; init; }
+
+    /// <summary>
+    /// What the repository's provider calls a change request (change spec 001 part A.2).
+    /// </summary>
+    /// <remarks>
+    /// Carried on the aggregate rather than looked up in the projection, so the projection stays a
+    /// pure function of rows and a test can assert the wording without a provider registry.
+    /// </remarks>
+    public string ChangeRequestTerm { get; init; } = VersionControlTerms.ChangeRequestDefault.ChangeRequest;
+
+    /// <summary>The short form, for the chip: <c>PR</c>, <c>MR</c>, <c>CL</c>.</summary>
+    public string ChangeRequestTermShort { get; init; } =
+        VersionControlTerms.ChangeRequestDefault.ChangeRequestShort;
 
     /// <summary>The refinement conversation, already projected. See <see cref="IRefinementThreadStore"/>.</summary>
     public IReadOnlyList<RefinementMessageResponse> RefinementMessages { get; init; } = [];

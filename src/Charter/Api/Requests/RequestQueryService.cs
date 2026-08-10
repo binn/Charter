@@ -3,6 +3,7 @@ using Charter.Api.Projects;
 using Charter.Auth.Authorization;
 using Charter.Data;
 using Charter.Domain;
+using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
 
 namespace Charter.Api.Requests;
@@ -23,19 +24,23 @@ public sealed class RequestQueryService
 {
     private readonly CharterDbContext database;
     private readonly ICharterAuthorizationService authorization;
+    private readonly IVersionControlProviderRegistry providers;
     private readonly TimeProvider clock;
 
     public RequestQueryService(
         CharterDbContext database,
         ICharterAuthorizationService authorization,
+        IVersionControlProviderRegistry providers,
         TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(authorization);
+        ArgumentNullException.ThrowIfNull(providers);
         ArgumentNullException.ThrowIfNull(clock);
 
         this.database = database;
         this.authorization = authorization;
+        this.providers = providers;
         this.clock = clock;
     }
 
@@ -216,9 +221,9 @@ public sealed class RequestQueryService
                 .OrderBy(row => row.CreatedAt)
                 .ToListAsync(cancellationToken);
 
-        var pullRequest = session is null || !RequestVisibility.CanSeeEngineerDetails(visibility)
+        var changeRequest = session is null || !RequestVisibility.CanSeeEngineerDetails(visibility)
             ? null
-            : await database.PullRequests
+            : await database.ChangeRequests
                 .AsNoTracking()
                 .Where(row => row.SessionId == session.Id)
                 .OrderByDescending(row => row.CreatedAt)
@@ -263,7 +268,12 @@ public sealed class RequestQueryService
                 Milestones = milestones,
                 Events = events,
                 Artifacts = artifacts,
-                PullRequest = pullRequest,
+                ChangeRequest = changeRequest,
+
+                // Change spec 001 part A.2: the provider supplies the word, so the engineer detail
+                // reads "pull request 142" on GitHub and "merge request 142" on GitLab.
+                ChangeRequestTerm = providers.TermsFor(repo).ChangeRequest,
+                ChangeRequestTermShort = providers.TermsFor(repo).ChangeRequestShort,
                 RefinementMessages = RefinementThread.Derive(request, spec, conversation),
                 Feedback = RequestPresentation.Feedback(feedback),
                 ApprovedByName = approvedBy,

@@ -158,9 +158,9 @@ The shim is a separate project precisely because all three backends need it: Git
 | `OPENROUTER_API_KEY` | no* | — | Instance-level fallback credential |
 | `CHARTER_CREDENTIAL_KEY` | yes | — | ≥32 bytes. Encrypts stored credentials. **Separate from `CHARTER_SECRET_KEY`** so cookie-key rotation doesn't invalidate them. |
 | `CHARTER_ALLOW_SHARED_POOL` | no | `false` | Permits users to pool subscription credentials (§20b.7) |
-| `CHARTER_MODEL_REFINE` | no | `claude-sonnet-5` | |
-| `CHARTER_MODEL_BUILD` | no | `claude-opus-5` | Passed to the agent CLI |
-| `CHARTER_MODEL_TEACH` | no | `claude-sonnet-5` | |
+| `CHARTER_MODEL_REFINE` | no | `openrouter/anthropic/claude-sonnet-5` | Control plane — Charter calls it directly, so any OpenRouter model works |
+| `CHARTER_MODEL_BUILD` | no | `claude-opus-5` | Passed to the agent CLI, so bounded by the adapter (§12b). Unqualified, and therefore Anthropic's: the default adapter cannot present an OpenRouter key |
+| `CHARTER_MODEL_TEACH` | no | `openrouter/anthropic/claude-sonnet-5` | Control plane, like refinement |
 | `GITHUB_APP_ID` | yes | — | |
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | PEM, base64 accepted |
 | `GITHUB_WEBHOOK_SECRET` | yes | — | |
@@ -190,7 +190,20 @@ The shim is a separate project precisely because all three backends need it: Git
 | `CHARTER_UPDATE_CHANNEL` | no | `stable` | `stable` \| `prerelease` |
 | `CHARTER_ALLOW_REPO_CREATION` | no | `false` | §26.10 — repo creation is a privilege escalation |
 | `CHARTER_ADAPTERS_PATH` | no | — | `:`-separated directories of operator-supplied adapter YAML (§12b). Loaded after the in-tree `adapters/`; later directories win by `id`, so an operator can override a shipped adapter without forking. A listed directory that does not exist is an error, not a silent skip. |
+| `CHARTER_DEPLOYMENT_PROVIDER` | no | `none` | `none` \| `railway`. `none` is first-class: a self-hoster on any other platform reports deployments through the §18 generic webhook. |
+| `CHARTER_RAILWAY_TOKEN` | when railway | — | Railway account or team token |
+| `CHARTER_RAILWAY_PROJECT_ID` | when railway | — | |
+| `CHARTER_RAILWAY_BASE_ENVIRONMENT` | when railway | — | **Required, never defaulted.** §18: base previews off staging, not production, so preview secrets are never real ones. Charter warns loudly when this value looks like production. |
+| `CHARTER_RAILWAY_API_URL` | no | `https://backboard.railway.com/graphql/v2` | |
+| `CHARTER_PREVIEW_TTL_HOURS` | no | `72` | How long a preview lives where the platform does not expire it itself. `0` means never. |
 | `CHARTER_DEMO` | no | `false` | §30.6 — seeds a fake org, disables outbound calls |
+
+**The two model defaults are not inconsistent.** Phase 1 ships one `IModelClient` implementation —
+`OpenAiCompatibleModelClient` against OpenRouter — which is why the control-plane defaults are
+OpenRouter-qualified. `CHARTER_MODEL_BUILD` is not a call Charter makes; it is a string handed to an
+agent CLI whose adapter decides what it can authenticate against. Defaulting it to an aggregator would
+ship a pairing §12b obliges the UI to refuse. Point builds at OpenRouter deliberately, with an adapter
+that reaches it natively (`pi`).
 
 \* At least one model credential must be resolvable at startup — either an instance-level key here or a linked `CredentialGrant` in the database. Startup validation fails if neither exists.
 
@@ -276,8 +289,10 @@ Event             id, session_id, seq, type, payload (jsonb), created_at
 Milestone         session_id, event_id, label, annotation_md
                   -- promoted, requester-facing subset of Event
 
-PullRequest       session_id, number, url, head_sha, state, is_stale
-Deployment        pull_request_id, provider, url, state, reported_at
+ChangeRequest     session_id, number, url, head_sha, head_branch, state, is_stale
+                  -- provider-neutral (change spec 001 part A.2); the UI renders the provider's
+                  -- own word: pull request on GitHub, merge request on GitLab
+Deployment        change_request_id, provider, url, state, reported_at
 
 Walkthrough       session_id, level, body_md, generated_at, cost_usd
 Recap             session_id, body_md, risk_items (jsonb), generated_at, cost_usd
@@ -360,6 +375,10 @@ Do **not** write `if (personalMode) skipPermissionCheck`. That branch is how org
 ### 7.4 Trust boundary
 
 - Charter has **no merge button**. Branch protection + CODEOWNERS enforce this on GitHub.
+- **The guarantee is only as strong as the provider makes it** (change spec 001 part A.5). Where
+  `merge_gate_enforcement = provider_enforced` *and* the repository has a protection rule requiring
+  review, this holds unchanged. Where either is missing, the repository is `advisory`: Charter still
+  will not merge, and it says plainly that it cannot stop anyone else from doing so.
 - The runner receives a **short-TTL GitHub App installation token scoped to one repo** and cannot read the control plane's environment.
 - Pane 2 (transcript) and pane 3 (code) render **only if that user has repo read access**. Otherwise a requester toggling views becomes a permission bypass — transcripts leak file paths, env var names, and error output.
 
@@ -520,6 +539,9 @@ A wizard that ends in **proof**, not configuration. If connecting a repo is a ma
 3. **Scope confirmation** — visual file tree with allow/deny toggles. Defaults denied: migrations, auth, CI config, infra, secrets. Writes `.charter/config.yml` as a PR.
 4. **Smoke test** — Charter files a canned trivial request and runs the entire loop: agent runs → checks pass → PR opens → preview deploys → URL binds back. Nothing else validates all six integration points at once.
 5. **Primer** — agent drafts `.charter/primer.md`, engineer edits, publish.
+6. **Merge gate check** — read the base branch's protection and report whether review is actually
+   required (change spec 001 part A.5). Supported is not configured: a repo with no rule is
+   functionally advisory and is flagged as such. This warns; it never blocks.
 
 **A repo is invisible to requesters until the smoke test passes.** This ties directly into §7.3: repo scope defaults to nobody, and "ready" is earned.
 
@@ -639,31 +661,40 @@ Progressive disclosure. Named for the user: **Simple / Detailed / Developer**.
 The coding-agent landscape changes monthly. **Adapters are data, not code** — declarative YAML in `adapters/`, so supporting a new agent is a configuration PR, not a Charter release. Users can drop a local adapter into their instance without forking.
 
 ```yaml
-# adapters/pi.yml
+# adapters/pi.yml — checked against pi's published CLI reference, not sketched
 id: pi
 display_name: "Pi"
 version: 1
 install:
   check: "pi --version"
-  hint: "npx @earendil-works/pi-coding-agent"
+  hint: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 invoke:
-  command: ["pi", "--print", "--output-format", "jsonl"]
-  prompt: stdin
+  command: ["pi", "--mode", "json"]
+  prompt: "{prompt}"
 auth:
   anthropic_api_key:  { env: "ANTHROPIC_API_KEY" }
   openai_api_key:     { env: "OPENAI_API_KEY" }
   openrouter_key:     { env: "OPENROUTER_API_KEY" }
   google_api_key:     { env: "GEMINI_API_KEY" }
   xai_api_key:        { env: "XAI_API_KEY" }
-model_arg: ["--model", "{model}"]
+model_arg: ["--provider", "{provider}", "--model", "{model}"]
+model_format: bare
 events:
   format: jsonl
   map:
-    tool_use:   "$.type == 'tool_call'"
-    file_write: "$.tool == 'edit' || $.tool == 'write'"
-    message:    "$.type == 'assistant'"
-capabilities: [steering, resume, cost_reporting]
+    tool_use:   "$.type == 'tool_execution_start'"
+    file_write: "$.type == 'tool_execution_start' && ($.toolName == 'edit' || $.toolName == 'write')"
+    message:    "$.type == 'message_end' && $.message.role == 'assistant'"
+capabilities: [resume, cost_reporting]
 ```
+
+**`model_format`** declares the form of identifier the CLI expects, because they disagree and the
+disagreement fails silently. `bare` (the default, and what Charter dispatched before the key existed)
+strips only Charter's provider prefix, so `openrouter/deepseek/deepseek-r1` becomes
+`deepseek/deepseek-r1` and keeps the vendor segment §20b.1 is careful about. `qualified` passes the
+canonical identifier, which is what `opencode --model` wants. `verbatim` reinterprets nothing, for a
+CLI using a third-party naming scheme such as aider's LiteLLM names. `{provider}` in `model_arg` names
+the provider segment for a CLI that selects it with its own flag, and is incompatible with `verbatim`.
 
 ### Adapters shipped in-tree
 
@@ -686,6 +717,8 @@ capabilities: [steering, resume, cost_reporting]
 ### Model × adapter compatibility
 
 Not every model works with every agent. The UI must resolve the intersection of *(available credentials) × (adapter's supported providers) × (repo policy)* and show only valid combinations. Silently accepting an impossible pairing and failing at dispatch is the worst outcome.
+
+The Phase 1 case that makes this concrete: **an `openrouter/...` model is offered for `pi` and refused for `claude-code`.** Claude Code authenticates against the Anthropic API or a gateway presenting it; reaching an aggregator needs a translating proxy Charter does not ship. Pi reads `OPENROUTER_API_KEY` directly. An adapter's supported providers are derived from its `auth` block rather than declared separately, so this cannot drift out of step with what the runner actually injects. A refusal names an adapter that *can* run the model, because "Claude Code cannot use OpenRouter" is a dead end and "…; pi can" is an answer.
 
 ---
 
@@ -740,7 +773,8 @@ Contents:
 
 Two rules:
 
-- **Post it as a PR comment**, not just in Charter. Engineers review on GitHub.
+- **Post it as a change request comment** where the provider has one, and in the session view where
+  it does not (change spec 001 part A.2). Not just in Charter — engineers review on the provider.
 - **It must never say "looks good."** It's an orientation aid, not a verdict. The moment it editorialises on quality, reviewers start trusting it instead of reading.
 
 ---
@@ -911,7 +945,11 @@ Most providers are OpenAI-compatible; only Anthropic and Gemini need bespoke cli
 
 Model identifiers are **provider-qualified strings**: `anthropic/claude-opus-5`, `openrouter/deepseek/deepseek-r1`. The `CHARTER_MODEL_*` env vars accept this form.
 
-An **unqualified identifier is treated as `anthropic/`**, which is why the §4.2 defaults are written bare. Qualify the identifier whenever the model is not Anthropic's; an unqualified name that no Anthropic model matches fails startup validation rather than being guessed at.
+An **unqualified identifier is treated as `anthropic/`**, which is why `CHARTER_MODEL_BUILD`'s §4.2 default is written bare. Qualify the identifier whenever the model is not Anthropic's; an unqualified name that no Anthropic model matches fails startup validation rather than being guessed at.
+
+Only the **first** segment is the provider. OpenRouter's model ids contain a slash of their own, so `openrouter/deepseek/deepseek-r1` selects OpenRouter and asks it for `deepseek/deepseek-r1`; splitting on every separator loses the vendor half of the name and leaves something unroutable.
+
+**Phase 1 default: `OpenAiCompatibleModelClient` pointed at OpenRouter.** One implementation reaches every provider the control plane needs, which is a smaller Phase 1 than a native first-party client, not a larger one. The other two clients remain registered and are used the moment an `anthropic/` or `google/` identifier is configured — this is a default, not a deletion.
 
 ### 20b.2 `CredentialGrant`
 

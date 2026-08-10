@@ -525,9 +525,9 @@ namespace Charter.Data.Migrations
                         .HasColumnType("character varying(60)")
                         .HasColumnName("provider");
 
-                    b.Property<Guid>("PullRequestId")
+                    b.Property<Guid>("ChangeRequestId")
                         .HasColumnType("uuid")
-                        .HasColumnName("pull_request_id");
+                        .HasColumnName("change_request_id");
 
                     b.Property<DateTimeOffset>("ReportedAt")
                         .HasColumnType("timestamp with time zone")
@@ -546,9 +546,9 @@ namespace Charter.Data.Migrations
                     b.HasKey("Id")
                         .HasName("pk_deployments");
 
-                    b.HasIndex("PullRequestId", "ReportedAt")
+                    b.HasIndex("ChangeRequestId", "ReportedAt")
                         .IsDescending(false, true)
-                        .HasDatabaseName("ix_deployments_pull_request_id_reported_at");
+                        .HasDatabaseName("ix_deployments_change_request_id_reported_at");
 
                     b.ToTable("deployments", (string)null);
                 });
@@ -953,7 +953,7 @@ namespace Charter.Data.Migrations
                     b.ToTable("organizations", (string)null);
                 });
 
-            modelBuilder.Entity("Charter.Domain.PullRequest", b =>
+            modelBuilder.Entity("Charter.Domain.ChangeRequest", b =>
                 {
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid")
@@ -1002,16 +1002,16 @@ namespace Charter.Data.Migrations
                         .HasColumnName("url");
 
                     b.HasKey("Id")
-                        .HasName("pk_pull_requests");
+                        .HasName("pk_change_requests");
 
                     b.HasIndex("HeadSha")
-                        .HasDatabaseName("ix_pull_requests_head_sha");
+                        .HasDatabaseName("ix_change_requests_head_sha");
 
                     b.HasIndex("SessionId", "Number")
                         .IsUnique()
-                        .HasDatabaseName("ux_pull_requests_session_id_number");
+                        .HasDatabaseName("ux_change_requests_session_id_number");
 
-                    b.ToTable("pull_requests", (string)null);
+                    b.ToTable("change_requests", (string)null);
                 });
 
             modelBuilder.Entity("Charter.Domain.Recap", b =>
@@ -1265,6 +1265,145 @@ namespace Charter.Data.Migrations
                         .HasDatabaseName("ix_request_feedback_request_id_created_at");
 
                     b.ToTable("request_feedback", (string)null);
+                });
+
+            modelBuilder.Entity("Charter.Domain.RunnerAgent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AgentVersion")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("agent_version");
+
+                    b.Property<string>("Arch")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("arch");
+
+                    b.PrimitiveCollection<string[]>("Capabilities")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("capabilities");
+
+                    b.Property<string>("CapabilitiesHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("capabilities_hash");
+
+                    b.Property<DateTimeOffset?>("CapabilitiesProbedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("capabilities_probed_at");
+
+                    b.Property<int>("Concurrency")
+                        .HasColumnType("integer")
+                        .HasColumnName("concurrency");
+
+                    b.Property<int>("CpuCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("cpu_count");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CredentialHash")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("credential_hash");
+
+                    b.Property<string>("Hostname")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("hostname");
+
+                    b.Property<DateTimeOffset?>("LastHeartbeatAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_heartbeat_at");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("mode");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("org_id");
+
+                    b.Property<string>("Os")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("os");
+
+                    b.Property<DateTimeOffset?>("PairedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("paired_at");
+
+                    b.Property<DateTimeOffset?>("PairingTokenExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("pairing_token_expires_at");
+
+                    b.Property<string>("PairingTokenHash")
+                        .HasMaxLength(400)
+                        .HasColumnType("character varying(400)")
+                        .HasColumnName("pairing_token_hash");
+
+                    b.Property<int>("ProtocolVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("protocol_version");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<string>("RevokedReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("revoked_reason");
+
+                    b.Property<string>("Rid")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("rid");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("status");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runner_agents");
+
+                    b.HasIndex("Capabilities")
+                        .HasDatabaseName("ix_runner_agents_capabilities");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Capabilities"), "gin");
+
+                    b.HasIndex("PairingTokenExpiresAt")
+                        .HasDatabaseName("ix_runner_agents_pairing_token_expires_at")
+                        .HasFilter("pairing_token_hash IS NOT NULL");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_runner_agents_status");
+
+                    b.HasIndex("OrgId", "Name")
+                        .HasDatabaseName("ix_runner_agents_org_id_name");
+
+                    b.ToTable("runner_agents", (string)null);
                 });
 
             modelBuilder.Entity("Charter.Domain.Session", b =>
@@ -1683,12 +1822,12 @@ namespace Charter.Data.Migrations
 
             modelBuilder.Entity("Charter.Domain.Deployment", b =>
                 {
-                    b.HasOne("Charter.Domain.PullRequest", null)
+                    b.HasOne("Charter.Domain.ChangeRequest", null)
                         .WithMany()
-                        .HasForeignKey("PullRequestId")
+                        .HasForeignKey("ChangeRequestId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_deployments_pull_requests_pull_request_id");
+                        .HasConstraintName("fk_deployments_change_requests_change_request_id");
                 });
 
             modelBuilder.Entity("Charter.Domain.Event", b =>
@@ -1774,14 +1913,14 @@ namespace Charter.Data.Migrations
                         .HasConstraintName("fk_milestones_sessions_session_id");
                 });
 
-            modelBuilder.Entity("Charter.Domain.PullRequest", b =>
+            modelBuilder.Entity("Charter.Domain.ChangeRequest", b =>
                 {
                     b.HasOne("Charter.Domain.Session", null)
                         .WithMany()
                         .HasForeignKey("SessionId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
-                        .HasConstraintName("fk_pull_requests_sessions_session_id");
+                        .HasConstraintName("fk_change_requests_sessions_session_id");
                 });
 
             modelBuilder.Entity("Charter.Domain.Recap", b =>
@@ -1865,6 +2004,16 @@ namespace Charter.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_request_feedback_users_submitted_by");
+                });
+
+            modelBuilder.Entity("Charter.Domain.RunnerAgent", b =>
+                {
+                    b.HasOne("Charter.Domain.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrgId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_runner_agents_organizations_org_id");
                 });
 
             modelBuilder.Entity("Charter.Domain.Session", b =>

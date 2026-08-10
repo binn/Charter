@@ -11,21 +11,52 @@ namespace Charter.Models;
 /// unaffected.
 /// </para>
 /// <para>
-/// The defaults here mirror section 4.2 exactly. Nothing in this record is a secret: instance-level
+/// The defaults here mirror section 4.2 exactly, including the split between the two surfaces:
+/// control-plane models default to OpenRouter, the build model does not. Nothing in this record is a
+/// secret: instance-level
 /// keys arrive as <see cref="ModelCredential"/> values through <see cref="IModelCredentialStore"/>,
 /// so an options object can safely be logged.
 /// </para>
 /// </remarks>
 public sealed record ModelClientOptions
 {
-    /// <summary>Section 4.2 <c>CHARTER_MODEL_REFINE</c>. Default <c>claude-sonnet-5</c>.</summary>
-    public ModelIdentifier RefineModel { get; init; } = ModelIdentifier.Parse("claude-sonnet-5");
+    /// <summary>
+    /// Section 4.2 <c>CHARTER_MODEL_REFINE</c>. Default
+    /// <c>openrouter/anthropic/claude-sonnet-5</c> - a control-plane call, so it goes through
+    /// <see cref="OpenAiCompatibleModelClient"/> against OpenRouter.
+    /// </summary>
+    public ModelIdentifier RefineModel { get; init; } = DefaultRefineModel;
 
-    /// <summary>Section 4.2 <c>CHARTER_MODEL_BUILD</c>. Default <c>claude-opus-5</c>.</summary>
-    public ModelIdentifier BuildModel { get; init; } = ModelIdentifier.Parse("claude-opus-5");
+    /// <summary>
+    /// Section 4.2 <c>CHARTER_MODEL_BUILD</c>. Default <c>claude-opus-5</c>, unqualified and
+    /// therefore Anthropic's.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately <em>not</em> OpenRouter-qualified, and this is the distinction section 20b opens
+    /// with. This model is not called by Charter at all: it is handed to an agent CLI on a runner,
+    /// and what that CLI can authenticate against is decided by its adapter. Claude Code - the
+    /// default Phase 1 adapter - speaks the Anthropic API or a gateway presenting it, so defaulting
+    /// this to an aggregator would ship a pairing the compatibility resolver has to refuse. Point it
+    /// at OpenRouter deliberately, with an adapter that reaches OpenRouter natively (pi).
+    /// </remarks>
+    public ModelIdentifier BuildModel { get; init; } = DefaultBuildModel;
 
-    /// <summary>Section 4.2 <c>CHARTER_MODEL_TEACH</c>. Default <c>claude-sonnet-5</c>.</summary>
-    public ModelIdentifier TeachModel { get; init; } = ModelIdentifier.Parse("claude-sonnet-5");
+    /// <summary>
+    /// Section 4.2 <c>CHARTER_MODEL_TEACH</c>. Default
+    /// <c>openrouter/anthropic/claude-sonnet-5</c>. A control-plane call, like refinement.
+    /// </summary>
+    public ModelIdentifier TeachModel { get; init; } = DefaultTeachModel;
+
+    /// <summary>The section 4.2 default for <c>CHARTER_MODEL_REFINE</c>.</summary>
+    public static ModelIdentifier DefaultRefineModel { get; } =
+        ModelIdentifier.Parse("openrouter/anthropic/claude-sonnet-5");
+
+    /// <summary>The section 4.2 default for <c>CHARTER_MODEL_BUILD</c>.</summary>
+    public static ModelIdentifier DefaultBuildModel { get; } = ModelIdentifier.Parse("claude-opus-5");
+
+    /// <summary>The section 4.2 default for <c>CHARTER_MODEL_TEACH</c>.</summary>
+    public static ModelIdentifier DefaultTeachModel { get; } =
+        ModelIdentifier.Parse("openrouter/anthropic/claude-sonnet-5");
 
     /// <summary>Default failover policy for repos that have not set one. Section 20b.4.</summary>
     public ModelFailoverPolicy FailoverPolicy { get; init; } = ModelFailoverPolicy.PauseAndResume;

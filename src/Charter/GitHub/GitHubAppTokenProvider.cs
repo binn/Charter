@@ -21,6 +21,26 @@ public interface IGitHubAppTokenProvider
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// A token for an installation rather than for one repository.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The one exception to section 7.4's "always one repository" rule, and it exists for exactly one
+    /// caller: creating a repository (section 26.10), which cannot name a repository that does not
+    /// exist yet. It is never cached and never handed to a runner — a runner's credential comes from
+    /// <see cref="GetInstallationTokenAsync"/>, which cannot widen past the repository it names.
+    /// </para>
+    /// <para>
+    /// Every other caller wants the repository-scoped method. This one is deliberately awkward to
+    /// reach and deliberately loud in the audit log.
+    /// </para>
+    /// </remarks>
+    Task<GitHubInstallationToken> GetOrganizationTokenAsync(
+        long installationId,
+        GitHubTokenScope scope,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Drops a cached token, so the next call mints a fresh one. Called when GitHub answers 401,
     /// which is what a revoked installation or a rotated key looks like from here.
     /// </summary>
@@ -126,6 +146,27 @@ public sealed class GitHubAppTokenProvider : IGitHubAppTokenProvider, IDisposabl
     }
 
     /// <inheritdoc />
+    public async Task<GitHubInstallationToken> GetOrganizationTokenAsync(
+        long installationId,
+        GitHubTokenScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(installationId);
+        ArgumentNullException.ThrowIfNull(scope);
+
+        // Not cached, on purpose. A repository-wide token that lived in a dictionary would be the
+        // easiest thing in this class to reach for by accident, and the whole design rests on that
+        // being hard.
+        _logger.LogInformation(
+            "Minting an installation-wide GitHub token for installation {InstallationId} ({Scope}); "
+            + "this is the repository-creation path and nothing else uses it",
+            installationId,
+            scope.Name);
+
+        return await MintAsync(installationId, repository: null, scope, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public void Invalidate(GitHubRepository repository, GitHubTokenScope scope)
     {
         ArgumentNullException.ThrowIfNull(repository);
@@ -158,8 +199,15 @@ public sealed class GitHubAppTokenProvider : IGitHubAppTokenProvider, IDisposabl
             CultureInfo.InvariantCulture,
             $"{repository.InstallationId}|{repository.FullName}|{scope.Name}");
 
-    private async Task<GitHubInstallationToken> MintAsync(
+    private Task<GitHubInstallationToken> MintAsync(
         GitHubRepository repository,
+        GitHubTokenScope scope,
+        CancellationToken cancellationToken)
+        => MintAsync(repository.InstallationId, repository, scope, cancellationToken);
+
+    private async Task<GitHubInstallationToken> MintAsync(
+        long installationId,
+        GitHubRepository? repository,
         GitHubTokenScope scope,
         CancellationToken cancellationToken)
     {
@@ -169,7 +217,7 @@ public sealed class GitHubAppTokenProvider : IGitHubAppTokenProvider, IDisposabl
             _options.ApiBaseUrl,
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"app/installations/{repository.InstallationId}/access_tokens"));
+                $"app/installations/{installationId}/access_tokens"));
 
         using var request = new HttpRequestMessage(HttpMethod.Post, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", CreateAppJwt());
@@ -178,12 +226,15 @@ public sealed class GitHubAppTokenProvider : IGitHubAppTokenProvider, IDisposabl
         request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", _options.ApiVersion);
 
         // Section 7.4: one repository, and only the permissions this unit of work needs. GitHub
-        // takes the bare name here, not owner/name.
-        request.Content = JsonContent.Create(new
-        {
-            repositories = new[] { repository.Name },
-            permissions = scope.Permissions,
-        });
+        // takes the bare name here, not owner/name. The one caller that passes no repository is
+        // repository creation, which has no name to scope to yet.
+        request.Content = repository is null
+            ? JsonContent.Create(new { permissions = scope.Permissions })
+            : JsonContent.Create(new
+            {
+                repositories = new[] { repository.Name },
+                permissions = scope.Permissions,
+            });
 
         using var response = await client.SendAsync(request, cancellationToken);
 
@@ -209,7 +260,10 @@ public sealed class GitHubAppTokenProvider : IGitHubAppTokenProvider, IDisposabl
 
         // A token GitHub says covers every repository is not the token section 7.4 describes, and
         // handing it to a runner would silently widen the blast radius of a compromised session.
-        if (root.TryGetProperty("repository_selection", out var selection)
+        // Checked only for the repository-scoped path: the creation path asked for exactly this and
+        // its token never leaves the control plane.
+        if (repository is not null
+            && root.TryGetProperty("repository_selection", out var selection)
             && selection.ValueKind == JsonValueKind.String
             && string.Equals(selection.GetString(), "all", StringComparison.Ordinal))
         {
@@ -232,7 +286,8 @@ public sealed class GitHubAppTokenProvider : IGitHubAppTokenProvider, IDisposabl
         {
             Token = new Secret(token),
             ExpiresAt = expiresAt,
-            Repository = repository.FullName,
+            Repository = repository?.FullName
+                         ?? string.Create(CultureInfo.InvariantCulture, $"installation/{installationId}"),
             Scope = scope.Name,
             Permissions = ReadPermissions(root),
         };

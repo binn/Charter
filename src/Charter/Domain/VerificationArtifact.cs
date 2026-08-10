@@ -201,6 +201,36 @@ public sealed class VerificationArtifact
     public void RecordPayload(string? payload)
         => Payload = string.IsNullOrWhiteSpace(payload) ? null : payload;
 
+    /// <summary>
+    /// Puts the artifact back to <see cref="VerificationArtifactState.Pending"/> — a rebuild, or a
+    /// fresh deployment of the same change (sections 18, 27.7).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The URL and the expiry are cleared, because that is the whole point: <c>Rebuild</c> is the
+    /// primary action on an expired preview, and an artifact that went back to <c>pending</c> while
+    /// still carrying the dead host would render a skeleton above a link that does not work. What was
+    /// recorded about the artifact's <em>content</em> survives, since a rebuild of the same change
+    /// produces the same thing at a new address.
+    /// </para>
+    /// <para>
+    /// A no-op on an artifact that is already pending, so a reconciler that runs every few seconds
+    /// does not rewrite a row per pass.
+    /// </para>
+    /// </remarks>
+    public void MarkPending()
+    {
+        if (State == VerificationArtifactState.Pending)
+        {
+            return;
+        }
+
+        Url = null;
+        ConnectString = null;
+        ExpiresAt = null;
+        State = VerificationArtifactState.Pending;
+    }
+
     public void MarkFailed() => State = VerificationArtifactState.Failed;
 
     public void MarkExpired() => State = VerificationArtifactState.Expired;

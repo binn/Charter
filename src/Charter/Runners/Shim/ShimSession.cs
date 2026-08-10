@@ -269,8 +269,10 @@ public sealed class ShimSession
 
         // 3. The agent sees the refined, approved spec and nothing the requester typed (section 16).
         var prompt = await _specs.LoadAsync(request.SpecUrl, cancellationToken);
-        var model = ModelIdentifier.Parse(request.Model);
-        var invocation = adapter.BuildInvocation(prompt, model.Name);
+        // Charter's canonical identifier goes in whole: the adapter's `model_format` decides whether
+        // this CLI wants anthropic/claude-opus-5 or claude-opus-5 (section 12b). Stripping the
+        // provider here instead would silently break every adapter that wants the qualified form.
+        var invocation = adapter.BuildInvocation(prompt, request.Model);
 
         await PublishAsync(translator, EventTypes.SessionStarted, new JsonObject
         {

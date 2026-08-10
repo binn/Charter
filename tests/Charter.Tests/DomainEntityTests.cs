@@ -572,14 +572,14 @@ public class DomainEntityTests
     [Fact]
     public void PushingANewCommitClearsStaleness()
     {
-        var pullRequest = PullRequest.Open(Guid.CreateVersion7(), 142, "https://github.com/o/r/pull/142", "a3f9c21", now: Now);
+        var changeRequest = ChangeRequest.Open(Guid.CreateVersion7(), 142, "https://github.com/o/r/pull/142", "a3f9c21", now: Now);
 
-        pullRequest.MarkStale(Now);
-        Assert.True(pullRequest.IsStale);
+        changeRequest.MarkStale(Now);
+        Assert.True(changeRequest.IsStale);
 
-        pullRequest.UpdateState(PullRequestState.Open, "b7e0d13", Now.AddMinutes(1));
-        Assert.False(pullRequest.IsStale);
-        Assert.Equal("b7e0d13", pullRequest.HeadSha);
+        changeRequest.UpdateState(ChangeRequestState.Open, "b7e0d13", Now.AddMinutes(1));
+        Assert.False(changeRequest.IsStale);
+        Assert.Equal("b7e0d13", changeRequest.HeadSha);
     }
 
     [Fact]

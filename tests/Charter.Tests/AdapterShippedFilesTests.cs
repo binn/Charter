@@ -145,19 +145,65 @@ public class AdapterShippedFilesTests
     }
 
     [Fact]
-    public void PiMatchesTheWorkedExampleInTheSpec()
+    public void PiMatchesItsPublishedCliReference()
     {
+        // Checked against pi's own docs (earendil-works/pi, packages/coding-agent/docs/usage.md and
+        // json.md): `--mode json` is the event stream, `--print` is a different mode, `--output-format`
+        // does not exist, and the message is a positional argument. The file this replaced was the
+        // illustrative snippet from spec 12b, and none of those four things were true of it.
         var pi = Catalog().Get("pi");
 
-        Assert.Equal(["pi", "--print", "--output-format", "jsonl"], pi.Invoke.Command);
-        Assert.Equal(AdapterPromptDelivery.Stdin, pi.Invoke.PromptDelivery);
-        Assert.Equal(["--model", "{model}"], pi.ModelArg);
+        Assert.Equal(["pi", "--mode", "json"], pi.Invoke.Command);
+        Assert.Equal(AdapterPromptDelivery.Argument, pi.Invoke.PromptDelivery);
+        Assert.Equal(["--provider", "{provider}", "--model", "{model}"], pi.ModelArg);
+        Assert.Equal(AdapterModelFormat.Bare, pi.ModelFormat);
         Assert.Equal(
             ["anthropic_api_key", "openai_api_key", "openrouter_key", "google_api_key", "xai_api_key"],
             pi.CredentialKinds);
+
+        // Steering is pi's `--mode rpc`, a JSON command protocol Charter's shim does not speak, so it
+        // is not claimed. Resume is --continue/--resume/--session; cost is message.usage.cost.total.
         Assert.Equal(
-            [AdapterCapability.Steering, AdapterCapability.Resume, AdapterCapability.CostReporting],
+            [AdapterCapability.Resume, AdapterCapability.CostReporting],
             pi.Capabilities);
+    }
+
+    [Fact]
+    public void PiReachesAnOpenRouterModelWithoutGuessingHowItSplitsTheId()
+    {
+        // The whole point of shipping pi in Phase 1 (change spec 001): it is the adapter that makes an
+        // aggregator model usable for the expensive surface. --provider and --model are separate
+        // options, so the nested vendor segment never has to be re-parsed by the CLI.
+        var invocation = Catalog().Get("pi").BuildInvocation("build it", "openrouter/deepseek/deepseek-r1");
+
+        Assert.Equal(
+            ["pi", "--mode", "json", "--provider", "openrouter", "--model", "deepseek/deepseek-r1", "build it"],
+            invocation.Arguments);
+    }
+
+    [Fact]
+    public void ClaudeCodeDispatchesTheBareModelNameItsHelpDocuments()
+    {
+        // `claude --help`: an alias or a model's full name. anthropic/claude-opus-5 is neither.
+        var invocation = Catalog().Get("claude-code").BuildInvocation("build it", "anthropic/claude-opus-5");
+
+        Assert.Equal(
+            ["claude", "--print", "--verbose", "--output-format", "stream-json", "--model", "claude-opus-5"],
+            invocation.Arguments);
+    }
+
+    [Fact]
+    public void ClaudeCodeClaimsOnlyTheCapabilitiesItsHeadlessInvocationCanDeliver()
+    {
+        // Mid-run steering needs --input-format stream-json, which also turns the stdin prompt into a
+        // JSON envelope; the shim writes the spec as text. Section 12b: document the gap, do not
+        // pretend parity.
+        var claudeCode = Catalog().Get("claude-code");
+
+        Assert.DoesNotContain(AdapterCapability.Steering, claudeCode.Capabilities);
+        Assert.Equal(
+            [AdapterCapability.Resume, AdapterCapability.CostReporting],
+            claudeCode.Capabilities);
     }
 
     [Fact]
@@ -182,19 +228,72 @@ public class AdapterShippedFilesTests
     }
 
     [Fact]
+    public void ClaudeCodeEmitsOneContentBlockPerLineWhichIsWhyIndexZeroIsEnough()
+    {
+        // A previous pass flagged `$.message.content[0]` as a guess that would miss later blocks in a
+        // multi-block turn. Verified against a real `claude --print --verbose --output-format
+        // stream-json` run: a turn containing text, a tool call, thinking, and a second tool call is
+        // emitted as four assistant lines, each with a single-element content array. These are those
+        // lines, and each has to classify on its own.
+        var classifier = new AdapterEventClassifier(Catalog().Get("claude-code"));
+
+        string[] turn =
+        [
+            """{"type":"assistant","message":{"id":"msg_1","content":[{"type":"text","text":"I'll list /tmp."}]}}""",
+            """{"type":"assistant","message":{"id":"msg_1","content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}""",
+            """{"type":"assistant","message":{"id":"msg_1","content":[{"type":"thinking","thinking":""}]}}""",
+            """{"type":"assistant","message":{"id":"msg_1","content":[{"type":"tool_use","id":"t2","name":"Write"}]}}""",
+        ];
+
+        Assert.Equal([AdapterEventType.Message], classifier.Classify(turn[0]).Matches);
+        Assert.Equal([AdapterEventType.ToolUse], classifier.Classify(turn[1]).Matches);
+        Assert.Equal(AdapterLineKind.Unmatched, classifier.Classify(turn[2]).Kind);
+        Assert.Equal([AdapterEventType.FileWrite, AdapterEventType.ToolUse], classifier.Classify(turn[3]).Matches);
+
+        // A tool_result comes back on a `user` line, and must not be read as a file write just because
+        // a `name` could appear at that path in some future shape.
+        Assert.Equal(
+            AdapterLineKind.Unmatched,
+            classifier.Classify(
+                """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2"}]}}""")
+                .Kind);
+    }
+
+    [Fact]
     public void PiClassifiesItsOwnJsonlOutput()
     {
+        // Shapes taken from pi's json.md and its AgentEvent union: tool_execution_start carries
+        // toolName, and message lifecycle events are message_start / message_update / message_end.
         var classifier = new AdapterEventClassifier(Catalog().Get("pi"));
 
         Assert.Equal(
             [AdapterEventType.FileWrite, AdapterEventType.ToolUse],
-            classifier.Classify("""{"type":"tool_call","tool":"write","path":"src/App.tsx"}""").Matches);
+            classifier.Classify(
+                """{"type":"tool_execution_start","toolCallId":"t1","toolName":"write","args":{"path":"src/App.tsx"}}""")
+                .Matches);
         Assert.Equal(
             [AdapterEventType.ToolUse],
-            classifier.Classify("""{"type":"tool_call","tool":"bash"}""").Matches);
+            classifier.Classify("""{"type":"tool_execution_start","toolCallId":"t2","toolName":"bash","args":{}}""")
+                .Matches);
         Assert.Equal(
             [AdapterEventType.Message],
-            classifier.Classify("""{"type":"assistant","text":"Done."}""").Matches);
+            classifier.Classify(
+                """{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}""")
+                .Matches);
+
+        // The session header and the lifecycle chatter around a turn are not events in their own right.
+        Assert.Equal(
+            AdapterLineKind.Unmatched,
+            classifier.Classify("""{"type":"session","version":3,"id":"u","cwd":"/repo"}""").Kind);
+        Assert.Equal(
+            AdapterLineKind.Unmatched,
+            classifier.Classify("""{"type":"tool_execution_end","toolCallId":"t2","result":"ok","isError":false}""")
+                .Kind);
+        Assert.Equal(
+            AdapterLineKind.Unmatched,
+            classifier.Classify(
+                """{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}""")
+                .Kind);
     }
 
     [Fact]

@@ -2,6 +2,7 @@ using Charter.Auth.Audit;
 using Charter.Data;
 using Charter.Domain;
 using Charter.GitHub;
+using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -31,6 +32,15 @@ public static class OnboardingAuditActions
     /// <summary>The primer was published.</summary>
     public const string PrimerPublished = "repo.primer.published";
 
+    /// <summary>
+    /// The merge gate was checked against the provider (change spec 001 part A.5).
+    /// </summary>
+    /// <remarks>
+    /// Audited whichever way it came out. "Nobody told me this repository had no branch protection"
+    /// is exactly the sentence an audit log exists to prevent.
+    /// </remarks>
+    public const string MergeGateChecked = "repo.merge_gate.checked";
+
     /// <summary>An admin disabled or re-enabled the repository.</summary>
     public const string RepoStatusChanged = "repo.status.changed";
 }
@@ -52,6 +62,16 @@ public sealed record OnboardingOutcome(bool Succeeded, RepoStatus Status, string
 
     /// <summary>The job the execution plane will claim, when this step queued one.</summary>
     public Guid? JobId { get; init; }
+
+    /// <summary>
+    /// What the merge gate is worth for this repository, where the step checked (part A.5).
+    /// </summary>
+    /// <remarks>
+    /// Carried on the outcome rather than only logged, so the wizard and the repository settings
+    /// surface render the same assessment rather than each deciding for themselves what "protected"
+    /// means.
+    /// </remarks>
+    public MergeGateAssessment? MergeGate { get; init; }
 }
 
 /// <summary>
@@ -86,6 +106,7 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
     private readonly IGitHubRepositoryClient _github;
     private readonly ICharterFolderLoader _folders;
     private readonly IOnboardingRunDispatcher _dispatcher;
+    private readonly MergeGateInspector _mergeGate;
     private readonly IAuditWriter _audit;
     private readonly TimeProvider _clock;
     private readonly ILogger<OnboardingService> _logger;
@@ -95,6 +116,7 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
         IGitHubRepositoryClient github,
         ICharterFolderLoader folders,
         IOnboardingRunDispatcher dispatcher,
+        MergeGateInspector mergeGate,
         IAuditWriter audit,
         TimeProvider clock,
         ILogger<OnboardingService> logger)
@@ -103,6 +125,7 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
         ArgumentNullException.ThrowIfNull(github);
         ArgumentNullException.ThrowIfNull(folders);
         ArgumentNullException.ThrowIfNull(dispatcher);
+        ArgumentNullException.ThrowIfNull(mergeGate);
         ArgumentNullException.ThrowIfNull(audit);
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
@@ -111,6 +134,7 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
         _github = github;
         _folders = folders;
         _dispatcher = dispatcher;
+        _mergeGate = mergeGate;
         _audit = audit;
         _clock = clock;
         _logger = logger;
@@ -428,9 +452,21 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
             },
             cancellationToken);
 
+        // Change spec 001 part A.5, amending section 9: verify that protection is actually
+        // configured, not merely supported. A GitHub repository with no branch protection rule is
+        // functionally advisory, and the operator is told rather than left to assume the guarantee
+        // in section 7.4 applies to them.
+        var mergeGate = await VerifyMergeGateAsync(repo, actorUserId, cancellationToken);
+
         // Section 9: an empty preview warns, it does not block. A repository whose smoke test
         // otherwise passed becomes ready with a warning attached, not stuck in smoke_test.
         var warnings = report.Warnings.Concat(snapshotWarnings).ToList();
+
+        if (mergeGate.Warning is { Length: > 0 } advisory)
+        {
+            // Loudly, and first: this one changes what the whole product guarantees.
+            warnings.Insert(0, advisory);
+        }
 
         if (report.Passed)
         {
@@ -444,7 +480,67 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
         {
             Warnings = warnings,
             PullRequestNumber = report.PullRequestNumber,
+            MergeGate = mergeGate,
         };
+    }
+
+    /// <summary>
+    /// Asks the provider whether this repository's merge gate is real (change spec 001 part A.5).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Section 7.4 says merge authority lives outside Charter, in provider-side branch protection.
+    /// Part A.5 qualifies that: the guarantee is only as strong as the provider makes it, and a
+    /// provider that <em>can</em> enforce review on a repository where nobody turned it on enforces
+    /// nothing. Onboarding therefore verifies configuration rather than capability, and this is a
+    /// public step so an engineer can re-run it after fixing the rule.
+    /// </para>
+    /// <para>
+    /// It never blocks. A repository whose merge gate is advisory is still usable — it simply carries
+    /// a different risk posture, and the operator has been told what it is.
+    /// </para>
+    /// </remarks>
+    public async Task<MergeGateAssessment> VerifyMergeGateAsync(
+        Repo repo,
+        Guid? actorUserId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repo);
+
+        var assessment = await _mergeGate.AssessAsync(repo, cancellationToken);
+
+        await _audit.RecordAsync(
+            new AuditEntry
+            {
+                OrgId = repo.OrgId,
+                ActorUserId = actorUserId,
+                Action = OnboardingAuditActions.MergeGateChecked,
+                TargetType = nameof(Repo),
+                TargetId = repo.Id.ToString(),
+                Metadata = new Dictionary<string, string?>
+                {
+                    ["provider"] = assessment.ProviderId,
+                    ["branch"] = assessment.Branch,
+                    ["enforcement"] = assessment.EffectiveName,
+                    ["protection_configured"] = assessment.Protection.Configured.ToString(),
+                    ["requires_review"] = assessment.Protection.RequiresReview.ToString(),
+                    ["code_owners"] = assessment.Protection.CodeOwnersReviewRequired.ToString(),
+                },
+            },
+            cancellationToken);
+
+        return assessment;
+    }
+
+    /// <inheritdoc cref="VerifyMergeGateAsync(Repo, Guid?, CancellationToken)"/>
+    public async Task<MergeGateAssessment?> VerifyMergeGateAsync(
+        Guid repoId,
+        Guid? actorUserId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var repo = await FindAsync(repoId, cancellationToken);
+
+        return repo is null ? null : await VerifyMergeGateAsync(repo, actorUserId, cancellationToken);
     }
 
     /// <summary>Step 5: publishes the primer an engineer edited.</summary>

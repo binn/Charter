@@ -120,4 +120,21 @@ public sealed record AdapterCompatibility(
                 .Distinct(StringComparer.Ordinal),
         ];
     }
+
+    /// <summary>
+    /// The adapters that can actually build with a model. The other half of the UI's question: a
+    /// requester who has picked <c>openrouter/deepseek/deepseek-r1</c> needs to be shown pi rather
+    /// than told, after dispatch, that Claude Code could not authenticate.
+    /// </summary>
+    public IReadOnlyList<string> AdaptersFor(string model)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        return
+        [
+            .. Options
+                .Where(option => string.Equals(option.Model, model, StringComparison.Ordinal))
+                .Select(option => option.AdapterId)
+                .Distinct(StringComparer.Ordinal),
+        ];
+    }
 }

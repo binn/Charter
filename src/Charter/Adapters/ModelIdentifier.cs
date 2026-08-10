@@ -21,6 +21,13 @@ public readonly record struct ModelIdentifier(string Provider, string Name)
         ["grok"] = "xai",
         ["azure"] = "openai",
         ["azure-openai"] = "openai",
+
+        // `openai-compatible` is the canonical prefix the model layer prints for a self-hosted or
+        // proxied endpoint; `custom` is what CredentialGrant calls the matching credential kind
+        // (custom_openai_compatible). Folding them together is what stops an adapter that declares
+        // that kind from being refused a model it can in fact run.
+        ["openai-compatible"] = AdapterCredentialKinds.CustomProvider,
+        ["custom"] = AdapterCredentialKinds.CustomProvider,
     };
 
     public static ModelIdentifier Parse(string value)

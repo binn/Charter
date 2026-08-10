@@ -97,6 +97,47 @@ review. See [charter-folder.md](charter-folder.md).
 **Path scope is enforced in the runner, not the UI.** A session cannot widen its own scope, because
 enforcement does not sit on the side the agent can influence.
 
+## The merge gate is only as strong as your provider makes it
+
+The guarantee above — no merge button, merge authority outside Charter — rests on something Charter
+does not control: your version control provider actually refusing an unreviewed merge. Charter
+records what each provider can do, and what your repository has actually configured, because those
+are two different facts.
+
+| Enforcement | What it means |
+|---|---|
+| `provider_enforced` | The provider refuses the merge itself. The guarantee above holds unchanged. |
+| `advisory` | Nothing stops a person from merging agent-written code without review. **Charter will not do it, but Charter cannot prevent it either.** |
+
+A repository is `provider_enforced` only when **both** are true:
+
+1. The provider supports branch protection and honours it — GitHub, GitLab, Gitea, Bitbucket and
+   Azure DevOps all do; a plain git remote does not.
+2. **That repository has a rule configured on its base branch that requires a review before merge.**
+
+The second condition is the one that catches people out. A GitHub repository with no branch
+protection rule is *functionally advisory*, however capable GitHub is. Charter therefore checks the
+rule rather than the provider: during repository onboarding it reads the base branch's protection and
+reports the result, the check is written to the audit log whichever way it comes out, and an
+unprotected repository is flagged in the onboarding wizard and in the repository's settings with this
+wording:
+
+> No branch protection rule covers `main`, so nothing stops a person from merging agent-written code
+> without review. Charter will not do it, but Charter cannot prevent it either. Add a rule requiring
+> review before merge to get the guarantee Charter's security model describes.
+
+Two further notes on what counts:
+
+- **A rule that only blocks force pushes is not a merge gate.** Charter reports a repository as
+  enforced only when the rule requires an approving review or a CODEOWNERS review.
+- **If Charter cannot read the rule, it reports "not verified", never "protected".** An installation
+  without permission to read branch protection produces a warning, not a reassurance.
+
+An advisory repository is still usable. It simply carries a different risk posture, and the operator
+is told what it is rather than left to assume otherwise. If you want the strong guarantee, the fix is
+a protection rule on the base branch requiring review, plus CODEOWNERS on anything sensitive —
+`.charter/`, migrations, auth, and infrastructure.
+
 ## Prompt injection
 
 The agent consumes untrusted text from two directions: non-engineers filing requests, and the

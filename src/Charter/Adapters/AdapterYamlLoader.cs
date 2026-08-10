@@ -29,7 +29,8 @@ public static partial class AdapterYamlLoader
 
     private static readonly string[] KnownRootKeys =
     [
-        "id", "display_name", "version", "install", "invoke", "auth", "model_arg", "events", "capabilities",
+        "id", "display_name", "version", "install", "invoke", "auth", "model_arg", "model_format",
+        "events", "capabilities",
     ];
 
     /// <summary>
@@ -98,6 +99,7 @@ public static partial class AdapterYamlLoader
             var invoke = ReadInvoke(root);
             var auth = ReadAuth(root);
             var modelArg = ReadModelArg(root);
+            var modelFormat = ReadModelFormat(root, modelArg);
             var events = ReadEvents(root);
             var capabilities = ReadCapabilities(root);
 
@@ -113,7 +115,8 @@ public static partial class AdapterYamlLoader
                 modelArg,
                 events,
                 capabilities,
-                _sourcePath);
+                _sourcePath,
+                modelFormat);
         }
 
         public void ThrowIfInvalid()
@@ -296,6 +299,49 @@ public static partial class AdapterYamlLoader
             }
 
             return modelArg;
+        }
+
+        private AdapterModelFormat ReadModelFormat(YamlMappingNode root, IReadOnlyList<string> modelArg)
+        {
+            var usesProvider = modelArg.Any(argument =>
+                argument.Contains(AdapterDocument.ProviderPlaceholder, StringComparison.Ordinal));
+
+            if (!TryGetChild(root, "model_format", out var node))
+            {
+                // Absent means bare, which is the form Charter dispatched before this key existed.
+                // An adapter file written for an older Charter therefore produces the same command.
+                return AdapterModelFormat.Bare;
+            }
+
+            var raw = Scalar(node);
+            var format = raw switch
+            {
+                "bare" => AdapterModelFormat.Bare,
+                "qualified" => AdapterModelFormat.Qualified,
+                "verbatim" => AdapterModelFormat.Verbatim,
+                _ => Unsupported(),
+            };
+
+            AdapterModelFormat Unsupported()
+            {
+                Problem(
+                    "model_format",
+                    $"'{Describe(node)}' is not a model identifier form this Charter knows. Supported "
+                    + "forms: bare (claude-opus-5), qualified (anthropic/claude-opus-5), verbatim "
+                    + "(exactly what Charter resolved). Omit the key for bare.");
+                return AdapterModelFormat.Bare;
+            }
+
+            if (format == AdapterModelFormat.Verbatim && usesProvider)
+            {
+                Problem(
+                    "model_format",
+                    $"is verbatim, but 'model_arg' uses '{AdapterDocument.ProviderPlaceholder}'. Charter "
+                    + "cannot name the provider of an identifier it has been told not to interpret. Use "
+                    + "'bare' or 'qualified'.");
+            }
+
+            return format;
         }
 
         private AdapterEvents ReadEvents(YamlMappingNode root)

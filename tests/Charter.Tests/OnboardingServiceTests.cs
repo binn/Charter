@@ -5,6 +5,7 @@ using Charter.Data;
 using Charter.Domain;
 using Charter.GitHub;
 using Charter.Onboarding;
+using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -302,6 +303,71 @@ public class OnboardingServiceTests
     }
 
     [Fact]
+    public async Task AnUnprotectedRepositoryIsFlaggedAsAdvisoryAtOnboarding()
+    {
+        await using var world = await OnboardingWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        // Change spec 001 part A.5, amending section 9: a GitHub repository with no branch
+        // protection rule is functionally advisory, and onboarding says so rather than letting the
+        // operator assume section 7.4's guarantee applies to them.
+        world.Provider.Protection.Clear();
+
+        var repo = await world.ReachSmokeTestAsync();
+
+        var outcome = await world.Service.CompleteSmokeTestAsync(
+            repo.Id,
+            SmokeTestReport.Passing with { PullRequestNumber = 17 },
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        // It warns; it never blocks. An advisory repository is usable, with a different risk posture.
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(RepoStatus.Ready, outcome.Status);
+
+        Assert.NotNull(outcome.MergeGate);
+        Assert.False(outcome.MergeGate.IsEnforced);
+        Assert.Equal("advisory", outcome.MergeGate.EffectiveName);
+
+        // Loudly, and first.
+        var warning = outcome.Warnings[0];
+        Assert.Contains("nothing stops a person", warning, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Charter will not do it", warning, StringComparison.Ordinal);
+
+        // And audited, because "nobody told me" is exactly what an audit log exists to prevent.
+        var audited = await world.Db.AuditLogs
+            .AsNoTracking()
+            .Where(entry => entry.OrgId == world.OrgId
+                            && entry.Action == OnboardingAuditActions.MergeGateChecked)
+            .ToListAsync(TestContext.Current.CancellationToken);
+
+        Assert.NotEmpty(audited);
+    }
+
+    [Fact]
+    public async Task AProtectedRepositoryOnboardsWithoutAMergeGateWarning()
+    {
+        await using var world = await OnboardingWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        var repo = await world.ReachSmokeTestAsync();
+
+        var outcome = await world.Service.CompleteSmokeTestAsync(
+            repo.Id,
+            SmokeTestReport.Passing with { PullRequestNumber = 17 },
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(outcome.MergeGate);
+        Assert.True(outcome.MergeGate.IsEnforced);
+        Assert.Empty(outcome.Warnings);
+    }
+
+    [Fact]
     public async Task AnEmptyPreviewWarnsAndStillReachesReady()
     {
         await using var world = await OnboardingWorld.CreateAsync();
@@ -460,11 +526,26 @@ public class OnboardingServiceTests
             };
             Dispatcher = new RecordingDispatcher();
 
+            // Change spec 001 part A.5: onboarding verifies that protection is configured, not
+            // merely supported, so the world carries a provider whose protection a test can set.
+            // The default world is a well-formed repository — protection on, review required — so a
+            // test asserting "no warnings" is asserting something about onboarding rather than about
+            // a repository nobody has protected yet.
+            Provider = new FakeVersionControlProvider();
+            Provider.Protection["main"] = new BranchProtectionStatus(
+                true,
+                RequiresReview: true,
+                RequiredApprovals: 1,
+                CodeOwnersReviewRequired: true);
+
             Service = new OnboardingService(
                 db,
                 Github,
                 Folders,
                 Dispatcher,
+                new MergeGateInspector(
+                    new VersionControlProviderRegistry([Provider]),
+                    NullLogger<MergeGateInspector>.Instance),
                 new AuditWriter(db, TimeProvider.System),
                 TimeProvider.System,
                 NullLogger<OnboardingService>.Instance);
@@ -487,6 +568,8 @@ public class OnboardingServiceTests
         public FakeFolderLoader Folders { get; }
 
         public RecordingDispatcher Dispatcher { get; }
+
+        public FakeVersionControlProvider Provider { get; }
 
         public OnboardingService Service { get; }
 

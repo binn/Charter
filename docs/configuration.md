@@ -127,9 +127,9 @@ username needs its `@` percent-encoded as `%40`.
 | `OPENROUTER_API_KEY` | see below | — | Instance-level fallback credential. |
 | `CHARTER_CREDENTIAL_KEY` | yes | — | At least 32 bytes. Encrypts stored credentials at rest. Deliberately separate from `CHARTER_SECRET_KEY` so rotating the cookie key does not invalidate every linked account. |
 | `CHARTER_ALLOW_SHARED_POOL` | no | `false` | Permits users to pool subscription credentials for other people's requests. Read [credentials.md](credentials.md) before enabling. |
-| `CHARTER_MODEL_REFINE` | no | `claude-sonnet-5` | Model used for spec refinement, chat, and plan mode. |
-| `CHARTER_MODEL_BUILD` | no | `claude-opus-5` | Model passed to the agent CLI for build sessions. |
-| `CHARTER_MODEL_TEACH` | no | `claude-sonnet-5` | Model used for walkthroughs, annotations, and the engineer recap. |
+| `CHARTER_MODEL_REFINE` | no | `openrouter/anthropic/claude-sonnet-5` | Model used for spec refinement, chat, and plan mode. |
+| `CHARTER_MODEL_BUILD` | no | `claude-opus-5` | Model passed to the agent CLI for build sessions. Unqualified, so Anthropic's — see below. |
+| `CHARTER_MODEL_TEACH` | no | `openrouter/anthropic/claude-sonnet-5` | Model used for walkthroughs, annotations, and the engineer recap. |
 
 **At least one model credential must be resolvable at startup** — either `ANTHROPIC_API_KEY`,
 `OPENROUTER_API_KEY`, or a credential grant already linked in the database. If none exists, startup
@@ -143,8 +143,36 @@ CHARTER_MODEL_BUILD=openrouter/deepseek/deepseek-r1
 CHARTER_MODEL_TEACH=anthropic/claude-sonnet-5
 ```
 
-An unqualified name such as `claude-sonnet-5` is treated as Anthropic. Which models can actually be
-used for build sessions depends on the agent adapter — see [adapters.md](adapters.md).
+An unqualified name such as `claude-sonnet-5` is treated as Anthropic. Only the first segment is the
+provider, so `openrouter/deepseek/deepseek-r1` selects OpenRouter and asks it for
+`deepseek/deepseek-r1`.
+
+### Why two of the three defaults name OpenRouter and one does not
+
+The defaults are not inconsistent — they follow the two surfaces Charter consumes models on, and the
+distinction decides which credential each one needs:
+
+| Variable | Who calls the model | Reached through |
+|---|---|---|
+| `CHARTER_MODEL_REFINE`, `CHARTER_MODEL_TEACH` | Charter itself, over HTTP | Any provider Charter has a credential for. Defaults to OpenRouter, which reaches every model from one key. |
+| `CHARTER_MODEL_BUILD` | The agent CLI on the runner | Only what that CLI can authenticate against. |
+
+So the build model defaults to a bare Anthropic name because the default adapter, Claude Code,
+authenticates against the Anthropic API (or a gateway presenting it) and cannot present an OpenRouter
+key. Pointing builds at OpenRouter is a supported and often cheaper choice — it needs an adapter that
+speaks to OpenRouter natively:
+
+```bash
+CHARTER_MODEL_BUILD=openrouter/deepseek/deepseek-r1   # with the `pi` adapter
+```
+
+Charter refuses an impossible pairing when you assemble it, not when the session dispatches. See
+[adapters.md](adapters.md) for which adapter reaches which provider.
+
+**If your instance has only `ANTHROPIC_API_KEY`,** set the two control-plane variables explicitly —
+`CHARTER_MODEL_REFINE=claude-sonnet-5` and `CHARTER_MODEL_TEACH=claude-sonnet-5` — or add an
+`OPENROUTER_API_KEY`. The defaults assume the OpenRouter key because one key covers every model,
+which is what makes it the cheaper starting point.
 
 ## GitHub
 
@@ -191,6 +219,49 @@ Two files in the same directory claiming the same adapter id is also an error, a
 Overriding is something you do across directories, deliberately, not by accident within one.
 
 The schema, the shipped adapters, and what each one can do are in [adapters.md](adapters.md).
+
+## Preview environments
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `CHARTER_DEPLOYMENT_PROVIDER` | no | `none` | `none` or `railway`. |
+| `CHARTER_RAILWAY_TOKEN` | when `railway` | — | Railway account or team token. |
+| `CHARTER_RAILWAY_PROJECT_ID` | when `railway` | — | |
+| `CHARTER_RAILWAY_BASE_ENVIRONMENT` | when `railway` | — | The environment previews are cloned from. Never defaulted. |
+| `CHARTER_RAILWAY_API_URL` | no | `https://backboard.railway.com/graphql/v2` | |
+| `CHARTER_PREVIEW_TTL_HOURS` | no | `72` | Preview lifetime where the platform does not expire it itself. `0` means never. |
+
+Half-configuring a provider fails startup: setting `CHARTER_DEPLOYMENT_PROVIDER=railway` without a
+token, project, and base environment reports all of the missing values at once.
+
+### `none` is a supported configuration, not a gap
+
+With no provider set, Charter still binds previews, produces verification artifacts, and expires
+them. It simply does not create the deployment itself. Report your own:
+
+```bash
+curl -X POST https://charter.example.com/api/deployments/a3f9c21e4b7d8f0c1a2b3c4d5e6f7a8b9c0d1e2f \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://pr-142.preview.example.com", "state": "ready", "provider": "render"}'
+```
+
+The head SHA is the authorisation: a report for a commit no change request carries returns 404.
+Put it behind your own gateway if you want more than that.
+
+### Point Railway at staging, not production
+
+`CHARTER_RAILWAY_BASE_ENVIRONMENT` has no default on purpose.
+
+Railway's PR environments replicate every service, variable, and database from the base environment.
+Base them on production and each preview receives a copy of your production secrets — then runs an
+agent-authored branch against them. Base them on staging and a leaked preview costs you nothing real.
+
+Charter warns at startup when the value looks like production. That warning is a courtesy, not a
+control; nothing stops you from naming production deliberately.
+
+One Railway behaviour worth knowing: it will not deploy a change request branch from someone outside
+the workspace unless they have been invited with that account. Charter detects this by absence — the
+preview simply never arrives — and says so rather than leaving the requester waiting.
 
 ## Observability
 

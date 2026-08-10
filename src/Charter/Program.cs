@@ -9,6 +9,7 @@ using Charter.Models;
 using Charter.Onboarding;
 using Charter.Refinement;
 using Charter.Runners;
+using Charter.Runners.Agent;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry.Metrics;
@@ -141,6 +142,10 @@ try
 
     // Section 30.1: an unclaimed instance serves only the setup route, so a self-hosted Charter
     // cannot be claimed by whoever finds it first. This must run before anything else routes.
+    // Section 33.1: the agent dials out over a WebSocket. Without this the upgrade never
+    // becomes a socket and /api/agent/connect answers 400.
+    app.UseWebSockets();
+
     app.UseCharterSetupMode();
     app.UseAuthentication();
     app.UseAuthorization();
@@ -207,6 +212,7 @@ try
     app.MapCharterApi();
     app.MapCharterGitHub();
     app.MapCharterRunnerCallbacks();
+    app.MapCharterAgentPlane();
     app.MapCharterHubs();
 
     // Client-side routing: anything not matched above is the SPA's problem.

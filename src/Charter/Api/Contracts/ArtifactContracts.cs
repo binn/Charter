@@ -1,7 +1,7 @@
 namespace Charter.Api.Contracts;
 
 /// <summary>
-/// Section 27.7: pull request number, commit SHA, branch, runner, duration and cost.
+/// Section 27.7: change request number, commit SHA, branch, runner, duration and cost.
 /// </summary>
 /// <remarks>
 /// <em>"<c>details</c> is omitted by the API, not hidden by CSS. Authorisation is not a rendering
@@ -12,9 +12,26 @@ namespace Charter.Api.Contracts;
 /// </remarks>
 public sealed record EngineerDetailsResponse
 {
-    public required int PullRequestNumber { get; init; }
+    public required int ChangeRequestNumber { get; init; }
 
-    public required string PullRequestUrl { get; init; }
+    public required string ChangeRequestUrl { get; init; }
+
+    /// <summary>
+    /// What the provider calls it, so the UI reads correctly (change spec 001 part A.2): <em>pull
+    /// request</em> on GitHub, <em>merge request</em> on GitLab.
+    /// </summary>
+    /// <remarks>
+    /// Supplied by the provider rather than hard-coded in the client, and lower case, so a caller can
+    /// sentence-case it where it starts a sentence. A client that ignores it renders Charter's own
+    /// neutral wording, which is wrong rather than broken.
+    /// </remarks>
+    public string ChangeRequestTerm { get; init; } = "change request";
+
+    /// <summary>
+    /// The short form an engineer types: <c>PR</c> on GitHub, <c>MR</c> on GitLab. What the card's
+    /// <c>PR #142</c> chip is built from, so the chip stops being GitHub-specific.
+    /// </summary>
+    public string ChangeRequestTermShort { get; init; } = "CR";
 
     public required string CommitSha { get; init; }
 

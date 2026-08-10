@@ -63,7 +63,7 @@ export function ChangesPaneView({ pane, selectedPath, onSelectFile }: ChangesPan
 
       <p className="border-line text-tiny text-ink-subtle mt-4 rounded-control border border-dashed px-3 py-2.5">
         The side-by-side diff lands with Monaco, lazy-loaded, in the next phase. Until then, open the
-        pull request on GitHub to read the change.
+        change request with your version control provider to read the change.
       </p>
     </div>
   );

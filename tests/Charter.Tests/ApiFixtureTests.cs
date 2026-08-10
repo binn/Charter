@@ -126,7 +126,7 @@ public sealed class ApiScenario
         IReadOnlyList<Milestone> milestones,
         IReadOnlyList<Event> events,
         IReadOnlyList<VerificationArtifact> artifacts,
-        PullRequest pullRequest,
+        ChangeRequest changeRequest,
         RequestFeedback? feedback,
         ConversationRecord conversation)
     {
@@ -145,7 +145,7 @@ public sealed class ApiScenario
         Milestones = milestones;
         Events = events;
         Artifacts = artifacts;
-        PullRequest = pullRequest;
+        ChangeRequest = changeRequest;
     }
 
     public Organization Organization { get; }
@@ -174,7 +174,7 @@ public sealed class ApiScenario
 
     public IReadOnlyList<VerificationArtifact> Artifacts { get; }
 
-    public PullRequest PullRequest { get; }
+    public ChangeRequest ChangeRequest { get; }
 
     /// <summary>Section 11: the latest verdict, when somebody has pressed one of the two buttons.</summary>
     public RequestFeedback? Feedback { get; }
@@ -325,12 +325,12 @@ public sealed class ApiScenario
             expiresAt: at.AddHours(8),
             payload: artifactPayload);
 
-        var pullRequest = PullRequest.Open(
+        var changeRequest = ChangeRequest.Open(
             session.Id,
             142,
             "https://github.com/northbeam/quote-tool/pull/142",
             CommitSha,
-            PullRequestState.Open,
+            ChangeRequestState.Open,
             at.AddHours(1),
             headBranch: HeadBranch);
 
@@ -364,7 +364,7 @@ public sealed class ApiScenario
             milestones,
             events,
             artifacts: [artifact],
-            pullRequest,
+            changeRequest,
             feedback,
             conversation);
     }
@@ -388,7 +388,12 @@ public sealed class ApiScenario
             Milestones = Milestones,
             Events = visibility.Transcript ? Events : [],
             Artifacts = Artifacts,
-            PullRequest = RequestVisibility.CanSeeEngineerDetails(visibility) ? PullRequest : null,
+            ChangeRequest = RequestVisibility.CanSeeEngineerDetails(visibility) ? ChangeRequest : null,
+
+            // Change spec 001 part A.2: the provider supplies the word. This scenario is a GitHub
+            // repository, so the engineer detail reads "pull request".
+            ChangeRequestTerm = "pull request",
+            ChangeRequestTermShort = "PR",
             RefinementMessages = RefinementThread.Derive(Request, Spec, Conversation),
             Feedback = RequestPresentation.Feedback(Feedback),
             ApprovedByName = RequesterUser.DisplayName,
@@ -431,7 +436,7 @@ public class ApiFixtureTests
         var scenario = ApiScenario.Build();
 
         Assert.Equal(ApiScenario.TechnicalApproach, scenario.Spec.TechnicalApproach);
-        Assert.Equal(ApiScenario.CommitSha, scenario.PullRequest.HeadSha);
+        Assert.Equal(ApiScenario.CommitSha, scenario.ChangeRequest.HeadSha);
         Assert.Equal(ApiScenario.CostUsd, scenario.Session.CostUsd);
         Assert.NotEmpty(scenario.Events);
     }

@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Charter.Data;
 using Charter.Domain;
 using Charter.Runners;
+using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -108,6 +109,12 @@ public sealed class SessionOrchestrator : BackgroundService
         var openJobs = await OpenBuildJobSessionsAsync(db, cancellationToken);
         var reconciliations = new List<SessionReconciliation>(sessions.Count);
 
+        // Change spec 001 part A: session → change request. Resolved optionally so a host that wires
+        // no version control provider still reconciles; driven from here rather than from the runner's
+        // result callback because the control plane can restart between the two and the change
+        // request still has to be opened (section 2.3).
+        var publisher = provider.GetService<ChangeRequestPublisher>();
+
         foreach (var session in sessions)
         {
             var summary = await journal.SummarizeAsync(session.Id, cancellationToken);
@@ -120,6 +127,32 @@ public sealed class SessionOrchestrator : BackgroundService
                 openJobs.Contains(session.Id)));
 
             var acted = await ActAsync(session, plan, summary, coordinator, journal, registry, startup, cancellationToken);
+
+            // The runner reported a clean completion and nothing has bound a change request to it.
+            // Section 6 puts PROpen after Running, and this is the step that gets it there.
+            if (publisher is not null
+                && plan.Action == SessionRecoveryAction.Adopt
+                && summary.TerminalReported
+                && SessionRecovery.MapTerminal(summary.TerminalState!) is null)
+            {
+                try
+                {
+                    var publication = await publisher.PublishAsync(session.Id, cancellationToken);
+
+                    acted |= publication.Outcome is ChangeRequestPublication.Opened
+                        or ChangeRequestPublication.NoChanges;
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    // One session's provider being unreachable must not stop the pass reconciling the
+                    // other four hundred. The next pass tries again.
+                    _logger.LogError(
+                        exception,
+                        "Could not open a change request for session {SessionId}",
+                        session.Id);
+                }
+            }
+
             reconciliations.Add(new SessionReconciliation(session.Id, plan, acted));
         }
 

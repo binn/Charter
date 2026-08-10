@@ -15,22 +15,22 @@ export function EngineerDetailsDisclosure({ details }: { details: EngineerDetail
     <Disclosure
       aside={
         <span className="font-mono">
-          PR #{details.pullRequestNumber} &middot; {details.commitSha} &middot;{' '}
+          {details.changeRequestTermShort} #{details.changeRequestNumber} &middot; {details.commitSha} &middot;{' '}
           {formatDuration(details.durationMs)}
         </span>
       }
       summary="Details"
     >
       <dl className="text-small grid grid-cols-[7rem_1fr] gap-x-4 gap-y-1.5">
-        <dt className="text-ink-subtle">Pull request</dt>
+        <dt className="text-ink-subtle capitalize">{details.changeRequestTerm}</dt>
         <dd>
           <a
             className="text-accent underline decoration-dotted underline-offset-4"
-            href={details.pullRequestUrl}
+            href={details.changeRequestUrl}
             rel="noreferrer"
             target="_blank"
           >
-            #{details.pullRequestNumber}
+            #{details.changeRequestNumber}
           </a>
         </dd>
 

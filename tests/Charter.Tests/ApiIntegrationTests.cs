@@ -575,7 +575,11 @@ public class ApiIntegrationTests
         public MemberSnapshot Outsider => scenario.Outsider;
 
         public RequestQueryService Queries()
-            => new(Db, new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)), TimeProvider.System);
+            => new(
+                Db,
+                new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+                new Charter.VersionControl.VersionControlProviderRegistry([]),
+                TimeProvider.System);
 
         public Charter.Api.Viewer.ViewerService Viewers()
             => new(Db, new Charter.Api.Viewer.UserRecordPreferencesStore(Db), Queries());
@@ -659,7 +663,7 @@ public class ApiIntegrationTests
             db.Events.AddRange(scenario.Events);
             db.Milestones.AddRange(scenario.Milestones);
             db.VerificationArtifacts.AddRange(scenario.Artifacts);
-            db.PullRequests.Add(scenario.PullRequest);
+            db.ChangeRequests.Add(scenario.ChangeRequest);
 
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
             db.ChangeTracker.Clear();

@@ -229,8 +229,10 @@ describe('VerificationArtifactCard — audience gating (§7.4, §27.7)', () => {
     renderCard([
       hostedPreview({
         details: {
-          pullRequestNumber: 142,
-          pullRequestUrl: 'https://github.test/org/repo/pull/142',
+          changeRequestNumber: 142,
+          changeRequestUrl: 'https://github.test/org/repo/pull/142',
+          changeRequestTerm: 'pull request',
+          changeRequestTermShort: 'PR',
           commitSha: 'a3f9c21',
           branch: 'charter/remember-vertical',
           runner: 'detached · mac-mini-01',

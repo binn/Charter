@@ -4,38 +4,39 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace Charter.Data.Configurations;
 
-internal sealed class PullRequestConfiguration : IEntityTypeConfiguration<PullRequest>
+internal sealed class ChangeRequestConfiguration : IEntityTypeConfiguration<ChangeRequest>
 {
-    public void Configure(EntityTypeBuilder<PullRequest> builder)
+    public void Configure(EntityTypeBuilder<ChangeRequest> builder)
     {
-        builder.ToTable("pull_requests");
-        builder.HasKey(pullRequest => pullRequest.Id);
+        builder.ToTable("change_requests");
+        builder.HasKey(changeRequest => changeRequest.Id);
 
-        builder.Property(pullRequest => pullRequest.Id).ValueGeneratedNever();
-        builder.Property(pullRequest => pullRequest.Number).IsRequired();
-        builder.Property(pullRequest => pullRequest.Url).HasMaxLength(500).IsRequired();
-        builder.Property(pullRequest => pullRequest.HeadSha).HasMaxLength(64).IsRequired();
+        builder.Property(changeRequest => changeRequest.Id).ValueGeneratedNever();
+        builder.Property(changeRequest => changeRequest.Number).IsRequired();
+        builder.Property(changeRequest => changeRequest.Url).HasMaxLength(500).IsRequired();
+        builder.Property(changeRequest => changeRequest.HeadSha).HasMaxLength(64).IsRequired();
 
         // Section 27.7 names the branch in the engineer `Details` disclosure. 255 is git's own
-        // practical ref limit; optional because a webhook can arrive without a ref.
-        builder.Property(pullRequest => pullRequest.HeadBranch).HasMaxLength(255);
+        // practical ref limit; optional because a webhook can arrive without a ref — and because a
+        // provider with no branches (change spec 001 part A.7) has none to report.
+        builder.Property(changeRequest => changeRequest.HeadBranch).HasMaxLength(255);
 
-        builder.Property(pullRequest => pullRequest.State).HasEnumConversion();
-        builder.Property(pullRequest => pullRequest.IsStale).IsRequired();
-        builder.Property(pullRequest => pullRequest.CreatedAt).IsRequired();
-        builder.Property(pullRequest => pullRequest.UpdatedAt).IsRequired();
+        builder.Property(changeRequest => changeRequest.State).HasEnumConversion();
+        builder.Property(changeRequest => changeRequest.IsStale).IsRequired();
+        builder.Property(changeRequest => changeRequest.CreatedAt).IsRequired();
+        builder.Property(changeRequest => changeRequest.UpdatedAt).IsRequired();
 
         builder.HasOne<Session>()
             .WithMany()
-            .HasForeignKey(pullRequest => pullRequest.SessionId)
+            .HasForeignKey(changeRequest => changeRequest.SessionId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasIndex(pullRequest => new { pullRequest.SessionId, pullRequest.Number })
+        builder.HasIndex(changeRequest => new { changeRequest.SessionId, changeRequest.Number })
             .IsUnique()
-            .HasDatabaseName("ux_pull_requests_session_id_number");
+            .HasDatabaseName("ux_change_requests_session_id_number");
 
         // The deployment webhook of section 18 arrives keyed on the head commit, not on our own ids.
-        builder.HasIndex(pullRequest => pullRequest.HeadSha).HasDatabaseName("ix_pull_requests_head_sha");
+        builder.HasIndex(changeRequest => changeRequest.HeadSha).HasDatabaseName("ix_change_requests_head_sha");
     }
 }
 
@@ -52,14 +53,14 @@ internal sealed class DeploymentConfiguration : IEntityTypeConfiguration<Deploym
         builder.Property(deployment => deployment.State).HasEnumConversion();
         builder.Property(deployment => deployment.ReportedAt).IsRequired();
 
-        builder.HasOne<PullRequest>()
+        builder.HasOne<ChangeRequest>()
             .WithMany()
-            .HasForeignKey(deployment => deployment.PullRequestId)
+            .HasForeignKey(deployment => deployment.ChangeRequestId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        builder.HasIndex(deployment => new { deployment.PullRequestId, deployment.ReportedAt })
+        builder.HasIndex(deployment => new { deployment.ChangeRequestId, deployment.ReportedAt })
             .IsDescending(false, true)
-            .HasDatabaseName("ix_deployments_pull_request_id_reported_at");
+            .HasDatabaseName("ix_deployments_change_request_id_reported_at");
     }
 }
 

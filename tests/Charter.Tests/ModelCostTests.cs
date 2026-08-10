@@ -221,6 +221,71 @@ public class ModelCostTests
     }
 
     [Fact]
+    public async Task AnUnreachableEndpointIsNotRetriedOnEveryLookup()
+    {
+        // Degrading to the shipped table is only a degradation if it is cheap. Without a backoff, an
+        // OpenRouter outage puts a connection attempt in front of every price lookup in every session.
+        var handler = new StubHttpMessageHandler()
+            .Enqueue(_ => throw new HttpRequestException("network is down"))
+            .Enqueue(_ => throw new HttpRequestException("network is still down"))
+            .EnqueueJson("""{"data":[{"id":"a/b","pricing":{"prompt":"0.000002","completion":"0.000004"}}]}""");
+
+        var time = new ModelFakeTimeProvider(Now);
+        var catalog = new OpenRouterModelCatalog(
+            new StubHttpClientFactory(handler).CreateClient("x"),
+            new ModelClientOptions(),
+            time,
+            NullLogger<OpenRouterModelCatalog>.Instance);
+
+        var model = ModelIdentifier.Parse("openrouter/a/b");
+
+        Assert.Null(await catalog.TryGetPriceAsync(model, TestContext.Current.CancellationToken));
+        Assert.Single(handler.Requests);
+        Assert.True(catalog.IsBackingOff);
+
+        // Inside the backoff window the catalog answers from an empty cache without dialling out.
+        time.Now = Now.AddMinutes(1);
+        Assert.Null(await catalog.TryGetPriceAsync(model, TestContext.Current.CancellationToken));
+        Assert.Single(handler.Requests);
+
+        // Once it has passed, it tries again - a transient outage must not disable pricing for good.
+        time.Now = Now.Add(OpenRouterModelCatalog.FailureBackoff).AddMinutes(1);
+        Assert.Null(await catalog.TryGetPriceAsync(model, TestContext.Current.CancellationToken));
+        Assert.Equal(2, handler.Requests.Count);
+
+        time.Now = time.Now.Add(OpenRouterModelCatalog.FailureBackoff).AddMinutes(1);
+        var price = await catalog.TryGetPriceAsync(model, TestContext.Current.CancellationToken);
+        Assert.Equal(2.00m, price!.Value.InputPerMillion);
+        Assert.False(catalog.IsBackingOff);
+    }
+
+    [Fact]
+    public async Task AnUnreachableEndpointNeverFailsASessionAndKeepsAStaleCache()
+    {
+        // Section 20b.6: the catalog is an optimisation over the shipped table, never a dependency.
+        var handler = new StubHttpMessageHandler()
+            .EnqueueJson("""{"data":[{"id":"a/b","pricing":{"prompt":"0.000007","completion":"0.000008"}}]}""")
+            .Enqueue(_ => throw new HttpRequestException("network is down"));
+
+        var time = new ModelFakeTimeProvider(Now);
+        var catalog = new OpenRouterModelCatalog(
+            new StubHttpClientFactory(handler).CreateClient("x"),
+            new ModelClientOptions { OpenRouterCatalogTtl = TimeSpan.FromMinutes(30) },
+            time,
+            NullLogger<OpenRouterModelCatalog>.Instance);
+
+        var model = ModelIdentifier.Parse("openrouter/a/b");
+        Assert.Equal(7.00m, (await catalog.TryGetPriceAsync(model, TestContext.Current.CancellationToken))!.Value.InputPerMillion);
+
+        time.Now = Now.AddHours(2);
+
+        var stale = await catalog.TryGetPriceAsync(model, TestContext.Current.CancellationToken);
+
+        Assert.Equal(7.00m, stale!.Value.InputPerMillion);
+        Assert.Equal(1, catalog.Count);
+    }
+
+    [Fact]
     public async Task TheCompositeCatalogPrefersTheLiveOpenRouterPrice()
     {
         var handler = new StubHttpMessageHandler().EnqueueJson(

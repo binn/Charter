@@ -33,3 +33,59 @@ public sealed record GitHubCommitResult(string Sha, string Branch);
 /// <param name="HeadSha">The head commit.</param>
 /// <param name="HeadBranch">The branch the PR is from.</param>
 public sealed record GitHubPullRequestResult(int Number, string Url, string HeadSha, string HeadBranch);
+
+/// <summary>What GitHub currently says about a pull request.</summary>
+/// <param name="Number">The PR number.</param>
+/// <param name="Url">The <c>html_url</c>.</param>
+/// <param name="State"><c>open</c> or <c>closed</c>, as GitHub spells it.</param>
+/// <param name="Merged">Whether a closed pull request was merged rather than abandoned.</param>
+/// <param name="Draft">Whether it is a draft.</param>
+/// <param name="HeadSha">The head commit.</param>
+/// <param name="HeadBranch">The branch it is from.</param>
+/// <param name="BaseBranch">The branch it is aimed at.</param>
+/// <param name="Labels">Its labels, by name.</param>
+public sealed record GitHubPullRequestDetail(
+    int Number,
+    string Url,
+    string State,
+    bool Merged,
+    bool Draft,
+    string HeadSha,
+    string? HeadBranch,
+    string? BaseBranch,
+    IReadOnlyList<string> Labels);
+
+/// <summary>Two revisions compared. Section 17 needs both halves of this.</summary>
+/// <param name="AheadBy">Commits the head has that the base does not.</param>
+/// <param name="BehindBy">Commits the base has that the head does not.</param>
+/// <param name="Files">Repository-relative paths that differ.</param>
+public sealed record GitHubComparison(int AheadBy, int BehindBy, IReadOnlyList<string> Files);
+
+/// <summary>
+/// What GitHub reports about a branch protection rule (change spec 001 part A.5).
+/// </summary>
+/// <param name="Protected">Whether a rule exists at all.</param>
+/// <param name="RequiredApprovals">How many approving reviews a merge needs, when reviews are required.</param>
+/// <param name="RequiresCodeOwnerReview">Whether <c>CODEOWNERS</c> must sign off.</param>
+/// <param name="DismissesStaleReviews">Whether new commits dismiss existing approvals.</param>
+/// <param name="EnforcedForAdministrators">Whether administrators are bound by the rule too.</param>
+/// <param name="Detail">One line, safe to show an engineer. Never a raw API body.</param>
+public sealed record GitHubBranchProtection(
+    bool Protected,
+    int? RequiredApprovals = null,
+    bool RequiresCodeOwnerReview = false,
+    bool DismissesStaleReviews = false,
+    bool EnforcedForAdministrators = false,
+    string? Detail = null);
+
+/// <summary>A repository webhook.</summary>
+/// <param name="Id">GitHub's id for it.</param>
+/// <param name="Url">Where it delivers.</param>
+/// <param name="Created">False when a hook for the same URL already existed.</param>
+public sealed record GitHubWebhookHook(long Id, string Url, bool Created);
+
+/// <summary>The handful of repository facts Charter reads back after creating or transferring one.</summary>
+/// <param name="FullName"><c>owner/name</c>.</param>
+/// <param name="DefaultBranch">Its default branch.</param>
+/// <param name="Private">Whether it is private.</param>
+public sealed record GitHubRepositorySummary(string FullName, string DefaultBranch, bool Private);

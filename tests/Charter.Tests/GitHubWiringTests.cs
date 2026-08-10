@@ -4,6 +4,7 @@ using Charter.Data;
 using Charter.GitHub;
 using Charter.Onboarding;
 using Charter.Runners;
+using Charter.VersionControl;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -91,6 +92,45 @@ public class GitHubWiringTests
     }
 
     [Fact]
+    public void TheVersionControlSeamIsFilledByGitHubAndOnlyByGitHub()
+    {
+        using var app = Build();
+
+        // Change spec 001 part A: the interface exists from Phase 1 and ships exactly one
+        // implementation. A second provider appearing here would mean somebody shipped one early.
+        var registry = app.Services.GetRequiredService<IVersionControlProviderRegistry>();
+
+        var provider = Assert.Single(registry.Providers);
+        Assert.IsType<GitHubVersionControlProvider>(provider);
+        Assert.Equal("github", provider.Id);
+        Assert.Equal("pull request", provider.Terms.ChangeRequest);
+    }
+
+    [Fact]
+    public void TheChangeRequestListenerIsOneOfTheWebhookListeners()
+    {
+        using var app = Build();
+        using var scope = app.Services.CreateScope();
+
+        // Section 17 and section 6 both need change request state, and it arrives on the webhook
+        // Charter already receives rather than on a second endpoint.
+        Assert.Contains(
+            scope.ServiceProvider.GetServices<IGitHubWebhookListener>(),
+            listener => listener is GitHubChangeRequestListener);
+    }
+
+    [Fact]
+    public void TheChangeRequestServicesResolve()
+    {
+        using var app = Build();
+        using var scope = app.Services.CreateScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChangeRequestPublisher>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChangeRequestStateTracker>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<MergeGateInspector>());
+    }
+
+    [Fact]
     public void CallingBothRegistrationsTwiceIsHarmless()
     {
         var config = ConfigTestEnvironment.Valid();
@@ -111,6 +151,9 @@ public class GitHubWiringTests
         Assert.Single(
             scope.ServiceProvider.GetServices<IGitHubWebhookListener>(),
             listener => listener is OnboardingWebhookListener);
+
+        // Two providers answering identically would mean every capability check had a coin flip in it.
+        Assert.Single(app.Services.GetRequiredService<IVersionControlProviderRegistry>().Providers);
     }
 
     [Fact]

@@ -118,7 +118,7 @@ public class ConfigValidationTests
         Assert.Equal(5432, config.Database.Port);
         Assert.Equal("charter", config.Database.Database);
 
-        Assert.Equal("anthropic/claude-sonnet-5", config.Models.Refine.Qualified);
+        Assert.Equal("openrouter/anthropic/claude-sonnet-5", config.Models.Refine.Qualified);
         Assert.Equal("openrouter", config.Models.Build.Provider);
         Assert.Equal("deepseek/deepseek-r1", config.Models.Build.Model);
         Assert.True(config.Models.AllowSharedPool);
@@ -169,9 +169,11 @@ public class ConfigValidationTests
         Assert.Equal(8080, config.Port);
         Assert.Equal(CharterMode.Personal, config.Mode);
         Assert.Equal([RunnerBackend.GitHubActions], config.Runners);
-        Assert.Equal("anthropic/claude-sonnet-5", config.Models.Refine.Qualified);
+        // Section 4.2: the two control-plane models default to OpenRouter, the build model does not -
+        // it is dispatched to an agent CLI whose adapter decides what it can authenticate against.
+        Assert.Equal("openrouter/anthropic/claude-sonnet-5", config.Models.Refine.Qualified);
         Assert.Equal("anthropic/claude-opus-5", config.Models.Build.Qualified);
-        Assert.Equal("anthropic/claude-sonnet-5", config.Models.Teach.Qualified);
+        Assert.Equal("openrouter/anthropic/claude-sonnet-5", config.Models.Teach.Qualified);
         Assert.False(config.Models.AllowSharedPool);
         Assert.Equal(LoggingMode.Default, config.Logging.Mode);
         Assert.Equal(LogEventLevel.Information, config.Logging.MinimumLevel);

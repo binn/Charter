@@ -82,6 +82,24 @@ maintenance window to schedule for the normal case.
   you know a backup is warranted. If you have disabled update checks, the release notes carry the same
   flag.
 
+### Pre-1.0: the initial migration is amended in place
+
+Charter has no released versions yet, so the single `InitialCreate` migration is **edited rather than
+superseded** while the schema is still settling. A development database created before such an edit
+will not pick the change up — the migration is already recorded as applied — and Charter will run
+against a schema that no longer matches the model.
+
+Until 1.0, if you are tracking `master` and the schema changed, drop and recreate your development
+database rather than trying to migrate it:
+
+```bash
+docker compose exec -T postgres psql -U charter -d postgres \
+  -c 'DROP DATABASE charter;' -c 'CREATE DATABASE charter OWNER charter;'
+```
+
+This applies to development instances only. From 1.0, migrations are additive and forward-only, and
+this section goes away.
+
 ### If a migration fails
 
 Charter fails to start rather than serving traffic against a half-migrated database. The startup logs

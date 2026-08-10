@@ -24,6 +24,11 @@ auth:
   google_api_key:    { env: "GEMINI_API_KEY" }
   xai_api_key:       { env: "XAI_API_KEY" }
 model_arg: ["--model", "{model}"]
+# LiteLLM's model names are neither Charter's bare form nor Charter's qualified form consistently -
+# it wants `claude-sonnet-4-5` for Anthropic but `openrouter/anthropic/claude-sonnet-4.5` for
+# OpenRouter, and its provider prefixes are its own. Charter therefore passes the identifier through
+# untouched and the operator writes the exact name LiteLLM expects.
+model_format: verbatim
 events:
   format: text
 capabilities: []

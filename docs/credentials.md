@@ -30,6 +30,13 @@ Most providers are OpenAI-compatible; only Anthropic and Gemini need bespoke cli
 expose a compatibility endpoint, but Charter prefers the native client for features the shim does not
 cover.
 
+**`OpenAiCompatibleModelClient` pointed at OpenRouter is the default path**, which is why
+`CHARTER_MODEL_REFINE` and `CHARTER_MODEL_TEACH` default to `openrouter/anthropic/claude-sonnet-5`.
+One key reaches every model, and the model catalog and per-token prices come from OpenRouter itself
+rather than a table baked into the release. The other two clients are registered and work — set a
+`anthropic/` or `google/` identifier and Charter uses them — but nothing has to be configured to get a
+working instance beyond one OpenRouter key.
+
 Model identifiers are provider-qualified strings:
 
 ```bash
@@ -37,6 +44,15 @@ CHARTER_MODEL_REFINE=anthropic/claude-sonnet-5
 CHARTER_MODEL_BUILD=anthropic/claude-opus-5
 CHARTER_MODEL_TEACH=openrouter/deepseek/deepseek-r1
 ```
+
+Only the first segment names the provider. OpenRouter's own model ids contain a slash, so
+`openrouter/deepseek/deepseek-r1` means "ask OpenRouter for `deepseek/deepseek-r1`", and an
+unqualified name such as `claude-sonnet-5` is Anthropic's.
+
+**A credential for a provider does not mean every surface can use it.** An OpenRouter key lets Charter
+refine, teach, recap, and recon with any model on OpenRouter. It only lets you *build* with those
+models through an agent CLI that can read an OpenRouter key — `pi` can, Claude Code cannot. See
+[adapters.md](adapters.md#model-and-adapter-compatibility).
 
 A self-hosted or proxied endpoint is configured per credential with a base URL, so an internal gateway
 or an Ollama instance works the same way as a hosted provider.

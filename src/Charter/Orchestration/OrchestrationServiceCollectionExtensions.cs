@@ -101,8 +101,15 @@ public static class OrchestrationServiceCollectionExtensions
                 provider.GetRequiredService<ILogger<GitHubActionsRunner>>()));
         }
 
-        // `agent` and `docker` register their backends from Charter.Agent's control-plane half and
-        // from the Docker runner respectively; both are section 2.2 backends behind the same seam.
+        // The primary backend (section 2.2). It registers its own pairing service, connection
+        // registry and credential mint, because those are reachable over HTTP whether or not the
+        // dispatcher ever routes to an agent — an operator has to be able to pair one first.
+        if (config.SupportsRunner(RunnerBackend.Agent))
+        {
+            services.AddCharterAgentPlane();
+        }
+
+        // `docker` registers the Docker runner behind the same seam when it ships.
         return services;
     }
 }

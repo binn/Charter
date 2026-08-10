@@ -101,9 +101,11 @@ public class ModelClientFactoryTests
     {
         var options = new ModelClientOptions();
 
-        Assert.Equal("anthropic/claude-sonnet-5", options.RefineModel.Canonical);
+        // Two surfaces, two defaults: Charter calls the first and third itself and reaches them
+        // through OpenRouter; the second is handed to an agent CLI. See ModelDefaultsTests.
+        Assert.Equal("openrouter/anthropic/claude-sonnet-5", options.RefineModel.Canonical);
         Assert.Equal("anthropic/claude-opus-5", options.BuildModel.Canonical);
-        Assert.Equal("anthropic/claude-sonnet-5", options.TeachModel.Canonical);
+        Assert.Equal("openrouter/anthropic/claude-sonnet-5", options.TeachModel.Canonical);
         Assert.Equal(ModelFailoverPolicy.PauseAndResume, options.FailoverPolicy);
     }
 

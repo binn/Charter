@@ -348,7 +348,7 @@ public class DomainEnumMappingTests
         AssertRoundTrip<SessionStatus>();
         AssertRoundTrip<RunnerKind>();
         AssertRoundTrip<MilestoneLabel>();
-        AssertRoundTrip<PullRequestState>();
+        AssertRoundTrip<ChangeRequestState>();
         AssertRoundTrip<DeploymentState>();
         AssertRoundTrip<VerificationArtifactKind>();
         AssertRoundTrip<VerificationArtifactState>();

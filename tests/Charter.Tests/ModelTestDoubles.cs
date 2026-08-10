@@ -10,7 +10,7 @@ namespace Charter.Tests;
 /// An <see cref="HttpMessageHandler"/> that answers from a queue of canned responses and records
 /// what it was asked. No test in this suite makes a real network call.
 /// </summary>
-internal sealed class StubHttpMessageHandler : HttpMessageHandler
+public sealed class StubHttpMessageHandler : HttpMessageHandler
 {
     private readonly Queue<Func<HttpRequestMessage, HttpResponseMessage>> _responses = new();
 
@@ -86,7 +86,7 @@ internal sealed class StubHttpMessageHandler : HttpMessageHandler
 }
 
 /// <summary>An <see cref="IHttpClientFactory"/> that hands out clients over a stub handler.</summary>
-internal sealed class StubHttpClientFactory : IHttpClientFactory
+public sealed class StubHttpClientFactory : IHttpClientFactory
 {
     private readonly HttpMessageHandler _handler;
 
@@ -97,7 +97,7 @@ internal sealed class StubHttpClientFactory : IHttpClientFactory
 }
 
 /// <summary>A <see cref="TimeProvider"/> pinned to an instant the test controls.</summary>
-internal sealed class ModelFakeTimeProvider : TimeProvider
+public sealed class ModelFakeTimeProvider : TimeProvider
 {
     public ModelFakeTimeProvider(DateTimeOffset now) => Now = now;
 

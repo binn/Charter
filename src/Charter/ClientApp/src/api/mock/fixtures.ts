@@ -416,8 +416,10 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
           ...(engineer
             ? {
                 details: {
-                  pullRequestNumber: 142,
-                  pullRequestUrl: 'https://github.com/northbeam/quote-tool/pull/142',
+                  changeRequestNumber: 142,
+                  changeRequestUrl: 'https://github.com/northbeam/quote-tool/pull/142',
+                  changeRequestTerm: 'pull request',
+                  changeRequestTermShort: 'PR',
                   commitSha: 'a3f9c21',
                   branch: 'charter/remember-vertical',
                   runner: 'detached · mac-mini-01',
@@ -1063,8 +1065,10 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
           ...(engineer
             ? {
                 details: {
-                  pullRequestNumber: 139,
-                  pullRequestUrl: 'https://github.com/northbeam/quote-tool/pull/139',
+                  changeRequestNumber: 139,
+                  changeRequestUrl: 'https://github.com/northbeam/quote-tool/pull/139',
+                  changeRequestTerm: 'pull request',
+                  changeRequestTermShort: 'PR',
                   commitSha: '7b1e004',
                   branch: 'charter/derate-follows-panel',
                   runner: 'github-actions · ubuntu-latest',

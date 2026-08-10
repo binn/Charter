@@ -68,6 +68,94 @@ public interface IGitHubRepositoryClient
         string title,
         string body,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Moves a branch to a commit GitHub already has. Creates nothing.</summary>
+    Task<GitHubCommitResult> UpdateBranchAsync(
+        GitHubRepository repository,
+        string branch,
+        string sha,
+        bool force = false,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>One pull request as GitHub currently sees it, or null when there is no such number.</summary>
+    Task<GitHubPullRequestDetail?> GetPullRequestAsync(
+        GitHubRepository repository,
+        int number,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Comments on a pull request. Section 14's engineer recap lands here.</summary>
+    Task CommentOnPullRequestAsync(
+        GitHubRepository repository,
+        int number,
+        string body,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Adds labels to a pull request (sections 7.5, 15). Existing labels are kept.</summary>
+    Task<IReadOnlyList<string>> AddLabelsAsync(
+        GitHubRepository repository,
+        int number,
+        IReadOnlyList<string> labels,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Compares two revisions: how far apart, and which files differ (section 17).</summary>
+    Task<GitHubComparison> CompareAsync(
+        GitHubRepository repository,
+        string baseRevision,
+        string headRevision,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads the branch protection rule, if there is one (change spec 001 part A.5).
+    /// </summary>
+    /// <remarks>
+    /// Never throws on "no rule" or on "not allowed to look". Both are answers the onboarding check
+    /// needs, and both mean the same thing to an operator: the merge gate is not verified.
+    /// </remarks>
+    Task<GitHubBranchProtection> GetBranchProtectionAsync(
+        GitHubRepository repository,
+        string branch,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Applies a branch protection rule. Requires the administration scope.</summary>
+    Task ApplyBranchProtectionAsync(
+        GitHubRepository repository,
+        string branch,
+        int requiredApprovals,
+        bool requireCodeOwnerReview,
+        bool dismissStaleReviews,
+        bool enforceForAdministrators,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Registers the repository webhook, or reports the one already pointing there.</summary>
+    Task<GitHubWebhookHook> RegisterWebhookAsync(
+        GitHubRepository repository,
+        Uri callbackUrl,
+        string secret,
+        IReadOnlyList<string> events,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a repository in an organisation (section 26.10).
+    /// </summary>
+    /// <remarks>
+    /// Takes an installation id rather than a <see cref="GitHubRepository"/> because the repository
+    /// does not exist yet, and a token scoped to one repository cannot be minted for a name GitHub
+    /// has never heard of. This is the one call in the client that reaches past a single repository,
+    /// and the token it uses is never handed to a runner.
+    /// </remarks>
+    Task<GitHubRepositorySummary> CreateRepositoryAsync(
+        long installationId,
+        string owner,
+        string name,
+        bool isPrivate,
+        string? description,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Transfers a repository out of the sandbox organisation (section 26.9).</summary>
+    Task<GitHubRepositorySummary> TransferRepositoryAsync(
+        GitHubRepository repository,
+        string newOwner,
+        CancellationToken cancellationToken = default);
 }
 
 /// <inheritdoc />
@@ -433,6 +521,487 @@ public sealed class GitHubRepositoryClient : IGitHubRepositoryClient
             ReadString(root, "html_url") ?? $"https://github.com/{repository.FullName}/pull/{number}",
             headSha,
             headBranch);
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHubCommitResult> UpdateBranchAsync(
+        GitHubRepository repository,
+        string branch,
+        string sha,
+        bool force = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentException.ThrowIfNullOrWhiteSpace(branch);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sha);
+
+        using var document = await SendAsync(
+            repository,
+            GitHubTokenScope.Contribute,
+            () => Json(
+                HttpMethod.Patch,
+                $"repos/{repository.Owner}/{repository.Name}/git/refs/heads/{EscapePath(branch)}",
+                new { sha, force }),
+            cancellationToken);
+
+        return new GitHubCommitResult(
+            document.RootElement.TryGetProperty("object", out var target)
+            && ReadString(target, "sha") is { Length: > 0 } moved
+                ? moved
+                : sha,
+            branch);
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHubPullRequestDetail?> GetPullRequestAsync(
+        GitHubRepository repository,
+        int number,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(number);
+
+        var json = await GetJsonOrNullAsync(
+            repository,
+            GitHubTokenScope.ReadOnly,
+            $"repos/{repository.Owner}/{repository.Name}/pulls/{number}",
+            cancellationToken);
+
+        if (json is null)
+        {
+            return null;
+        }
+
+        using (json)
+        {
+            var root = json.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var head = root.TryGetProperty("head", out var headElement) ? headElement : default;
+            var @base = root.TryGetProperty("base", out var baseElement) ? baseElement : default;
+
+            return new GitHubPullRequestDetail(
+                number,
+                ReadString(root, "html_url") ?? $"https://github.com/{repository.FullName}/pull/{number}",
+                ReadString(root, "state") ?? "open",
+                root.TryGetProperty("merged", out var merged) && merged.ValueKind == JsonValueKind.True,
+                root.TryGetProperty("draft", out var draft) && draft.ValueKind == JsonValueKind.True,
+                ReadString(head, "sha") ?? string.Empty,
+                ReadString(head, "ref"),
+                ReadString(@base, "ref"),
+                ReadLabels(root));
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task CommentOnPullRequestAsync(
+        GitHubRepository repository,
+        int number,
+        string body,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(number);
+        ArgumentException.ThrowIfNullOrWhiteSpace(body);
+
+        // The issues endpoint, not the reviews one, deliberately. A review carries a verdict —
+        // approve or request changes — and section 14 is emphatic that the recap is an orientation
+        // aid rather than a judgement. Charter has no opinion to record and no standing to record it.
+        using (await SendAsync(
+                   repository,
+                   GitHubTokenScope.Contribute,
+                   () => Json(
+                       HttpMethod.Post,
+                       $"repos/{repository.Owner}/{repository.Name}/issues/{number}/comments",
+                       new { body }),
+                   cancellationToken))
+        {
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>> AddLabelsAsync(
+        GitHubRepository repository,
+        int number,
+        IReadOnlyList<string> labels,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(number);
+        ArgumentNullException.ThrowIfNull(labels);
+
+        if (labels.Count == 0)
+        {
+            return [];
+        }
+
+        using var document = await SendAsync(
+            repository,
+            GitHubTokenScope.Contribute,
+            () => Json(
+                HttpMethod.Post,
+                $"repos/{repository.Owner}/{repository.Name}/issues/{number}/labels",
+                new { labels }),
+            cancellationToken);
+
+        var applied = new List<string>(labels.Count);
+
+        if (document.RootElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                if (ReadString(element, "name") is { Length: > 0 } name)
+                {
+                    applied.Add(name);
+                }
+            }
+        }
+
+        return applied.Count > 0 ? applied : labels;
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHubComparison> CompareAsync(
+        GitHubRepository repository,
+        string baseRevision,
+        string headRevision,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseRevision);
+        ArgumentException.ThrowIfNullOrWhiteSpace(headRevision);
+
+        var json = await GetJsonOrNullAsync(
+            repository,
+            GitHubTokenScope.ReadOnly,
+            $"repos/{repository.Owner}/{repository.Name}/compare/"
+            + $"{EscapePath(baseRevision)}...{EscapePath(headRevision)}",
+            cancellationToken);
+
+        if (json is null)
+        {
+            return new GitHubComparison(0, 0, []);
+        }
+
+        using (json)
+        {
+            var root = json.RootElement;
+            var files = new List<string>();
+
+            if (root.TryGetProperty("files", out var array) && array.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var element in array.EnumerateArray())
+                {
+                    if (ReadString(element, "filename") is { Length: > 0 } filename)
+                    {
+                        files.Add(filename);
+                    }
+
+                    // A rename changes two paths, and section 17's overlap test has to see both or
+                    // it will call a rename-versus-edit collision disjoint.
+                    if (ReadString(element, "previous_filename") is { Length: > 0 } previous)
+                    {
+                        files.Add(previous);
+                    }
+                }
+            }
+
+            return new GitHubComparison(ReadInt(root, "ahead_by"), ReadInt(root, "behind_by"), files);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHubBranchProtection> GetBranchProtectionAsync(
+        GitHubRepository repository,
+        string branch,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentException.ThrowIfNullOrWhiteSpace(branch);
+
+        JsonDocument? json;
+
+        try
+        {
+            json = await SendAsync(
+                repository,
+                GitHubTokenScope.Inspect,
+                () => Json(
+                    HttpMethod.Get,
+                    $"repos/{repository.Owner}/{repository.Name}/branches/{EscapePath(branch)}/protection",
+                    content: null),
+                cancellationToken);
+        }
+        catch (GitHubApiException ex) when (ex.Status == HttpStatusCode.NotFound)
+        {
+            // GitHub's answer for "this branch has no protection rule" — and also for "there is no
+            // such branch". Both mean nothing stands between a person and a merge.
+            return new GitHubBranchProtection(false, Detail: $"no branch protection rule covers '{branch}'");
+        }
+        catch (GitHubApiException ex) when (ex.Status is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+        {
+            // Never reported as protected. An installation without `administration: read` cannot be
+            // asked, and "cannot be asked" is not "is protected" (change spec 001 part A.5).
+            return new GitHubBranchProtection(
+                false,
+                Detail: "Charter's GitHub App installation may not read branch protection here, so the "
+                        + "merge gate is not verified");
+        }
+
+        using (json)
+        {
+            var root = json.RootElement;
+            var reviews = root.TryGetProperty("required_pull_request_reviews", out var element)
+                          && element.ValueKind == JsonValueKind.Object
+                ? element
+                : (JsonElement?)null;
+
+            return new GitHubBranchProtection(
+                true,
+                reviews is { } required ? ReadInt(required, "required_approving_review_count") : null,
+                reviews is { } owners && ReadBool(owners, "require_code_owner_reviews"),
+                reviews is { } stale && ReadBool(stale, "dismiss_stale_reviews"),
+                root.TryGetProperty("enforce_admins", out var admins)
+                && admins.ValueKind == JsonValueKind.Object
+                && ReadBool(admins, "enabled"),
+                reviews is null
+                    ? $"'{branch}' is protected, but the rule does not require a review before merge"
+                    : $"'{branch}' requires review before merge");
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task ApplyBranchProtectionAsync(
+        GitHubRepository repository,
+        string branch,
+        int requiredApprovals,
+        bool requireCodeOwnerReview,
+        bool dismissStaleReviews,
+        bool enforceForAdministrators,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentException.ThrowIfNullOrWhiteSpace(branch);
+        ArgumentOutOfRangeException.ThrowIfNegative(requiredApprovals);
+
+        using (await SendAsync(
+                   repository,
+                   GitHubTokenScope.Administer,
+                   () => Json(
+                       HttpMethod.Put,
+                       $"repos/{repository.Owner}/{repository.Name}/branches/{EscapePath(branch)}/protection",
+                       new
+                       {
+                           required_status_checks = (object?)null,
+                           enforce_admins = enforceForAdministrators,
+                           required_pull_request_reviews = new
+                           {
+                               required_approving_review_count = requiredApprovals,
+                               require_code_owner_reviews = requireCodeOwnerReview,
+                               dismiss_stale_reviews = dismissStaleReviews,
+                           },
+                           restrictions = (object?)null,
+                       }),
+                   cancellationToken))
+        {
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHubWebhookHook> RegisterWebhookAsync(
+        GitHubRepository repository,
+        Uri callbackUrl,
+        string secret,
+        IReadOnlyList<string> events,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentNullException.ThrowIfNull(callbackUrl);
+        ArgumentException.ThrowIfNullOrWhiteSpace(secret);
+        ArgumentNullException.ThrowIfNull(events);
+
+        var target = callbackUrl.ToString();
+
+        // Idempotent by inspection rather than by catching a duplicate: GitHub happily creates a
+        // second hook to the same URL, and two hooks mean every delivery arrives twice.
+        var existing = await GetJsonOrNullAsync(
+            repository,
+            GitHubTokenScope.Webhooks,
+            $"repos/{repository.Owner}/{repository.Name}/hooks",
+            cancellationToken);
+
+        if (existing is not null)
+        {
+            using (existing)
+            {
+                if (existing.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var hook in existing.RootElement.EnumerateArray())
+                    {
+                        if (hook.TryGetProperty("config", out var config)
+                            && string.Equals(ReadString(config, "url"), target, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return new GitHubWebhookHook(
+                                hook.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number
+                                    ? id.GetInt64()
+                                    : 0,
+                                target,
+                                false);
+                        }
+                    }
+                }
+            }
+        }
+
+        using var document = await SendAsync(
+            repository,
+            GitHubTokenScope.Webhooks,
+            () => Json(
+                HttpMethod.Post,
+                $"repos/{repository.Owner}/{repository.Name}/hooks",
+                new
+                {
+                    name = "web",
+                    active = true,
+                    events,
+                    config = new { url = target, content_type = "json", secret, insecure_ssl = "0" },
+                }),
+            cancellationToken);
+
+        return new GitHubWebhookHook(
+            document.RootElement.TryGetProperty("id", out var created)
+            && created.ValueKind == JsonValueKind.Number
+                ? created.GetInt64()
+                : 0,
+            target,
+            true);
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHubRepositorySummary> CreateRepositoryAsync(
+        long installationId,
+        string owner,
+        string name,
+        bool isPrivate,
+        string? description,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(installationId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(owner);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        var token = await _tokens.GetOrganizationTokenAsync(
+            installationId,
+            GitHubTokenScope.Administer,
+            cancellationToken);
+
+        using var document = await SendWithTokenAsync(
+            token.Token.Reveal(),
+            HttpMethod.Post,
+            $"orgs/{Uri.EscapeDataString(owner)}/repos",
+            new { name, @private = isPrivate, description, auto_init = true },
+            cancellationToken);
+
+        return ReadRepositorySummary(document.RootElement, $"{owner}/{name}");
+    }
+
+    /// <inheritdoc />
+    public async Task<GitHubRepositorySummary> TransferRepositoryAsync(
+        GitHubRepository repository,
+        string newOwner,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        ArgumentException.ThrowIfNullOrWhiteSpace(newOwner);
+
+        using var document = await SendAsync(
+            repository,
+            GitHubTokenScope.Administer,
+            () => Json(
+                HttpMethod.Post,
+                $"repos/{repository.Owner}/{repository.Name}/transfer",
+                new { new_owner = newOwner }),
+            cancellationToken);
+
+        return ReadRepositorySummary(document.RootElement, $"{newOwner}/{repository.Name}");
+    }
+
+    private static GitHubRepositorySummary ReadRepositorySummary(JsonElement root, string fallbackFullName)
+        => new(
+            ReadString(root, "full_name") ?? fallbackFullName,
+            ReadString(root, "default_branch") ?? "main",
+            !root.TryGetProperty("private", out var visibility) || visibility.ValueKind != JsonValueKind.False);
+
+    private static IReadOnlyList<string> ReadLabels(JsonElement root)
+    {
+        if (!root.TryGetProperty("labels", out var array) || array.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var labels = new List<string>();
+
+        foreach (var element in array.EnumerateArray())
+        {
+            if (element.ValueKind == JsonValueKind.String && element.GetString() is { Length: > 0 } literal)
+            {
+                labels.Add(literal);
+            }
+            else if (ReadString(element, "name") is { Length: > 0 } name)
+            {
+                labels.Add(name);
+            }
+        }
+
+        return labels;
+    }
+
+    private static int ReadInt(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+           && element.TryGetProperty(name, out var value)
+           && value.ValueKind == JsonValueKind.Number
+           && value.TryGetInt32(out var parsed)
+            ? parsed
+            : 0;
+
+    private static bool ReadBool(JsonElement element, string name)
+        => element.ValueKind == JsonValueKind.Object
+           && element.TryGetProperty(name, out var value)
+           && value.ValueKind == JsonValueKind.True;
+
+    private async Task<JsonDocument> SendWithTokenAsync(
+        string token,
+        HttpMethod method,
+        string path,
+        object? content,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(method, new Uri(_options.ApiBaseUrl, path));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.UserAgent.ParseAdd(_options.UserAgent);
+        request.Headers.Accept.ParseAdd("application/vnd.github+json");
+        request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", _options.ApiVersion);
+
+        if (content is not null)
+        {
+            request.Content = JsonContent.Create(content, content.GetType());
+        }
+
+        var client = _httpClientFactory.CreateClient(GitHubAppTokenProvider.HttpClientName);
+        using var response = await client.SendAsync(request, cancellationToken);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw GitHubApiException.ForResponse(response, request);
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        return string.IsNullOrWhiteSpace(body) ? JsonDocument.Parse("{}") : JsonDocument.Parse(body);
     }
 
     private async Task<string> GetCommitTreeShaAsync(

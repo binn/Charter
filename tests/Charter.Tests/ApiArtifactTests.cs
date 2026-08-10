@@ -211,7 +211,12 @@ public class ApiArtifactTests
         // Section 27.7: the `Details` disclosure is "PR number, commit SHA, branch, runner, duration
         // and cost". The branch was the one that had nowhere to come from.
         Assert.Equal(ApiScenario.HeadBranch, details.GetProperty("branch").GetString());
-        Assert.Equal(142, details.GetProperty("pullRequestNumber").GetInt32());
+        Assert.Equal(142, details.GetProperty("changeRequestNumber").GetInt32());
+
+        // Change spec 001 part A.2: the word comes from the provider, so the same payload reads
+        // "merge request" on GitLab without the client changing.
+        Assert.Equal("pull request", details.GetProperty("changeRequestTerm").GetString());
+        Assert.Equal("PR", details.GetProperty("changeRequestTermShort").GetString());
 
         var requester = await scenario.RenderDetailAsync(scenario.Requester);
         Assert.DoesNotContain("branch", ApiPayloads.Keys(requester));

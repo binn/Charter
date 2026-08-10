@@ -98,12 +98,12 @@ public sealed class DeploymentBinder
         var provider = string.IsNullOrWhiteSpace(report.Provider) ? "unknown" : report.Provider.Trim();
         var sha = headSha.Trim();
 
-        var pullRequest = await _database.PullRequests
+        var changeRequest = await _database.ChangeRequests
             .Where(candidate => candidate.HeadSha == sha)
             .OrderByDescending(candidate => candidate.UpdatedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
-        if (pullRequest is null)
+        if (changeRequest is null)
         {
             _logger.LogWarning(
                 "A deployment report from {Provider} named commit {HeadSha}, which no pull request carries",
@@ -122,13 +122,13 @@ public sealed class DeploymentBinder
         var providerKey = provider.ToLowerInvariant();
 
         var existing = await _database.Deployments
-            .Where(candidate => candidate.PullRequestId == pullRequest.Id && candidate.Provider == providerKey)
+            .Where(candidate => candidate.ChangeRequestId == changeRequest.Id && candidate.Provider == providerKey)
             .OrderByDescending(candidate => candidate.ReportedAt)
             .FirstOrDefaultAsync(cancellationToken);
 
         if (existing is null)
         {
-            _database.Deployments.Add(Deployment.Report(pullRequest.Id, provider, state, report.Url, now));
+            _database.Deployments.Add(Deployment.Report(changeRequest.Id, provider, state, report.Url, now));
         }
         else
         {
@@ -139,7 +139,7 @@ public sealed class DeploymentBinder
 
         _logger.LogInformation(
             "Preview for pull request {Number} is {State} (provider {Provider})",
-            pullRequest.Number,
+            changeRequest.Number,
             state,
             provider);
 

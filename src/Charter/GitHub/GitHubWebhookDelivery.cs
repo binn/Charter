@@ -84,6 +84,16 @@ public sealed record GitHubWebhookDelivery
     /// <summary>The head commit — a push's <c>after</c>, a PR's head SHA, a check suite's head SHA.</summary>
     public string? HeadSha { get; init; }
 
+    /// <summary>
+    /// A push's <c>before</c>: where the branch pointed beforehand.
+    /// </summary>
+    /// <remarks>
+    /// Section 17 needs it. Staleness is "behind <em>and</em> overlapping on changed files", and
+    /// without the previous head there is no way to ask which files the push actually landed —
+    /// only how far behind something is, which is the half that produces false positives.
+    /// </remarks>
+    public string? BeforeSha { get; init; }
+
     /// <summary>The pull request number, on a <c>pull_request</c> event.</summary>
     public int? PullRequestNumber { get; init; }
 
@@ -172,6 +182,7 @@ public sealed record GitHubWebhookDelivery
                 DefaultBranch = Text(repository, "default_branch"),
                 Ref = type == GitHubWebhookEventType.Push ? Text(root, "ref") : null,
                 HeadSha = ReadHeadSha(type, root, pullRequest, checkSuite),
+                BeforeSha = type == GitHubWebhookEventType.Push ? Text(root, "before") : null,
                 PullRequestNumber = Number(pullRequest, "number") is { } number ? (int)number : null,
                 PullRequestHeadBranch = Text(Object(pullRequest, "head"), "ref"),
                 PullRequestBaseBranch = Text(Object(pullRequest, "base"), "ref"),

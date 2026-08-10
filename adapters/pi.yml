@@ -1,25 +1,47 @@
-# Pi — the widest model coverage from a single adapter, and the worked example in spec 12b.
-# Kept byte-for-byte in step with the spec so the schema always has one canonical reference file.
+# Pi — the widest model coverage from a single adapter, and the reason an OpenRouter model is usable
+# for builds and not only for refinement (change spec 001, "Why OpenRouter first").
+#
+# Every flag and every event name below was checked against pi's own CLI reference and JSON-mode
+# documentation (github.com/earendil-works/pi, packages/coding-agent/docs/{usage,json,providers}.md
+# and packages/ai/src/types.ts), not against the illustrative snippet this file used to carry:
+#
+#   * `--mode json` is the JSON event stream. `--print` is a different mode - it prints the final
+#     response and exits - and there is no `--output-format` flag at all.
+#   * `--mode json` takes its message as a positional argument. Stdin merging is documented for print
+#     mode only, which is why `steering` is NOT claimed below: pi steers through `--mode rpc`, a JSON
+#     command protocol Charter's shim does not speak. Claiming it here would be the pretence spec 12b
+#     forbids.
+#   * `--provider` and `--model` are separate options, and `--provider openrouter` is how pi reaches
+#     an aggregator. Charter's `openrouter/deepseek/deepseek-r1` therefore dispatches as
+#     `--provider openrouter --model deepseek/deepseek-r1`, which needs no guess about how pi splits a
+#     model id containing its own slash.
+#   * Built-in tools are read, bash, edit, write, grep, find, ls - so `edit` and `write` are the two
+#     that touch files.
 id: pi
 display_name: "Pi"
 version: 1
 install:
   check: "pi --version"
-  hint: "npx @earendil-works/pi-coding-agent"
+  hint: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 invoke:
-  command: ["pi", "--print", "--output-format", "jsonl"]
-  prompt: stdin
+  command: ["pi", "--mode", "json"]
+  prompt: "{prompt}"
 auth:
   anthropic_api_key:  { env: "ANTHROPIC_API_KEY" }
   openai_api_key:     { env: "OPENAI_API_KEY" }
   openrouter_key:     { env: "OPENROUTER_API_KEY" }
   google_api_key:     { env: "GEMINI_API_KEY" }
   xai_api_key:        { env: "XAI_API_KEY" }
-model_arg: ["--model", "{model}"]
+model_arg: ["--provider", "{provider}", "--model", "{model}"]
+model_format: bare
 events:
   format: jsonl
+  # Tool lifecycle events are {"type":"tool_execution_start","toolCallId":"...","toolName":"edit",
+  # "args":{...}}; the `_start` is mapped so the event lands when the work begins. Message lifecycle
+  # events are message_start / message_update / message_end, and message_end carries the final
+  # authoritative message - including `message.usage.cost.total`, which is what cost_reporting reads.
   map:
-    tool_use:   "$.type == 'tool_call'"
-    file_write: "$.tool == 'edit' || $.tool == 'write'"
-    message:    "$.type == 'assistant'"
-capabilities: [steering, resume, cost_reporting]
+    tool_use:   "$.type == 'tool_execution_start'"
+    file_write: "$.type == 'tool_execution_start' && ($.toolName == 'edit' || $.toolName == 'write')"
+    message:    "$.type == 'message_end' && $.message.role == 'assistant'"
+capabilities: [resume, cost_reporting]
