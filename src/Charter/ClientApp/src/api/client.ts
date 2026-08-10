@@ -1,14 +1,20 @@
 import type {
   CreateRequestBody,
+  FileDiff,
   Id,
   InstanceInfo,
+  PairingToken,
   PendingApproval,
   Project,
   RequestDetail,
   RequestStreamEvent,
   RequestSummary,
+  RunnersView,
   SendRefinementMessageBody,
+  SetupChecklist,
   SubmitFeedbackBody,
+  TranscriptPane,
+  TranscriptQuery,
   UserPreferences,
   Viewer,
 } from '@/api/types';
@@ -72,6 +78,73 @@ export interface CharterApi {
 
   /** GET /api/approvals — the spend gate queue (§7.5). */
   listPendingApprovals(signal?: AbortSignal): Promise<PendingApproval[]>;
+
+  /* ---- Panes 2 and 3 (§12) ------------------------------------------------ */
+
+  /**
+   * GET /api/requests/{id}/transcript?cursor=&aroundSeq=&limit=
+   *
+   * Pane 2 pages backwards from the tail, and jumps to an arbitrary event with `aroundSeq` when a
+   * pane-1 milestone is clicked. **403 for a viewer without repo read** — the same rule that keeps
+   * `transcript` out of `RequestDetail` (§7.4).
+   */
+  getTranscript(id: Id, query: TranscriptQuery, signal?: AbortSignal): Promise<TranscriptPane>;
+
+  /**
+   * GET /api/requests/{id}/changes/{path}
+   *
+   * One file's before and after, for Monaco. Per-file rather than bundled into `RequestDetail`
+   * because a session can touch a hundred files, and none of them belong in a requester's payload.
+   */
+  getFileDiff(id: Id, path: string, signal?: AbortSignal): Promise<FileDiff>;
+
+  /* ---- Post-hoc session actions (§7.5) ------------------------------------ */
+
+  /** POST /api/requests/{id}/session/approve */
+  approveSession(id: Id, signal?: AbortSignal): Promise<void>;
+
+  /** POST /api/requests/{id}/session/steer — same branch, same thread. */
+  steerSession(id: Id, instruction: string, signal?: AbortSignal): Promise<void>;
+
+  /** POST /api/requests/{id}/session/revise — forks the spec onto a fresh session, same branch. */
+  reviseSession(id: Id, revisedSpecMd: string, signal?: AbortSignal): Promise<void>;
+
+  /**
+   * POST /api/requests/{id}/session/take-over
+   *
+   * Marks the session `handed_off` and **stops all further agent writes to the branch**. §7.5 calls
+   * concurrent human and agent edits "the one genuinely destructive failure mode in this design",
+   * so this must be irreversible server-side rather than a flag the next dispatch can ignore.
+   */
+  takeOverSession(id: Id, signal?: AbortSignal): Promise<void>;
+
+  /* ---- Settings → Runners (§33.3) ----------------------------------------- */
+
+  /** GET /api/runners — agents plus the sessions currently waiting on one (§27.3). */
+  listRunners(signal?: AbortSignal): Promise<RunnersView>;
+
+  /** POST /api/runners/pairing-tokens — single-use, short-TTL, returned exactly once (§33.3). */
+  createPairingToken(signal?: AbortSignal): Promise<PairingToken>;
+
+  /**
+   * DELETE /api/runners/{agentId}
+   *
+   * §33.3 step 5: revocation **kills in-flight jobs** and invalidates the credential, instantly.
+   */
+  revokeAgent(agentId: Id, signal?: AbortSignal): Promise<void>;
+
+  /* ---- Admin setup checklist (§30.2) -------------------------------------- */
+
+  /**
+   * GET /api/setup/checklist
+   *
+   * Resolves to `null` for a viewer who is not an admin — absence, not a 403 the dashboard would
+   * have to treat as an error. The dashboard simply has no checklist on it.
+   */
+  getSetupChecklist(signal?: AbortSignal): Promise<SetupChecklist | null>;
+
+  /** POST /api/setup/checklist/dismiss — allowed only once every task is done. */
+  dismissSetupChecklist(signal?: AbortSignal): Promise<SetupChecklist>;
 
   /**
    * SignalR hub `/hub/requests`, group-joined per request. Returns an unsubscribe function.
@@ -189,6 +262,74 @@ export const httpApi: CharterApi = {
 
   listPendingApprovals: (signal) =>
     request<PendingApproval[]>('/api/approvals', { signal: signal ?? null }),
+
+  getTranscript: (id, query, signal) => {
+    const search = new URLSearchParams();
+    if (query.cursor !== undefined) search.set('cursor', query.cursor);
+    if (query.aroundSeq !== undefined) search.set('aroundSeq', String(query.aroundSeq));
+    if (query.limit !== undefined) search.set('limit', String(query.limit));
+    const qs = search.size > 0 ? `?${search.toString()}` : '';
+    return request<TranscriptPane>(
+      `/api/requests/${encodeURIComponent(id)}/transcript${qs}`,
+      { signal: signal ?? null },
+    );
+  },
+
+  getFileDiff: (id, path, signal) =>
+    request<FileDiff>(
+      // The path is a path, so it is encoded as one segment rather than interpolated raw.
+      `/api/requests/${encodeURIComponent(id)}/changes/${encodeURIComponent(path)}`,
+      { signal: signal ?? null },
+    ),
+
+  approveSession: (id, signal) =>
+    request<void>(`/api/requests/${encodeURIComponent(id)}/session/approve`, {
+      method: 'POST',
+      signal: signal ?? null,
+    }),
+
+  steerSession: (id, instruction, signal) =>
+    request<void>(`/api/requests/${encodeURIComponent(id)}/session/steer`, {
+      method: 'POST',
+      body: JSON.stringify({ instruction }),
+      signal: signal ?? null,
+    }),
+
+  reviseSession: (id, revisedSpecMd, signal) =>
+    request<void>(`/api/requests/${encodeURIComponent(id)}/session/revise`, {
+      method: 'POST',
+      body: JSON.stringify({ revisedSpecMd }),
+      signal: signal ?? null,
+    }),
+
+  takeOverSession: (id, signal) =>
+    request<void>(`/api/requests/${encodeURIComponent(id)}/session/take-over`, {
+      method: 'POST',
+      signal: signal ?? null,
+    }),
+
+  listRunners: (signal) => request<RunnersView>('/api/runners', { signal: signal ?? null }),
+
+  createPairingToken: (signal) =>
+    request<PairingToken>('/api/runners/pairing-tokens', {
+      method: 'POST',
+      signal: signal ?? null,
+    }),
+
+  revokeAgent: (agentId, signal) =>
+    request<void>(`/api/runners/${encodeURIComponent(agentId)}`, {
+      method: 'DELETE',
+      signal: signal ?? null,
+    }),
+
+  getSetupChecklist: (signal) =>
+    request<SetupChecklist | null>('/api/setup/checklist', { signal: signal ?? null }),
+
+  dismissSetupChecklist: (signal) =>
+    request<SetupChecklist>('/api/setup/checklist/dismiss', {
+      method: 'POST',
+      signal: signal ?? null,
+    }),
 
   subscribeToRequest: () => {
     // Wired to the SignalR hub once the backend exposes it (§2.1). Until then the mock supplies

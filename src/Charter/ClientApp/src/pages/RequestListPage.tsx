@@ -6,6 +6,7 @@ import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { SetupChecklist } from '@/features/setup/SetupChecklist';
 import { Icon } from '@/components/ui/Icon';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { StatusPill } from '@/components/ui/StatusPill';
@@ -39,6 +40,13 @@ export function RequestListPage() {
         description="Everything you have asked for, and where each one has got to."
         title="Requests"
       />
+
+      {/*
+       * §30.2. The requests list is where an admin lands, so the setup checklist lives here rather
+       * than on a dashboard route that would exist only to hold it. It renders itself away entirely
+       * when the API sends no checklist — which is everyone who is not an admin.
+       */}
+      <SetupChecklist />
 
       {state.status === 'loading' ? (
         <ul className="space-y-2">

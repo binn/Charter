@@ -77,6 +77,13 @@ const TABLE: Record<RequestStatus, RequesterStatus> = {
     tone: 'good',
     notifies: false,
   },
+  no_changes_needed: {
+    label: 'Nothing needed changing',
+    blurb:
+      'Most often that means what you asked for already works the way you wanted. Nothing went wrong, and there is nothing for you to do.',
+    tone: 'good',
+    notifies: false,
+  },
   failed: {
     label: 'This turned out to be bigger than expected',
     blurb: 'An engineer has been told. You do not need to do anything.',

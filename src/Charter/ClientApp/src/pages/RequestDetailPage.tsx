@@ -12,6 +12,8 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { StatusPill } from '@/components/ui/StatusPill';
 import { VerificationArtifactCard } from '@/features/artifact/VerificationArtifactCard';
 import { ThreePaneView } from '@/features/panes/ThreePaneView';
+import { EngineerRecapCard } from '@/features/recap/EngineerRecapCard';
+import { PostHocActions } from '@/features/session/PostHocActions';
 import { RefinementConversation } from '@/features/refinement/RefinementConversation';
 import { SpecConfirmationCard } from '@/features/spec/SpecConfirmationCard';
 import { StatusThreadView } from '@/features/status/StatusThreadView';
@@ -33,8 +35,6 @@ export function RequestDetailPage() {
   const { id = '' } = useParams();
   const api = useApi();
   const state = useRequestDetail(id);
-  const [focusedEventSeq, setFocusedEventSeq] = useState<number | undefined>(undefined);
-  const [selectedMilestoneId, setSelectedMilestoneId] = useState<string | undefined>(undefined);
   const [cancelling, setCancelling] = useState(false);
 
   const onFeedback = useCallback(
@@ -142,20 +142,25 @@ export function RequestDetailPage() {
         <Card className="px-4 py-5 sm:px-5">
           <SectionLabel>Progress</SectionLabel>
           <div className="mt-4">
-            <StatusThreadView
-              thread={request.thread}
-              {...(request.transcript
-                ? {
-                    onSelectMilestone: (milestone) => {
-                      setSelectedMilestoneId(milestone.id);
-                      setFocusedEventSeq(milestone.eventSeq);
-                    },
-                  }
-                : {})}
-              {...(selectedMilestoneId === undefined ? {} : { selectedMilestoneId })}
-            />
+            <StatusThreadView thread={request.thread} />
           </div>
         </Card>
+      ) : null}
+
+      {/*
+       * §14 and §7.5. Both are present only when the API sent them, which it does only for a viewer
+       * with repo read — so a requester's pane 1 ends at the progress thread, and the engineer
+       * surfaces are absent from their payload rather than hidden from their screen.
+       */}
+      {request.recap ? <EngineerRecapCard recap={request.recap} /> : null}
+
+      {request.sessionActions ? (
+        <PostHocActions
+          actions={request.sessionActions}
+          onDone={state.refresh}
+          requestId={request.id}
+          {...(spec ? { specTitle: spec.title } : {})}
+        />
       ) : null}
 
       {spec && approved ? (
@@ -243,12 +248,7 @@ export function RequestDetailPage() {
         title={spec?.title ?? request.title}
       />
 
-      <ThreePaneView
-        request={request}
-        {...(focusedEventSeq === undefined ? {} : { focusedEventSeq })}
-      >
-        {paneOne}
-      </ThreePaneView>
+      <ThreePaneView request={request}>{paneOne}</ThreePaneView>
     </>
   );
 }

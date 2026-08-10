@@ -156,6 +156,25 @@ darwin/arm64, and windows/amd64, plus a container image for Docker mode.
 3. **Confirm it appears online** in Settings -> Runners, with its mode, version, advertised
    capabilities, and concurrency limit.
 
+### Registering from the UI
+
+Settings -> Runners is the whole flow:
+
+1. **Generate a pairing token.** Single-use and short-lived. Charter shows the exact
+   `charter-agent --server ... --token ...` command with your instance's URL already filled in.
+2. **Run it on the execution host.** The token is shown once and cannot be shown again; generate
+   another if you lose it.
+3. **Watch it appear.** The agent probes its own capabilities and reports them, so the list shows
+   what the host actually has rather than what you told Charter it has.
+
+The capability list is the useful part of that screen. Pick a queued session and every agent's
+capabilities are re-rendered in that session's terms - one row per requirement, showing which
+capability satisfies it or that nothing does. That answers the question you actually have when a
+session is not running, which is *why is nothing picking this up*.
+
+**Revoking is immediate and kills in-flight jobs.** The screen says so before you confirm. A revoked
+credential cannot be reinstated; pair the host again.
+
 ### Options
 
 | Option | Default | What it does |

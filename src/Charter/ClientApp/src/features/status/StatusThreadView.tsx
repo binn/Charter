@@ -1,6 +1,7 @@
-import type { Milestone, MilestoneKind, StatusThread } from '@/api/types';
+import type { MilestoneKind, StatusThread } from '@/api/types';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { Markdown } from '@/components/ui/Markdown';
+import { PANE_2_ID, usePaneSelection } from '@/features/panes/pane-selection';
 import { cn } from '@/lib/cn';
 import { elapsedSince, formatDuration, formatRelative } from '@/lib/format';
 import { useNow } from '@/hooks/useNow';
@@ -17,12 +18,6 @@ const KIND_ICONS: Record<MilestoneKind, IconName> = {
 
 export interface StatusThreadViewProps {
   thread: StatusThread;
-  /**
-   * §12: clicking a milestone scrolls pane 2 to the events that produced it. Passed only when pane
-   * 2 exists — which is to say, only when the API sent a transcript at all.
-   */
-  onSelectMilestone?: (milestone: Milestone) => void;
-  selectedMilestoneId?: string;
 }
 
 /**
@@ -37,13 +32,16 @@ export interface StatusThreadViewProps {
  *
  * The elapsed timer counts up from `startedAt`. There is no estimate here and no progress bar,
  * because §6 forbids an ETA: "one blown estimate costs more trust than ten honest slow ones".
+ *
+ * §12's linkage starts here: a milestone becomes a button when there is a pane 2 to jump into and
+ * the server told us which event produced it. For a requester both are false — there is no
+ * selection context above this component and no `eventSeq` in the payload — so the milestones are
+ * plain text and nothing hints at a view they cannot have.
  */
-export function StatusThreadView({
-  thread,
-  onSelectMilestone,
-  selectedMilestoneId,
-}: StatusThreadViewProps) {
+export function StatusThreadView({ thread }: StatusThreadViewProps) {
   const now = useNow(thread.live ? 1_000 : 60_000);
+  const linkage = usePaneSelection();
+  const selectedMilestoneId = linkage?.selection.milestoneId;
 
   return (
     <section aria-label="Progress">
@@ -68,7 +66,7 @@ export function StatusThreadView({
       <ol className="relative space-y-1">
         {thread.milestones.map((milestone, index) => {
           const isLast = index === thread.milestones.length - 1;
-          const interactive = onSelectMilestone !== undefined && milestone.eventSeq !== undefined;
+          const interactive = linkage !== null && milestone.eventSeq !== undefined;
 
           const content = (
             <>
@@ -130,13 +128,16 @@ export function StatusThreadView({
             <li key={milestone.id}>
               {interactive ? (
                 <button
+                  aria-controls={PANE_2_ID}
                   aria-current={selectedMilestoneId === milestone.id}
                   className={cn(
                     'hover:bg-sunken flex w-full gap-3 rounded-control px-2 -mx-2 text-left transition-colors',
                     selectedMilestoneId === milestone.id && 'bg-sunken',
                   )}
-                  onClick={() => {
-                    onSelectMilestone(milestone);
+                  onClick={(event) => {
+                    // `detail === 0` means Enter or Space rather than a pointer, and that is what
+                    // decides whether focus follows the jump into pane 2.
+                    linkage.selectMilestone(milestone, { fromKeyboard: event.detail === 0 });
                   }}
                   type="button"
                 >

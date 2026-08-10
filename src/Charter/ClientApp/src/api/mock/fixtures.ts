@@ -1,8 +1,18 @@
+import {
+  derateRecap,
+  derateSessionActions,
+  HERO_CHANGED_FILES,
+  HERO_MILESTONE_SEQS,
+  heroRecap,
+  heroSessionActions,
+  transcriptFor,
+} from '@/api/mock/fixtures-session';
 import type {
   InstanceInfo,
   PendingApproval,
   Project,
   RequestDetail,
+  TranscriptPane,
   Viewer,
   ViewerCapabilities,
 } from '@/api/types';
@@ -236,6 +246,19 @@ export function makePendingApprovals(persona: MockPersona, now: number): Pending
  * Eight requests covering all five artifact states and all eight artifact kinds, so every branch of
  * the §27.7 card is reachable by clicking rather than only by unit test.
  */
+/** Pane 2 loads a page at a time (§12); this is the tail, which is what the detail payload carries. */
+export const TRANSCRIPT_PAGE_SIZE = 500;
+
+function tailPage(requestId: string, now: number): TranscriptPane {
+  const all = transcriptFor(requestId, now);
+  const from = Math.max(0, all.length - TRANSCRIPT_PAGE_SIZE);
+  return {
+    events: all.slice(from),
+    nextCursor: from > 0 ? String(from) : null,
+    totalCount: all.length,
+  };
+}
+
 export function makeRequests(persona: MockPersona, now: number): RequestDetail[] {
   if (persona === 'new-requester') {
     return [];
@@ -359,7 +382,7 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
               'Your quote wizard keeps the selected vertical on the quote row itself, so there was nowhere to record a *preference* — that is the one new piece.',
             occurredAt: iso(-2 * HOUR - 36 * MINUTE, now),
             state: 'done',
-            ...(engineer ? { eventSeq: 12 } : {}),
+            ...(engineer ? { eventSeq: HERO_MILESTONE_SEQS.understanding } : {}),
           },
           {
             id: 'ms3',
@@ -368,7 +391,7 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
             detail: 'Added a per-person setting and used it when a new quote opens.',
             occurredAt: iso(-2 * HOUR - 19 * MINUTE, now),
             state: 'done',
-            ...(engineer ? { eventSeq: 48 } : {}),
+            ...(engineer ? { eventSeq: HERO_MILESTONE_SEQS.changing } : {}),
           },
           {
             id: 'ms4',
@@ -377,7 +400,7 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
             detail: 'Ran the existing tests plus three new ones for the cases you agreed.',
             occurredAt: iso(-38 * MINUTE, now),
             state: 'done',
-            ...(engineer ? { eventSeq: 91 } : {}),
+            ...(engineer ? { eventSeq: HERO_MILESTONE_SEQS.checking } : {}),
           },
           {
             id: 'ms5',
@@ -386,7 +409,7 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
             detail: 'Built a copy of the quote tool with your change in it.',
             occurredAt: iso(-14 * MINUTE, now),
             state: 'done',
-            ...(engineer ? { eventSeq: 118 } : {}),
+            ...(engineer ? { eventSeq: HERO_MILESTONE_SEQS.assembling } : {}),
           },
           {
             id: 'ms6',
@@ -420,7 +443,9 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
                   changeRequestUrl: 'https://github.com/northbeam/quote-tool/pull/142',
                   changeRequestTerm: 'pull request',
                   changeRequestTermShort: 'PR',
-                  commitSha: 'a3f9c21',
+                  // Deliberately not the instance's own build commit above: two different SHAs on
+                  // one page that happen to match is a fixture that hides a bug.
+                  commitSha: '4d7b19e',
                   branch: 'charter/remember-vertical',
                   runner: 'detached · mac-mini-01',
                   durationMs: 12 * MINUTE,
@@ -431,6 +456,22 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
             : {}),
         },
       ],
+
+      /*
+       * Panes 2 and 3, the recap and the post-hoc actions (§12, §14, §7.5).
+       *
+       * These four keys are the whole of §7.4 in the mock: the requester persona never reaches this
+       * spread, so its payload has no `transcript` key at all — not a `transcript: undefined`, and
+       * not a populated one the client is trusted to hide. That is what the real API must do too.
+       */
+      ...(engineer
+        ? {
+            transcript: tailPage('req-vertical', now),
+            changes: { files: HERO_CHANGED_FILES },
+            recap: heroRecap(now),
+            sessionActions: heroSessionActions(),
+          }
+        : {}),
     },
 
     /* --- 2. Live: building now, artifact pending -------------------------- */
@@ -1080,6 +1121,11 @@ export function makeRequests(persona: MockPersona, now: number): RequestDetail[]
             : {}),
         },
       ],
+
+      // The §7.5 auto-dispatch case: nobody vetted this spec, so the recap leads with that and
+      // carries the spec in full. There is no `transcript` here — the recap and the four actions
+      // stand on their own, which is the shape a session that failed early actually has.
+      ...(engineer ? { recap: derateRecap(now), sessionActions: derateSessionActions() } : {}),
     },
 
     /* --- 8. Honestly engineer-verified (§27.4) ---------------------------- */

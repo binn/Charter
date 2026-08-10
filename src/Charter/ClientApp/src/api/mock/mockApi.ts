@@ -6,7 +6,11 @@ import {
   makeProjects,
   makeRequests,
   makeViewer,
+  TRANSCRIPT_PAGE_SIZE,
 } from '@/api/mock/fixtures';
+import { makePairingToken, makeRunners } from '@/api/mock/fixtures-runners';
+import { fileDiffFor, transcriptFor } from '@/api/mock/fixtures-session';
+import { makeSetupChecklist } from '@/api/mock/fixtures-setup';
 import type {
   CreateRequestBody,
   Id,
@@ -15,8 +19,12 @@ import type {
   RequestDetail,
   RequestStreamEvent,
   RequestSummary,
+  RunnersView,
   SendRefinementMessageBody,
+  SetupChecklist,
   SubmitFeedbackBody,
+  TranscriptPane,
+  TranscriptQuery,
   UserPreferences,
   Viewer,
 } from '@/api/types';
@@ -41,6 +49,8 @@ interface MockState {
   now: number;
   viewer: Viewer;
   requests: RequestDetail[];
+  runners: RunnersView;
+  setup: SetupChecklist;
 }
 
 /**
@@ -65,10 +75,22 @@ function createState(): MockState {
     now,
     viewer: makeViewer(persona, now),
     requests: makeRequests(persona, now),
+    runners: makeRunners(now),
+    setup: makeSetupChecklist(),
   };
 }
 
-let state: MockState = createState();
+/**
+ * Built lazily rather than at module scope. A top-level `createState()` call is a side effect, so
+ * the bundler cannot drop this module even when `resolveApi()` never selects it - the whole fixture
+ * set (~55 kB raw) was shipping inside the production entry chunk. Deferring construction lets the
+ * mock fall out entirely once VITE_CHARTER_LIVE_API is set.
+ */
+let state: MockState | null = null;
+
+function mockState(): MockState {
+  return (state ??= createState());
+}
 
 /** Test seam: resets module state between cases. */
 export function __resetMockState(): void {
@@ -81,7 +103,7 @@ const latency = (ms = 180) =>
   });
 
 function find(id: Id): RequestDetail {
-  const found = state.requests.find((request) => request.id === id);
+  const found = mockState().requests.find((request) => request.id === id);
   if (!found) {
     throw new Error(`Mock API: no request ${id}`);
   }
@@ -285,38 +307,38 @@ function scriptCharterReply(body: string): ScriptStep[] {
 export const mockApi: CharterApi = {
   async getInstance() {
     await latency(80);
-    return makeInstance(state.now);
+    return makeInstance(mockState().now);
   },
 
   async getViewer() {
     await latency(80);
-    return clone(state.viewer);
+    return clone(mockState().viewer);
   },
 
   async updatePreferences(patch: Partial<UserPreferences>) {
     await latency(120);
-    state.viewer = { ...state.viewer, preferences: { ...state.viewer.preferences, ...patch } };
-    return clone(state.viewer.preferences);
+    mockState().viewer = { ...mockState().viewer, preferences: { ...mockState().viewer.preferences, ...patch } };
+    return clone(mockState().viewer.preferences);
   },
 
   async completeRequesterOnboarding() {
     await latency(120);
-    state.viewer = {
-      ...state.viewer,
+    mockState().viewer = {
+      ...mockState().viewer,
       requesterOnboardingCompletedAt: new Date().toISOString(),
     };
-    return clone(state.viewer);
+    return clone(mockState().viewer);
   },
 
   async listProjects() {
     await latency();
-    return clone(makeProjects(state.persona));
+    return clone(makeProjects(mockState().persona));
   },
 
   async listRequests() {
     await latency();
     return clone(
-      [...state.requests]
+      [...mockState().requests]
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
         .map(toSummary),
     );
@@ -329,7 +351,7 @@ export const mockApi: CharterApi = {
 
   async createRequest(body: CreateRequestBody) {
     await latency(400);
-    const projects = makeProjects(state.persona);
+    const projects = makeProjects(mockState().persona);
     const project = projects.find((candidate) => candidate.id === body.projectId) ?? projects[0];
     const created: RequestDetail = {
       id: `req-${Math.random().toString(36).slice(2, 8)}`,
@@ -361,7 +383,7 @@ export const mockApi: CharterApi = {
       artifacts: [],
     };
 
-    state.requests = [created, ...state.requests];
+    mockState().requests = [created, ...mockState().requests];
     pendingReplies.set(created.id, scriptCharterReply(body.rawText));
     return clone(created);
   },
@@ -385,7 +407,7 @@ export const mockApi: CharterApi = {
     const request = find(id);
     if (request.spec && request.spec.version === version) {
       request.spec.approvedAt = new Date().toISOString();
-      request.spec.approvedByName = state.viewer.displayName;
+      request.spec.approvedByName = mockState().viewer.displayName;
     }
     request.status = 'queued';
     request.refinement.canReply = false;
@@ -499,7 +521,172 @@ export const mockApi: CharterApi = {
 
   async listPendingApprovals() {
     await latency();
-    return clone(makePendingApprovals(state.persona, state.now));
+    return clone(makePendingApprovals(mockState().persona, mockState().now));
+  },
+
+  /* ---- Panes 2 and 3 ------------------------------------------------------ */
+
+  /**
+   * Pages backwards from the tail, or centres a window on `aroundSeq` when pane 1 links into the
+   * middle of a twelve-thousand-event stream.
+   *
+   * The cursor is the index of the first event in the returned page, so the previous page is
+   * everything ending there. Opaque to the client either way — it never parses one.
+   */
+  async getTranscript(id: Id, query: TranscriptQuery): Promise<TranscriptPane> {
+    await latency(140);
+
+    // The mock stands in for the server, so it is the thing that enforces §7.4: a persona without
+    // repo read is refused here, not filtered in the component.
+    if (!mockState().viewer.capabilities.canReadRepos) {
+      throw new Error('Mock API: 403 — transcripts require repo read access');
+    }
+
+    const all = transcriptFor(id, mockState().now);
+    const limit = query.limit ?? TRANSCRIPT_PAGE_SIZE;
+
+    let from: number;
+    if (query.aroundSeq !== undefined) {
+      const centre = all.findIndex((event) => event.seq === query.aroundSeq);
+      from = Math.max(0, (centre === -1 ? all.length : centre) - Math.floor(limit / 2));
+    } else if (query.cursor !== undefined) {
+      from = Math.max(0, Number(query.cursor) - limit);
+    } else {
+      from = Math.max(0, all.length - limit);
+    }
+
+    const to = Math.min(all.length, from + limit);
+
+    return {
+      events: clone(all.slice(from, to)),
+      nextCursor: from > 0 ? String(from) : null,
+      totalCount: all.length,
+    };
+  },
+
+  async getFileDiff(_id, path) {
+    await latency(160);
+    if (!mockState().viewer.capabilities.canReadRepos) {
+      throw new Error('Mock API: 403 — diffs require repo read access');
+    }
+    return fileDiffFor(path);
+  },
+
+  /* ---- Post-hoc session actions (§7.5) ------------------------------------ */
+
+  async approveSession(id) {
+    await latency(220);
+    const request = find(id);
+    request.status = 'in_review';
+    request.updatedAt = new Date().toISOString();
+  },
+
+  async steerSession(id, instruction) {
+    await latency(260);
+    const request = find(id);
+    // §7.5: "continue the existing session with a new instruction; same branch, same thread."
+    request.status = 'running';
+    request.thread.live = true;
+    delete request.thread.endedAt;
+    request.thread.milestones.push({
+      id: `ms-steer-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'status',
+      label: 'An engineer sent it a new instruction',
+      detail: instruction,
+      occurredAt: new Date().toISOString(),
+      state: 'active',
+    });
+    request.cancellable = true;
+    request.updatedAt = new Date().toISOString();
+  },
+
+  async reviseSession(id) {
+    await latency(280);
+    const request = find(id);
+    // §7.5: fork the spec, dispatch a fresh session onto the same branch.
+    request.status = 'queued';
+    request.thread.live = true;
+    delete request.thread.endedAt;
+    request.thread.startedAt = new Date().toISOString();
+    request.thread.milestones.push({
+      id: `ms-revise-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'status',
+      label: 'An engineer revised the plan and started again',
+      occurredAt: new Date().toISOString(),
+      state: 'active',
+    });
+    request.cancellable = true;
+    request.updatedAt = new Date().toISOString();
+  },
+
+  async takeOverSession(id) {
+    await latency(200);
+    const request = find(id);
+
+    // §7.5: Charter marks the session `handed_off` and stops touching it. Steer and Revise are
+    // withdrawn here rather than merely greyed out, because the whole point is that no further
+    // agent write to this branch is possible.
+    if (request.sessionActions) {
+      request.sessionActions = {
+        ...request.sessionActions,
+        canSteer: false,
+        canRevise: false,
+        canApprove: false,
+        canTakeOver: false,
+        handedOff: { at: new Date().toISOString(), byName: mockState().viewer.displayName },
+      };
+    }
+    request.status = 'in_review';
+    request.cancellable = false;
+    request.thread.live = false;
+    request.thread.endedAt = new Date().toISOString();
+    request.thread.milestones.push({
+      id: `ms-handoff-${Math.random().toString(36).slice(2, 8)}`,
+      kind: 'status',
+      label: 'An engineer took this over',
+      detail: 'They are finishing it by hand. Nothing further is being changed automatically.',
+      occurredAt: new Date().toISOString(),
+      state: 'done',
+    });
+    request.updatedAt = new Date().toISOString();
+  },
+
+  /* ---- Settings → Runners (§33.3) ----------------------------------------- */
+
+  async listRunners() {
+    await latency();
+    if (!mockState().viewer.capabilities.canAdminister) {
+      throw new Error('Mock API: 403 — registering runners is an admin action');
+    }
+    return clone(mockState().runners);
+  },
+
+  async createPairingToken() {
+    await latency(240);
+    return makePairingToken(Date.now());
+  },
+
+  async revokeAgent(agentId) {
+    await latency(260);
+    mockState().runners = {
+      ...mockState().runners,
+      agents: mockState().runners.agents.filter((agent) => agent.id !== agentId),
+    };
+  },
+
+  /* ---- Admin setup checklist (§30.2) -------------------------------------- */
+
+  async getSetupChecklist() {
+    await latency(120);
+    // Null rather than a throw: a requester's dashboard has no checklist, and that is not an error
+    // state the page should have to render.
+    return mockState().viewer.capabilities.canAdminister ? clone(mockState().setup) : null;
+  },
+
+  async dismissSetupChecklist() {
+    await latency(160);
+    mockState().setup = { ...mockState().setup, dismissedAt: new Date().toISOString() };
+    return clone(mockState().setup);
   },
 
   subscribeToRequest(id, onEvent) {

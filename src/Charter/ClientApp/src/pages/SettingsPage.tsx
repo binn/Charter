@@ -1,9 +1,63 @@
+import { NavLink } from 'react-router';
 import type { TeachingLevel } from '@/api/types';
 import { useViewer } from '@/app/viewer-context';
 import { PageHeader } from '@/components/PageHeader';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Card, SectionLabel } from '@/components/ui/Card';
+import { Icon } from '@/components/ui/Icon';
 import { cn } from '@/lib/cn';
+
+/**
+ * Sub-navigation for the settings area, shared by every page in it.
+ *
+ * Runners appears only for an admin — but as ever, that is a navigation affordance and not the
+ * control: `GET /api/runners` refuses anyone else, so typing the URL gets an error state rather
+ * than a list of someone's hardware.
+ */
+export function SettingsNav() {
+  const { viewer } = useViewer();
+
+  const items = [
+    { to: '/settings', label: 'Preferences', icon: 'user' as const, end: true, visible: true },
+    {
+      to: '/settings/runners',
+      label: 'Runners',
+      icon: 'server' as const,
+      end: false,
+      visible: viewer.capabilities.canAdminister,
+    },
+  ].filter((item) => item.visible);
+
+  if (items.length < 2) {
+    return null;
+  }
+
+  return (
+    <nav aria-label="Settings" className="border-line -mt-2 mb-2 border-b">
+      <ul className="flex gap-1">
+        {items.map((item) => (
+          <li key={item.to}>
+            <NavLink
+              className={({ isActive }) =>
+                cn(
+                  'text-small -mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 font-medium whitespace-nowrap transition-colors',
+                  isActive
+                    ? 'border-accent text-ink'
+                    : 'hover:text-ink hover:border-line-strong border-transparent text-ink-muted',
+                )
+              }
+              end={item.end}
+              to={item.to}
+            >
+              <Icon name={item.icon} size={15} />
+              {item.label}
+            </NavLink>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
 
 /**
  * §13, calibration. The levels are "named for what the reader *wants*, never for what they lack —
@@ -37,7 +91,9 @@ export function SettingsPage() {
     <>
       <PageHeader description="These follow you to any device you sign in from." title="Settings" />
 
-      <div className="max-w-2xl space-y-4">
+      <SettingsNav />
+
+      <div className="mt-6 max-w-2xl space-y-4">
         <Card className="px-4 py-5 sm:px-5">
           <SectionLabel>You</SectionLabel>
           <dl className="text-small mt-3 grid grid-cols-[7rem_1fr] gap-x-4 gap-y-1.5">

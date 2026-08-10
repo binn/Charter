@@ -9,6 +9,7 @@ import { NotFoundPage } from '@/pages/NotFoundPage';
 import { ProjectsPage } from '@/pages/ProjectsPage';
 import { RequestDetailPage } from '@/pages/RequestDetailPage';
 import { RequestListPage } from '@/pages/RequestListPage';
+import { RunnersPage } from '@/pages/RunnersPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { WelcomePage } from '@/pages/WelcomePage';
 
@@ -43,6 +44,7 @@ export default function App() {
               <Route element={<ProjectsPage />} path="projects" />
               <Route element={<ApprovalsPage />} path="approvals" />
               <Route element={<SettingsPage />} path="settings" />
+              <Route element={<RunnersPage />} path="settings/runners" />
               <Route element={<NotFoundPage />} path="*" />
             </Route>
           </Routes>

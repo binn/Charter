@@ -192,6 +192,28 @@ const PATHS = {
       <path d="M14 14h3v3h-3zM20.5 14v3M17.5 20.5h3M14 20.5h.01" />
     </>
   ),
+  file: (
+    <>
+      <path d="M13.5 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5Z" />
+      <path d="M13.5 3.5v5h5" />
+    </>
+  ),
+  terminal: (
+    <>
+      <rect x="3" y="4.5" width="18" height="15" rx="2" />
+      <path d="m7.5 10 2.5 2.5L7.5 15" />
+      <path d="M13 15h4" />
+    </>
+  ),
+  diff: (
+    <>
+      <path d="M6.5 3.5v9" />
+      <circle cx="6.5" cy="16" r="2.5" />
+      <path d="M17.5 20.5v-9" />
+      <circle cx="17.5" cy="8" r="2.5" />
+      <path d="M9 6.5h4.5A1.5 1.5 0 0 1 15 8" />
+    </>
+  ),
 } as const;
 
 export type IconName = keyof typeof PATHS;

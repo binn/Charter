@@ -157,6 +157,7 @@ export type RequestStatus =
   | 'preview_ready'
   | 'in_review'
   | 'merged'
+  | 'no_changes_needed'
   | 'failed'
   | 'cancelled'
   | 'stale';
@@ -208,6 +209,18 @@ export interface RequestDetail extends RequestSummary {
 
   /** Pane 3 (§12). Omitted on the same terms as `transcript`. Viewer, not editor, in v1. */
   changes?: ChangesPane;
+
+  /**
+   * §14. The engineer recap. Omitted on the same terms as `transcript` — it names files, branches
+   * and deviations, and is written for someone who will read the diff.
+   */
+  recap?: EngineerRecap;
+
+  /**
+   * §7.5. The four post-hoc actions. Omitted entirely for a viewer who may perform none of them,
+   * so the engineer controls are absent rather than disabled.
+   */
+  sessionActions?: SessionActions;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -549,19 +562,73 @@ export type VerificationArtifact =
 /* Panes 2 and 3 (§12) — present only with repo read access                   */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A stable classification of an event, independent of which agent CLI produced it.
+ *
+ * §12b makes adapters data rather than code, so `type` below is whatever the adapter's own event
+ * stream called this thing and must be shown verbatim — but the client cannot switch on it. `kind`
+ * is the adapter-independent projection the adapter's `events.map` block resolves to, and it is
+ * what pane 2 draws icons and linkage from.
+ */
+export type TranscriptEventKind =
+  | 'tool_use'
+  | 'file_write'
+  | 'command'
+  | 'message'
+  | 'diagnostic'
+  | 'lifecycle';
+
 export interface TranscriptEvent {
   seq: number;
+  kind: TranscriptEventKind;
+  /** The adapter's own event name. Rendered verbatim; never parsed. */
   type: string;
   summary: string;
   createdAt: Iso8601;
-  /** Set on file-write events; clicking one opens pane 3 at this path. */
+  /** Set on `file_write`; clicking the event opens pane 3 at this path (§12). */
   path?: string;
+  /**
+   * §12: "clicking a file-write event in pane 2 opens pane 3 **at that hunk**". Index into the
+   * `hunks` of that path's `FileDiff`. Absent when the write could not be attributed to one hunk.
+   */
+  hunkIndex?: number;
+  /**
+   * The pane-1 milestone this event was promoted into or sits underneath. The reverse of
+   * `Milestone.eventSeq`, and what lets pane 2 mark the run of events a milestone produced rather
+   * than only its first line — that marked run is what makes the linkage teach (§12).
+   */
+  milestoneId?: Id;
+  /**
+   * §27.7's rule generalises: never colour alone. The client pairs this with an icon and a word.
+   */
+  level?: 'info' | 'warning' | 'error';
 }
 
 export interface TranscriptPane {
+  /**
+   * One page, oldest-first within the page. A long session is tens of thousands of events, so this
+   * is never the whole stream.
+   */
   events: TranscriptEvent[];
-  /** Cursor pagination; `null` when the beginning has been reached. */
+  /**
+   * Cursor for the page *before* this one — pane 2 pages backwards from the live tail. `null` when
+   * the beginning of the session has been reached.
+   */
   nextCursor: string | null;
+  /** Total events in the session, so the pane can say "of 12,480" without loading them. */
+  totalCount: number;
+}
+
+/** Which page of the transcript to fetch. All three are mutually exclusive. */
+export interface TranscriptQuery {
+  /** Page backwards from a cursor returned by a previous call. */
+  cursor?: string;
+  /**
+   * §12 linkage: centre the window on this event. Needed because a milestone can point at event
+   * 12 of 12,480 and paging backwards to reach it is not a user experience.
+   */
+  aroundSeq?: number;
+  limit?: number;
 }
 
 export interface ChangedFile {
@@ -570,10 +637,263 @@ export interface ChangedFile {
   deletions: number;
   /** §14: auth, migrations, money math and external calls float to the top. */
   risk: 'high' | 'medium' | 'low';
+  /**
+   * Why this file ranks where it does — "touches authentication", "database migration". §14's
+   * ranking is only useful if the reviewer can see the reasoning; an unexplained "high" is noise.
+   */
+  riskReasons?: string[];
 }
 
 export interface ChangesPane {
+  /** **Server-ordered, risk-first (§14).** The client does not re-sort; that would discard it. */
   files: ChangedFile[];
+}
+
+/** One contiguous run of changed lines, as the diff tool found them. */
+export interface DiffHunk {
+  id: Id;
+  /** "@@ -12,7 +12,9 @@ …" — shown verbatim as the hunk's label. */
+  header: string;
+  /** 1-based line in the modified file. Pane 3 reveals this line when the hunk is selected. */
+  modifiedStartLine: number;
+  originalStartLine: number;
+}
+
+/**
+ * One file's before and after, for Monaco's `DiffEditor` (§3, §12).
+ *
+ * Fetched per file rather than shipped inside `RequestDetail`: a session can touch a hundred files
+ * and the requester's payload must not carry any of them.
+ */
+export interface FileDiff {
+  path: string;
+  /** Monaco language id, resolved from the path server-side. `plaintext` when unrecognised. */
+  language: string;
+  /** Empty string when the file was added. */
+  originalText: string;
+  /** Empty string when the file was deleted. */
+  modifiedText: string;
+  hunks: DiffHunk[];
+  /** No text to show. The pane says so rather than rendering an empty editor. */
+  binary: boolean;
+  /** Very large file: `modifiedText` is a prefix. The pane says so and links out. */
+  truncated: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Engineer recap (§14)                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * §14's highest-value section: where the agent departed from the spec, or made a call the spec did
+ * not cover. `specSaid` is absent for the second case, and the difference matters — "the spec said
+ * X and it did Y" and "the spec was silent and it chose Y" need different amounts of scrutiny.
+ */
+export interface RecapDeviation {
+  id: Id;
+  specSaid?: string;
+  agentDid: string;
+  /** Where to look first. Links pane 3 straight to the file. */
+  path?: string;
+}
+
+export interface RecapNote {
+  id: Id;
+  text: string;
+}
+
+/**
+ * §14. Structurally the walkthrough (§13) with the opposite audience: same event stream, different
+ * prompt.
+ *
+ * **It must never say "looks good."** That is a rule about generation, but the client honours it
+ * too: nothing here is rendered as a verdict, there is no pass/fail badge on this object, and the
+ * card labels itself an orientation aid. The moment it editorialises on quality, reviewers start
+ * trusting it instead of reading the diff.
+ */
+export interface EngineerRecap {
+  /**
+   * §7.5: when a session was auto-dispatched nobody vetted the spec, and the recap **leads** with
+   * that. The client renders it first and renders `specMd` in full rather than collapsed.
+   */
+  autoDispatched: boolean;
+  /** One paragraph, what and why, tied back to the approved spec. Markdown. */
+  summaryMd: string;
+  /** The spec in full. Present when `autoDispatched`, because a summary is not reviewable. */
+  specMd?: string;
+  deviations: RecapDeviation[];
+  /** **Risk-ranked, not alphabetical** (§14). Server-ordered; the client never re-sorts. */
+  files: ChangedFile[];
+  /** Tests not written, edge cases noticed and skipped. */
+  couldNotVerify: RecapNote[];
+  /** Paths in suggested review order, starting where the risk is. */
+  reviewOrder: string[];
+  /**
+   * §14: post it as a change request comment where the provider has one, and in the session view
+   * where it does not. Absent means there was nowhere to post it, and this view is the only copy.
+   */
+  postedToUrl?: string;
+  /** "pull request", "merge request" — supplied by the server, never assumed (see EngineerDetails). */
+  postedToTerm?: string;
+  generatedAt: Iso8601;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Post-hoc session actions (§7.5)                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * §7.5's four post-hoc actions, all first-class.
+ *
+ * The booleans drive *affordances only* — whether a control is offered. They are not the
+ * authorisation check; the server refuses the POST regardless of what the client drew. The whole
+ * object is omitted for a viewer who may perform none of them, so the panel is absent rather than
+ * present-and-empty.
+ */
+export interface SessionActions {
+  canApprove: boolean;
+  canSteer: boolean;
+  canRevise: boolean;
+  canTakeOver: boolean;
+  /**
+   * The branch take-over stops agent writes to. Named in the confirmation, because "stops writes
+   * to that branch" is only meaningful if the reader can see which branch.
+   */
+  branch: string;
+  /**
+   * Set once someone has taken over. Charter has marked the session `handed_off` and stops touching
+   * it — no further agent writes to that branch. Steer and Revise are gone for good at that point.
+   */
+  handedOff?: { at: Iso8601; byName: string };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Charter Agents — Settings → Runners (§33.3, §32.2, §27.3)                   */
+/* -------------------------------------------------------------------------- */
+
+/** §33.2. `native` exists because macOS with Xcode cannot be containerised. */
+export type AgentMode = 'docker' | 'native';
+
+export type AgentStatus = 'online' | 'offline' | 'draining' | 'revoked';
+
+/**
+ * §32.2: a runner **probes and reports** rather than being told what it has. `probedBy` is the
+ * command that found it, which is the difference between a claim and a measurement — and it is what
+ * lets an engineer answer "why does this agent think it has Xcode 16.2".
+ */
+export interface AgentCapability {
+  /** The matchable identifier a session's requirements are checked against: "xcode:16.2". */
+  id: string;
+  /** The family it groups under: "xcode", "dotnet", "usb_device", "os". */
+  family: string;
+  /** Human label: ".NET SDK", "USB device". */
+  label: string;
+  version?: string;
+  probedBy?: string;
+  probedAt: Iso8601;
+}
+
+export interface RunnerAgent {
+  id: Id;
+  name: string;
+  mode: AgentMode;
+  /** Agent build version, e.g. "0.4.1". */
+  version: string;
+  /**
+   * §33.6: agent and control plane negotiate a protocol version on connect. False means it has
+   * refused to claim work — a clear message now beats subtle failures three sessions later.
+   */
+  protocolCompatible: boolean;
+  protocolNote?: string;
+  status: AgentStatus;
+  /** §33.4: missed heartbeats mark it offline and its in-flight jobs are re-queued. */
+  lastHeartbeatAt?: Iso8601;
+  registeredAt: Iso8601;
+  capabilities: AgentCapability[];
+  /** §33.4: concurrency limit per agent, defaulting conservatively. */
+  concurrency: { limit: number; inFlight: number };
+  os: string;
+  arch: string;
+}
+
+/**
+ * §33.3 step 1. Single-use, short-TTL. Shown exactly once — there is no endpoint that reads it
+ * back, so the UI must not offer to "show it again".
+ */
+export interface PairingToken {
+  token: string;
+  /**
+   * The exact command to run, assembled server-side so `--server` carries the instance's real base
+   * URL rather than whatever the browser happens to be pointed at.
+   */
+  command: string;
+  expiresAt: Iso8601;
+}
+
+/**
+ * §27.3. A session with no eligible runner **queues with a clear explanation** rather than failing,
+ * and this is that explanation's data.
+ */
+export interface QueuedSessionDemand {
+  requestId: Id;
+  title: string;
+  /** What the session requires: ["macos", "xcode:16"]. */
+  requires: string[];
+  /** Server-computed. Empty means nothing on this instance can run it. */
+  eligibleAgentIds: Id[];
+  /** Plain language, already written server-side. Rendered verbatim. */
+  queuedReason?: string;
+}
+
+export interface RunnersView {
+  agents: RunnerAgent[];
+  /** Sessions waiting on a runner right now, with what each one needs. */
+  waiting: QueuedSessionDemand[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Admin setup checklist (§30.2)                                              */
+/* -------------------------------------------------------------------------- */
+
+export type SetupTaskId =
+  | 'name_organisation'
+  | 'connect_github'
+  | 'add_model_credential'
+  | 'connect_repository'
+  | 'set_budgets'
+  | 'invite_people'
+  | 'notification_channels';
+
+export interface SetupTask {
+  id: SetupTaskId;
+  title: string;
+  /** One line saying why this one matters. Not instructions — the destination has those. */
+  description: string;
+  done: boolean;
+  /** Where the task actually gets done. An in-app route, or an external URL for a GitHub App install. */
+  href: string;
+  external?: boolean;
+  /**
+   * Not a lock — an explanation. "Connect GitHub first" is information; the checklist never
+   * disables a row, because §30.2's whole point is that someone can leave and come back in any
+   * order they like.
+   */
+  blockedBy?: SetupTaskId;
+  /** What is configured, once done: "3 repositories", "Anthropic". Proof, not a tick. */
+  doneSummary?: string;
+}
+
+/**
+ * §30.2. A **persistent dashboard checklist, not a modal wizard** — "modal wizards trap people who
+ * need to go find a token". Resumable, showing progress, dismissible once complete.
+ *
+ * Omitted by the API for anyone who is not an admin, so a requester's dashboard has no checklist
+ * rather than an empty one.
+ */
+export interface SetupChecklist {
+  tasks: SetupTask[];
+  /** Set once dismissed. Dismissal is a server-side preference like every other (no browser storage). */
+  dismissedAt?: Iso8601;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -610,6 +930,17 @@ export interface SendRefinementMessageBody {
 export interface SubmitFeedbackBody {
   verdict: FeedbackVerdict;
   note?: string;
+}
+
+/** §7.5 "Steer" — continue the existing session with a new instruction; same branch, same thread. */
+export interface SteerSessionBody {
+  instruction: string;
+}
+
+/** §7.5 "Revise and rebuild" — fork the spec, edit it, dispatch a fresh session onto the branch. */
+export interface ReviseSessionBody {
+  /** The edited spec. Sent in full, because forking a spec means replacing it, not patching it. */
+  revisedSpecMd: string;
 }
 
 /* -------------------------------------------------------------------------- */
