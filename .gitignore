@@ -1,0 +1,41 @@
+# Claude Code local overrides
+.claude/settings.local.json
+.claude/**/local/
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+artifacts/
+[Dd]ebug/
+[Rr]elease/
+TestResults/
+*.coverage
+*.trx
+.vs/
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Charter generated recon output
+.charter/cache/
+
+# Editors
+.idea/
+*.swp
+
+# macOS
+.DS_Store
