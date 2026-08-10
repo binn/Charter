@@ -1,33 +1,264 @@
 @import 'tailwindcss';
 
 /*
- * Tailwind v4 is configured here rather than in a tailwind.config.js. Design tokens live as CSS
- * custom properties so shadcn/ui components and hand-written components read the same palette.
+ * Charter design tokens.
+ *
+ * The identity comes off the mark in `assets/charter-mark.svg`: four rounded corner brackets in a
+ * cool near-black (#14171B -> oklch(20.3% 0.009 256)) around a single teal dot
+ * (#1E6B5E -> oklch(47.8% 0.076 179)). Everything below is derived from those two measurements:
+ * neutrals sit on hue 256 at very low chroma, the accent ramp on hue 178. Nothing else is
+ * chromatic except the three status colours, which is the point — Charter is a reading surface.
+ *
+ * Tailwind v4 is configured here rather than in a tailwind.config.js. `@theme` generates the
+ * utilities and the light values; the blocks after it swap the same custom properties for dark.
+ *
+ * Dark mode is resolved to a concrete `data-theme` attribute on <html> from the server-held user
+ * preference (`GET /api/me` -> preferences.theme). There is no browser storage anywhere in this
+ * app: the `prefers-color-scheme` fallback below only covers `theme: 'system'` and the pre-hydration
+ * paint. See AGENTS.md, "No browser storage APIs in the frontend".
  */
+
 @theme {
-  --color-surface: oklch(99% 0.002 250);
-  --color-surface-raised: oklch(100% 0 0);
-  --color-ink: oklch(22% 0.02 260);
-  --color-ink-muted: oklch(52% 0.02 260);
-  --color-line: oklch(91% 0.005 260);
-  --color-accent: oklch(58% 0.16 258);
-  --color-ok: oklch(64% 0.15 150);
-  --color-warn: oklch(72% 0.15 75);
-  --color-bad: oklch(58% 0.19 25);
+  /* Type ------------------------------------------------------------------ */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  /* Bitstream Charter ships with macOS/iOS; elsewhere this degrades through a transitional serif.
+     Used only for display headings, so the fallback never changes a layout. */
+  --font-display:
+    Charter, 'Bitstream Charter', 'Sitka Text', 'Iowan Old Style', Cambria, Georgia, serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1rem;
+  --text-micro--letter-spacing: 0.06em;
+  --text-tiny: 0.75rem;
+  --text-tiny--line-height: 1.0625rem;
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.25rem;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.5rem;
+  --text-lead: 1.0625rem;
+  --text-lead--line-height: 1.65rem;
+  --text-title: 1.1875rem;
+  --text-title--line-height: 1.6rem;
+  --text-title--letter-spacing: -0.011em;
+  --text-display: 1.6875rem;
+  --text-display--line-height: 2.125rem;
+  --text-display--letter-spacing: -0.02em;
+  --text-hero: 2.125rem;
+  --text-hero--line-height: 2.5rem;
+  --text-hero--letter-spacing: -0.025em;
+
+  /* Brand ramp — hue 178, anchored on the mark's dot at 600 --------------- */
+  --color-brand-50: oklch(97.6% 0.014 178);
+  --color-brand-100: oklch(94.6% 0.03 178);
+  --color-brand-200: oklch(89.4% 0.05 178);
+  --color-brand-300: oklch(81.5% 0.069 178);
+  --color-brand-400: oklch(70.5% 0.085 178);
+  --color-brand-500: oklch(59% 0.085 178);
+  --color-brand-600: oklch(47.8% 0.076 178);
+  --color-brand-700: oklch(40% 0.065 178);
+  --color-brand-800: oklch(32% 0.052 178);
+  --color-brand-900: oklch(25% 0.038 178);
+
+  /* Semantic surface / ink ------------------------------------------------ */
+  --color-canvas: oklch(98.6% 0.003 256);
+  --color-surface: oklch(100% 0 0);
+  --color-sunken: oklch(96.4% 0.004 256);
+  --color-line: oklch(91.5% 0.006 256);
+  --color-line-strong: oklch(84% 0.008 256);
+
+  --color-ink: oklch(20.3% 0.009 256);
+  --color-ink-muted: oklch(47% 0.012 256);
+  --color-ink-subtle: oklch(53% 0.011 256);
+  --color-ink-inverse: oklch(99% 0 0);
+
+  --color-accent: oklch(47.8% 0.076 178);
+  --color-accent-hover: oklch(40% 0.065 178);
+  --color-accent-ink: oklch(99% 0 0);
+  --color-accent-soft: oklch(96.4% 0.019 178);
+  --color-accent-soft-ink: oklch(33% 0.055 178);
+  --color-accent-line: oklch(87% 0.045 178);
+
+  --color-ok: oklch(48% 0.105 155);
+  --color-ok-soft: oklch(96% 0.03 155);
+  --color-ok-line: oklch(86% 0.06 155);
+  --color-warn: oklch(52% 0.125 62);
+  --color-warn-soft: oklch(96.5% 0.04 75);
+  --color-warn-line: oklch(86% 0.08 70);
+  --color-danger: oklch(50% 0.16 27);
+  --color-danger-soft: oklch(96.5% 0.02 27);
+  --color-danger-line: oklch(88% 0.05 27);
+
+  --color-focus: oklch(55% 0.1 178);
+
+  /* Geometry — the mark's corners are a 2px radius on a 24px grid --------- */
+  --radius-control: 0.5rem;
+  --radius-card: 0.75rem;
+  --radius-panel: 1rem;
+
+  --shadow-card: 0 1px 2px oklch(20% 0.01 256 / 0.05), 0 1px 3px oklch(20% 0.01 256 / 0.04);
+  --shadow-raised: 0 2px 4px oklch(20% 0.01 256 / 0.05), 0 8px 24px oklch(20% 0.01 256 / 0.07);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-surface: oklch(20% 0.015 260);
-    --color-surface-raised: oklch(24% 0.018 260);
-    --color-ink: oklch(95% 0.008 260);
-    --color-ink-muted: oklch(70% 0.015 260);
-    --color-line: oklch(32% 0.015 260);
+/* `dark:` should follow the resolved attribute, not the media query alone. */
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme='light']), :root:not([data-theme='light']) *) {
+      @slot;
+    }
   }
 }
 
-html,
-body {
-  background-color: var(--color-surface);
-  color: var(--color-ink);
+/*
+ * Dark palette. Declared once and applied by two selectors: the explicit preference, and the
+ * system preference when no explicit preference has been resolved yet.
+ */
+@layer base {
+  :root[data-theme='light'] {
+    color-scheme: light;
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+
+    --color-canvas: oklch(16.5% 0.008 256);
+    --color-surface: oklch(21% 0.009 256);
+    --color-sunken: oklch(13.5% 0.007 256);
+    --color-line: oklch(28.5% 0.01 256);
+    --color-line-strong: oklch(37% 0.012 256);
+
+    --color-ink: oklch(95% 0.005 256);
+    --color-ink-muted: oklch(72% 0.011 256);
+    --color-ink-subtle: oklch(64% 0.011 256);
+    --color-ink-inverse: oklch(15% 0.01 256);
+
+    --color-accent: oklch(75% 0.093 178);
+    --color-accent-hover: oklch(82% 0.08 178);
+    --color-accent-ink: oklch(16% 0.025 178);
+    --color-accent-soft: oklch(27% 0.036 178);
+    --color-accent-soft-ink: oklch(87% 0.06 178);
+    --color-accent-line: oklch(38% 0.05 178);
+
+    --color-ok: oklch(76% 0.13 155);
+    --color-ok-soft: oklch(26% 0.05 155);
+    --color-ok-line: oklch(38% 0.07 155);
+    --color-warn: oklch(81% 0.13 80);
+    --color-warn-soft: oklch(28% 0.055 70);
+    --color-warn-line: oklch(42% 0.08 70);
+    --color-danger: oklch(72% 0.15 25);
+    --color-danger-soft: oklch(27% 0.06 25);
+    --color-danger-line: oklch(40% 0.1 25);
+
+    --color-focus: oklch(75% 0.093 178);
+
+    --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.4), 0 1px 3px oklch(0% 0 0 / 0.3);
+    --shadow-raised: 0 2px 4px oklch(0% 0 0 / 0.4), 0 10px 30px oklch(0% 0 0 / 0.45);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      color-scheme: dark;
+
+      --color-canvas: oklch(16.5% 0.008 256);
+      --color-surface: oklch(21% 0.009 256);
+      --color-sunken: oklch(13.5% 0.007 256);
+      --color-line: oklch(28.5% 0.01 256);
+      --color-line-strong: oklch(37% 0.012 256);
+
+      --color-ink: oklch(95% 0.005 256);
+      --color-ink-muted: oklch(72% 0.011 256);
+      --color-ink-subtle: oklch(64% 0.011 256);
+      --color-ink-inverse: oklch(15% 0.01 256);
+
+      --color-accent: oklch(75% 0.093 178);
+      --color-accent-hover: oklch(82% 0.08 178);
+      --color-accent-ink: oklch(16% 0.025 178);
+      --color-accent-soft: oklch(27% 0.036 178);
+      --color-accent-soft-ink: oklch(87% 0.06 178);
+      --color-accent-line: oklch(38% 0.05 178);
+
+      --color-ok: oklch(76% 0.13 155);
+      --color-ok-soft: oklch(26% 0.05 155);
+      --color-ok-line: oklch(38% 0.07 155);
+      --color-warn: oklch(81% 0.13 80);
+      --color-warn-soft: oklch(28% 0.055 70);
+      --color-warn-line: oklch(42% 0.08 70);
+      --color-danger: oklch(72% 0.15 25);
+      --color-danger-soft: oklch(27% 0.06 25);
+      --color-danger-line: oklch(40% 0.1 25);
+
+      --color-focus: oklch(75% 0.093 178);
+
+      --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.4), 0 1px 3px oklch(0% 0 0 / 0.3);
+      --shadow-raised: 0 2px 4px oklch(0% 0 0 / 0.4), 0 10px 30px oklch(0% 0 0 / 0.45);
+    }
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  html,
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  /* One focus treatment everywhere, visible against both themes. The outline follows whatever
+     radius the element already has — setting a radius here would deform buttons on focus. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+}
+
+@layer utilities {
+  /* Streaming placeholder. Respects reduced motion — a 20-minute pulse is a lot of movement. */
+  .animate-pulse-soft {
+    animation: charter-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes charter-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-pulse-soft,
+    .animate-spin {
+      animation: none;
+    }
+  }
 }
