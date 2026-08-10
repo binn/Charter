@@ -29,6 +29,28 @@ Between the two sits Charter's refinement conversation, and it does two jobs at 
 This is a structural property rather than a filter. It does not depend on detecting an attack, and it
 does not weaken when someone invents a new phrasing.
 
+### How the boundary is enforced in code
+
+The property above is only worth as much as its enforcement, so it is enforced by the type system
+rather than by reviewer discipline:
+
+- **Requester input is not a string.** It is carried in a dedicated type whose `ToString()` returns a
+  placeholder, and whose characters are reachable only through a narrowly scoped reveal method with a
+  single call site — the prompt builder. Logging it, concatenating it, or interpolating it into a
+  prompt does not produce the text.
+- **There is one door to dispatch.** The agent briefing is constructible only from an approved
+  specification, and an approved specification is produced only by confirming a spec. Neither accepts
+  a raw string or a request. Adding "just append what they actually said" means adding a new API and
+  defending it in review, rather than editing one line.
+- **A requester conversation turn refuses to yield its text.** Building a transcript to paste into a
+  prompt fails loudly instead of quietly leaking.
+- **Instruction-shaped input is flagged on ingest** — role-override phrasing, imperatives addressed to
+  an agent, base64 blobs, URLs, and zero-width or bidirectional characters. A flag blocks both
+  confirmation and promotion to a build until an engineer clears it.
+
+The system prompt does also fence requester text as data, but that is a layer and not the defence.
+Charter does not rely on instructing a model to ignore injected instructions.
+
 Two caveats, stated plainly:
 
 - Auto-dispatch can skip the human step ([spec §7.5](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)). The model-authored

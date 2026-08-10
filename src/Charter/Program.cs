@@ -3,6 +3,7 @@ using Charter.Data;
 using Charter.Diagnostics;
 using Charter.Logging;
 using Charter.Models;
+using Charter.Refinement;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry.Metrics;
@@ -63,6 +64,7 @@ try
     builder.Services.AddCharterPreflight();
     builder.Services.AddCharterData(config.Database.ConnectionString.Reveal());
     builder.Services.AddCharterModels();
+    builder.Services.AddCharterRefinement();
     builder.Services.AddCharterCredentials();
     builder.Services.AddCharterAdapters();
 
