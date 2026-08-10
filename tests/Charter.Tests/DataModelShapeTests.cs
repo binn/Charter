@@ -1,0 +1,407 @@
+using Charter.Data;
+using Charter.Domain;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+
+namespace Charter.Tests;
+
+/// <summary>
+/// Asserts the shape of the mapped model: table and column names, storage types, indexes and
+/// delete behaviours.
+/// </summary>
+/// <remarks>
+/// None of this needs a database. EF builds the model from the provider's type mappings, so a
+/// connection string that points nowhere is enough to check that <c>cost_usd</c> is
+/// <c>numeric</c> and not <c>double precision</c>, that every enum is stored as text, and that
+/// deleting a session does not take the accounting with it.
+/// </remarks>
+public class DataModelShapeTests : IDisposable
+{
+    private const string UnusedConnectionString =
+        "Host=localhost;Port=5432;Database=charter;Username=charter;Password=unused";
+
+    private readonly CharterDbContext _db;
+
+    /// <summary>
+    /// The design-time model rather than <c>DbContext.Model</c>: the runtime model is read-optimised
+    /// and drops the configuration these assertions are about, such as check constraints and index
+    /// sort order.
+    /// </summary>
+    private readonly IModel _model;
+
+    public DataModelShapeTests()
+    {
+        var options = new DbContextOptionsBuilder<CharterDbContext>();
+        DataServiceCollectionExtensions.ConfigureNpgsql(options, UnusedConnectionString);
+
+        _db = new CharterDbContext(options.Options);
+        _model = _db.GetService<IDesignTimeModel>().Model;
+    }
+
+    /// <summary>Every entity in section 5, plus the four the later sections add.</summary>
+    private static readonly (Type ClrType, string Table)[] MappedEntities =
+    [
+        (typeof(Organization), "organizations"),
+        (typeof(User), "users"),
+        (typeof(Member), "members"),
+        (typeof(Charter.Domain.Identity), "identities"),
+        (typeof(Repo), "repos"),
+        (typeof(RepoScope), "repo_scopes"),
+        (typeof(AutoDispatchPolicy), "auto_dispatch_policies"),
+        (typeof(Request), "requests"),
+        (typeof(Spec), "specs"),
+        (typeof(Session), "sessions"),
+        (typeof(Event), "events"),
+        (typeof(Milestone), "milestones"),
+        (typeof(PullRequest), "pull_requests"),
+        (typeof(Deployment), "deployments"),
+        (typeof(VerificationArtifact), "verification_artifacts"),
+        (typeof(Walkthrough), "walkthroughs"),
+        (typeof(Recap), "recaps"),
+        (typeof(ConceptLedger), "concept_ledger"),
+        (typeof(CredentialGrant), "credential_grants"),
+        (typeof(LedgerEntry), "ledger_entries"),
+        (typeof(Budget), "budgets"),
+        (typeof(AuditLog), "audit_logs"),
+        (typeof(Job), "jobs"),
+    ];
+
+    public static TheoryData<Type, string> ExpectedTableNames
+    {
+        get
+        {
+            var data = new TheoryData<Type, string>();
+
+            foreach (var (clrType, table) in MappedEntities)
+            {
+                data.Add(clrType, table);
+            }
+
+            return data;
+        }
+    }
+
+    public void Dispose()
+    {
+        _db.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    [Theory]
+    [MemberData(nameof(ExpectedTableNames))]
+    public void EveryEntityInSectionFiveIsMapped(Type clrType, string table)
+    {
+        var entity = _model.FindEntityType(clrType);
+
+        Assert.NotNull(entity);
+        Assert.Equal(table, entity.GetTableName());
+    }
+
+    [Fact]
+    public void TheModelHasNoEntitiesBeyondTheOnesDeclaredHere()
+    {
+        var mapped = _model.GetEntityTypes().Select(entity => entity.ClrType).ToHashSet();
+        var expected = MappedEntities.Select(entity => entity.ClrType).ToHashSet();
+
+        Assert.Equal(expected.Count, mapped.Count);
+        Assert.All(mapped, type => Assert.Contains(type, expected));
+    }
+
+    [Fact]
+    public void EveryColumnIsSnakeCase()
+    {
+        foreach (var entity in _model.GetEntityTypes())
+        {
+            var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table);
+            Assert.NotNull(table);
+
+            foreach (var property in entity.GetProperties())
+            {
+                var column = property.GetColumnName(table.Value);
+
+                Assert.NotNull(column);
+                Assert.Equal(column, column.ToLowerInvariant());
+                Assert.Equal(column, DbNaming.ToSnakeCase(column));
+            }
+        }
+    }
+
+    [Fact]
+    public void EveryKeyIndexAndForeignKeyIsSnakeCase()
+    {
+        foreach (var entity in _model.GetEntityTypes())
+        {
+            foreach (var key in entity.GetKeys())
+            {
+                Assert.StartsWith("pk_", key.GetName(), StringComparison.Ordinal);
+            }
+
+            foreach (var foreignKey in entity.GetForeignKeys())
+            {
+                var name = foreignKey.GetConstraintName();
+                Assert.NotNull(name);
+                Assert.Equal(name, name.ToLowerInvariant());
+            }
+
+            foreach (var index in entity.GetIndexes())
+            {
+                var name = index.GetDatabaseName();
+                Assert.NotNull(name);
+                Assert.Equal(name, name.ToLowerInvariant());
+                Assert.True(
+                    name.StartsWith("ix_", StringComparison.Ordinal) || name.StartsWith("ux_", StringComparison.Ordinal),
+                    $"Index '{name}' should be prefixed ix_ or ux_.");
+            }
+        }
+    }
+
+    [Fact]
+    public void EveryEnumIsStoredAsTextRatherThanAnInteger()
+    {
+        // An integer enum makes a migration a landmine and makes raw SQL unreadable.
+        foreach (var entity in _model.GetEntityTypes())
+        {
+            foreach (var property in entity.GetProperties())
+            {
+                var clrType = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
+                if (!clrType.IsEnum)
+                {
+                    continue;
+                }
+
+                var converter = property.GetValueConverter() ?? property.GetTypeMapping().Converter;
+
+                Assert.NotNull(converter);
+                Assert.Equal(typeof(string), converter.ProviderClrType);
+            }
+        }
+    }
+
+    [Fact]
+    public void EnumArraysAreStoredAsTextArrays()
+    {
+        Assert.Equal("text[]", ColumnType<Member>(nameof(Member.Roles)));
+        Assert.Equal("text[]", ColumnType<Member>(nameof(Member.Capabilities)));
+        Assert.Equal("text[]", ColumnType<Budget>(nameof(Budget.Categories)));
+        Assert.Equal("text[]", ColumnType<AutoDispatchPolicy>(nameof(AutoDispatchPolicy.ProjectTypes)));
+        Assert.Equal("text[]", ColumnType<AutoDispatchPolicy>(nameof(AutoDispatchPolicy.AllowedPaths)));
+        Assert.Equal("text[]", ColumnType<Job>(nameof(Job.RequiredCapabilities)));
+        Assert.Equal("uuid[]", ColumnType<LedgerEntry>(nameof(LedgerEntry.BudgetIds)));
+        Assert.Equal("double precision[]", ColumnType<Budget>(nameof(Budget.AlertThresholds)));
+    }
+
+    [Fact]
+    public void EveryTimestampIsTimestamptz()
+    {
+        foreach (var entity in _model.GetEntityTypes())
+        {
+            foreach (var property in entity.GetProperties())
+            {
+                var clrType = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
+
+                if (clrType == typeof(DateTimeOffset))
+                {
+                    Assert.Equal("timestamp with time zone", property.GetColumnType());
+                }
+
+                // DateTime would store an ambiguous local instant. There should not be any.
+                Assert.NotEqual(typeof(DateTime), clrType);
+            }
+        }
+    }
+
+    [Fact]
+    public void JsonColumnsAreJsonb()
+    {
+        Assert.Equal("jsonb", ColumnType<Event>(nameof(Event.Payload)));
+        Assert.Equal("jsonb", ColumnType<Job>(nameof(Job.Payload)));
+        Assert.Equal("jsonb", ColumnType<Spec>(nameof(Spec.AcceptanceCriteria)));
+        Assert.Equal("jsonb", ColumnType<Spec>(nameof(Spec.Scope)));
+        Assert.Equal("jsonb", ColumnType<Repo>(nameof(Repo.CharterConfigSnapshot)));
+        Assert.Equal("jsonb", ColumnType<Recap>(nameof(Recap.RiskItems)));
+        Assert.Equal("jsonb", ColumnType<AuditLog>(nameof(AuditLog.Metadata)));
+    }
+
+    [Fact]
+    public void MoneyIsNumericNeverFloatingPoint()
+    {
+        Assert.Equal("numeric(14,4)", ColumnType<Session>(nameof(Session.CostUsd)));
+        Assert.Equal("numeric(14,4)", ColumnType<LedgerEntry>(nameof(LedgerEntry.Usd)));
+        Assert.Equal("numeric(14,4)", ColumnType<LedgerEntry>(nameof(LedgerEntry.QuotaSessions)));
+        Assert.Equal("numeric(14,4)", ColumnType<LedgerEntry>(nameof(LedgerEntry.ImputedUsd)));
+        Assert.Equal("numeric(14,4)", ColumnType<Budget>(nameof(Budget.Amount)));
+    }
+
+    [Fact]
+    public void CredentialCiphertextIsBytesAndNoPlaintextColumnExists()
+    {
+        var entity = _model.FindEntityType(typeof(CredentialGrant));
+        Assert.NotNull(entity);
+
+        Assert.Equal("bytea", ColumnType<CredentialGrant>(nameof(CredentialGrant.SecretEncrypted)));
+        Assert.Equal("bytea", ColumnType<CredentialGrant>(nameof(CredentialGrant.RefreshTokenEncrypted)));
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("secret_encrypted", columns);
+        Assert.Contains("refresh_token_encrypted", columns);
+        Assert.DoesNotContain("secret", columns);
+        Assert.DoesNotContain("refresh_token", columns);
+        Assert.DoesNotContain("api_key", columns);
+    }
+
+    [Fact]
+    public void TheEventTableIsIndexedForCursorPaginationBySession()
+    {
+        var entity = _model.FindEntityType(typeof(Event));
+        Assert.NotNull(entity);
+
+        var index = entity.GetIndexes().Single(candidate => candidate.GetDatabaseName() == "ux_events_session_id_seq");
+
+        Assert.True(index.IsUnique);
+        Assert.Equal(["SessionId", "Seq"], index.Properties.Select(property => property.Name));
+
+        // Retention pruning sweeps by age (section 20).
+        Assert.Contains(entity.GetIndexes(), candidate => candidate.GetDatabaseName() == "ix_events_created_at");
+    }
+
+    [Fact]
+    public void TheQueueIsIndexedForClaimingAndForLeaseExpiry()
+    {
+        var entity = _model.FindEntityType(typeof(Job));
+        Assert.NotNull(entity);
+
+        var claim = entity.GetIndexes().Single(index => index.GetDatabaseName() == "ix_jobs_claimable");
+
+        Assert.Equal(["Status", "Priority", "AvailableAt"], claim.Properties.Select(property => property.Name));
+        Assert.Equal(new[] { false, true, false }, claim.IsDescending!);
+        Assert.Equal("status = 'pending'", claim.GetFilter());
+
+        var lease = entity.GetIndexes().Single(index => index.GetDatabaseName() == "ix_jobs_lease_expires_at");
+        Assert.Equal("status = 'claimed'", lease.GetFilter());
+
+        var capabilities = entity.GetIndexes().Single(index => index.GetDatabaseName() == "ix_jobs_required_capabilities");
+        Assert.Equal("gin", capabilities.GetMethod());
+
+        // No foreign keys: claiming a job must never need another table.
+        Assert.Empty(entity.GetForeignKeys());
+    }
+
+    [Fact]
+    public void SessionAndJobCarryConcurrencyTokens()
+    {
+        // Both rows are written by more than one path.
+        Assert.True(Property<Session>(nameof(Session.Version)).IsConcurrencyToken);
+        Assert.True(Property<Job>(nameof(Job.Version)).IsConcurrencyToken);
+    }
+
+    [Fact]
+    public void UniquenessIsEnforcedWhereTheDomainDependsOnIt()
+    {
+        AssertUniqueIndex<User>("ux_users_email");
+        AssertUniqueIndex<Member>("ux_members_org_id_user_id");
+        AssertUniqueIndex<Charter.Domain.Identity>("ux_identities_provider_provider_user_id");
+        AssertUniqueIndex<Repo>("ux_repos_org_id_full_name");
+        AssertUniqueIndex<Spec>("ux_specs_request_id_version");
+        AssertUniqueIndex<Event>("ux_events_session_id_seq");
+        AssertUniqueIndex<PullRequest>("ux_pull_requests_session_id_number");
+        AssertUniqueIndex<Recap>("ux_recaps_session_id");
+        AssertUniqueIndex<Walkthrough>("ux_walkthroughs_session_id_level");
+        AssertUniqueIndex<ConceptLedger>("ux_concept_ledger_user_id_concept");
+    }
+
+    [Fact]
+    public void OwnedRowsCascadeWithTheirOwner()
+    {
+        AssertDelete<Member>(nameof(Member.OrgId), DeleteBehavior.Cascade);
+        AssertDelete<Repo>(nameof(Repo.OrgId), DeleteBehavior.Cascade);
+        AssertDelete<Event>(nameof(Event.SessionId), DeleteBehavior.Cascade);
+        AssertDelete<Milestone>(nameof(Milestone.EventId), DeleteBehavior.Cascade);
+        AssertDelete<Session>(nameof(Session.SpecId), DeleteBehavior.Cascade);
+        AssertDelete<Deployment>(nameof(Deployment.PullRequestId), DeleteBehavior.Cascade);
+        AssertDelete<VerificationArtifact>(nameof(VerificationArtifact.SessionId), DeleteBehavior.Cascade);
+    }
+
+    [Fact]
+    public void AccountingAndAttributionSurviveTheRowsTheyPointAt()
+    {
+        // Section 20 makes deletion first-class, and none of it may quietly erase the money trail.
+        AssertDelete<LedgerEntry>(nameof(LedgerEntry.SessionId), DeleteBehavior.SetNull);
+        AssertDelete<LedgerEntry>(nameof(LedgerEntry.CredentialGrantId), DeleteBehavior.SetNull);
+        AssertDelete<LedgerEntry>(nameof(LedgerEntry.UserId), DeleteBehavior.Restrict);
+        AssertDelete<AuditLog>(nameof(AuditLog.ActorUserId), DeleteBehavior.SetNull);
+        AssertDelete<Request>(nameof(Request.RequesterId), DeleteBehavior.Restrict);
+        AssertDelete<Spec>(nameof(Spec.ApprovedBy), DeleteBehavior.SetNull);
+    }
+
+    [Fact]
+    public void DerivedPropertiesAreNotColumns()
+    {
+        AssertNotMapped<LedgerEntry>(nameof(LedgerEntry.Amount));
+        AssertNotMapped<AutoDispatchPolicy>(nameof(AutoDispatchPolicy.Specificity));
+        AssertNotMapped<Repo>(nameof(Repo.IsRequesterVisible));
+        AssertNotMapped<Session>(nameof(Session.IsTerminal));
+        AssertNotMapped<Spec>(nameof(Spec.IsApproved));
+    }
+
+    [Fact]
+    public void TheRepoScopeCheckConstraintKeepsTheSubjectExclusive()
+    {
+        var entity = _model.FindEntityType(typeof(RepoScope));
+        Assert.NotNull(entity);
+
+        var constraint = Assert.Single(entity.GetCheckConstraints());
+
+        Assert.Equal("ck_repo_scopes_member_xor_role", constraint.Name);
+        Assert.Equal("(member_id IS NULL) <> (role IS NULL)", constraint.Sql);
+    }
+
+    [Fact]
+    public void TheMigrationsHistoryTableIsNamedLikeTheRestOfTheSchema()
+        => Assert.Equal("__charter_migrations_history", CharterDbContext.MigrationsHistoryTable);
+
+    private void AssertNotMapped<TEntity>(string propertyName)
+    {
+        var entity = _model.FindEntityType(typeof(TEntity));
+        Assert.NotNull(entity);
+        Assert.Null(entity.FindProperty(propertyName));
+    }
+
+    private IProperty Property<TEntity>(string propertyName)
+    {
+        var entity = _model.FindEntityType(typeof(TEntity));
+        Assert.NotNull(entity);
+
+        var property = entity.FindProperty(propertyName);
+        Assert.NotNull(property);
+
+        return property;
+    }
+
+    private string? ColumnType<TEntity>(string propertyName) => Property<TEntity>(propertyName).GetColumnType();
+
+    private void AssertUniqueIndex<TEntity>(string indexName)
+    {
+        var entity = _model.FindEntityType(typeof(TEntity));
+        Assert.NotNull(entity);
+
+        var index = entity.GetIndexes().SingleOrDefault(candidate => candidate.GetDatabaseName() == indexName);
+
+        Assert.NotNull(index);
+        Assert.True(index.IsUnique, $"{indexName} should be unique.");
+    }
+
+    private void AssertDelete<TEntity>(string foreignKeyProperty, DeleteBehavior expected)
+    {
+        var entity = _model.FindEntityType(typeof(TEntity));
+        Assert.NotNull(entity);
+
+        var foreignKey = entity.GetForeignKeys()
+            .Single(candidate => candidate.Properties.Count == 1
+                && candidate.Properties[0].Name == foreignKeyProperty);
+
+        Assert.Equal(expected, foreignKey.DeleteBehavior);
+    }
+}

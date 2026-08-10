@@ -14,6 +14,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      Charter compiles against EF Core 10.0.10, which Microsoft.EntityFrameworkCore.Design brings in.
+      Design is a PrivateAssets reference, so it does not flow here, and the provider package only
+      carries 10.0.4 transitively. Pinning the same version the product is compiled against is what
+      lets the tests reference CharterDbContext at all; neither package is new to the restore graph.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Charter\Charter.csproj" />
     <ProjectReference Include="..\..\src\Charter.Agent\Charter.Agent.csproj" />
   </ItemGroup>

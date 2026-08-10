@@ -1,0 +1,22 @@
+# Gemini CLI. Reads its prompt from stdin when nothing is attached to a TTY, and `--yolo` is what
+# stops it pausing for tool approval — without it a dispatched session hangs until the wall-clock cap.
+#
+# events.format is `text`, and that is not an oversight. Gemini CLI's `--output-format json` prints a
+# single aggregate object once the run has finished, which is not a streaming event log: Charter
+# cannot classify a line while the agent is still working. See docs/adapters.md for exactly what the
+# requester loses — milestone promotion into the status thread is the big one.
+id: gemini-cli
+display_name: "Gemini CLI"
+version: 1
+install:
+  check: "gemini --version"
+  hint: "npm install -g @google/gemini-cli"
+invoke:
+  command: ["gemini", "--yolo"]
+  prompt: stdin
+auth:
+  google_api_key: { env: "GEMINI_API_KEY" }
+model_arg: ["--model", "{model}"]
+events:
+  format: text
+capabilities: []

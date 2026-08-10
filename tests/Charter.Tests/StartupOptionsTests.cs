@@ -118,4 +118,56 @@ public class StartupOptionsTests
         Assert.Throws<ConfigException>(
             () => StartupOptions.FromEnvironment(Env(("OTEL_EXPORTER_OTLP_PROTOCOL", "thrift"))));
     }
+
+    [Fact]
+    public void ToStringEmitsNoSecretValue()
+    {
+        // The connection string carries the database password and the Seq API key is a credential;
+        // a record's generated ToString would print both into whatever logged it (section 20b.2).
+        var options = StartupOptions.FromEnvironment(Env(
+            ("DATABASE_URL", "postgres://charter:database-password-do-not-log@db.internal/charter"),
+            ("CHARTER_SEQ_URL", "http://seq:5341"),
+            ("CHARTER_SEQ_API_KEY", "seq-key-do-not-log")));
+
+        var rendered = options.ToString();
+
+        Assert.DoesNotContain("database-password-do-not-log", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("seq-key-do-not-log", rendered, StringComparison.Ordinal);
+        Assert.Contains("Port = 8080", rendered, StringComparison.Ordinal);
+        Assert.Contains("http://seq:5341", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MatchesTheFullConfigForTheVariablesTheyShare()
+    {
+        // StartupOptions and CharterConfig parse the same variables through the same section
+        // parsers. If that ever stops being true, the host and the app disagree about the port.
+        var startup = StartupOptions.FromEnvironment(Env(
+            ("PORT", "9100"),
+            ("LOGGING_MODE", "JSON"),
+            ("CHARTER_LOG_LEVEL", "warning"),
+            ("OTEL_SERVICE_NAME", "charter-prod"),
+            ("DATABASE_URL", "postgres://charter:hunter2@db.internal/charter")));
+
+        var projected = CharterConfig.FromEnvironment(Env(
+            ("PORT", "9100"),
+            ("LOGGING_MODE", "JSON"),
+            ("CHARTER_LOG_LEVEL", "warning"),
+            ("OTEL_SERVICE_NAME", "charter-prod"),
+            ("DATABASE_URL", "postgres://charter:hunter2@db.internal/charter"),
+            ("CHARTER_BASE_URL", "https://charter.example.com"),
+            ("CHARTER_SECRET_KEY", ConfigTestEnvironment.SecretKey),
+            ("CHARTER_CREDENTIAL_KEY", ConfigTestEnvironment.CredentialKey),
+            ("GITHUB_APP_ID", "123456"),
+            ("GITHUB_APP_PRIVATE_KEY", ConfigTestEnvironment.PrivateKeyPem),
+            ("GITHUB_WEBHOOK_SECRET", "webhook-secret-value"),
+            ("ANTHROPIC_API_KEY", "sk-ant-instance-key"))).ToStartupOptions();
+
+        Assert.Equal(startup.Port, projected.Port);
+        Assert.Equal(startup.LoggingMode, projected.LoggingMode);
+        Assert.Equal(startup.MinimumLogLevel, projected.MinimumLogLevel);
+        Assert.Equal(startup.ServiceName, projected.ServiceName);
+        Assert.Equal(startup.OtlpProtocol, projected.OtlpProtocol);
+        Assert.Equal(startup.DatabaseConnectionString, projected.DatabaseConnectionString);
+    }
 }

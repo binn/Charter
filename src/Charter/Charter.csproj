@@ -22,6 +22,11 @@
 
   <ItemGroup>
     <!-- Serilog is the logging pipeline (section 19). Configured in code, never from a config file. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
     <PackageReference Include="Serilog.Sinks.Seq" Version="9.1.0" />
@@ -34,12 +39,20 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.17.0" />
 
+    <!--
+      Official Anthropic C# SDK (section 3). Version 10 and later is Anthropic's own package;
+      `Anthropic` 3.x and below was the unrelated tryAGI community SDK, now published as
+      `tryAGI.Anthropic`. Pinned exactly - do not float this reference.
+    -->
+    <PackageReference Include="Anthropic" Version="12.40.0" />
+
     <!-- Postgres is the only external dependency (section 3). -->
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />
 
     <!-- Development-time SPA proxy (section 3.1). -->
     <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.10" />
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -52,9 +65,7 @@
     <None Remove="$(SpaDistRoot)**" />
 
     <!-- Surface the SPA sources in the IDE without treating them as build inputs. -->
-    <None Include="$(SpaRoot)**"
-          Exclude="$(SpaRoot)node_modules\**;$(SpaRoot)dist\**"
-          Visible="true" />
+    <None Include="$(SpaRoot)**" Exclude="$(SpaRoot)node_modules\**;$(SpaRoot)dist\**" Visible="true" />
   </ItemGroup>
 
   <!-- wwwroot is gitignored, so a fresh clone has no such directory. Create it before build. -->
@@ -67,9 +78,7 @@
     built by a separate step - the Dockerfile does exactly this, because the .NET SDK image has no
     Node runtime.
   -->
-  <Target Name="CharterBuildClientApp"
-          Condition="'$(SkipClientAppBuild)' != 'true'"
-          BeforeTargets="ComputeFilesToPublish">
+  <Target Name="CharterBuildClientApp" Condition="'$(SkipClientAppBuild)' != 'true'" BeforeTargets="ComputeFilesToPublish">
     <Message Importance="high" Text="Charter: building the SPA in $(SpaRoot) (npm ci &amp;&amp; npm run build)" />
     <Exec WorkingDirectory="$(SpaRoot)" Command="npm ci" />
     <Exec WorkingDirectory="$(SpaRoot)" Command="npm run build" />
@@ -84,8 +93,7 @@
         <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
       </ResolvedFileToPublish>
     </ItemGroup>
-    <Error Condition="'@(CharterSpaDist)' == ''"
-           Text="Charter: no SPA build output found in $(SpaDistRoot). Run `npm run build` in $(SpaRoot), or publish without -p:SkipClientAppBuild=true." />
+    <Error Condition="'@(CharterSpaDist)' == ''" Text="Charter: no SPA build output found in $(SpaDistRoot). Run `npm run build` in $(SpaRoot), or publish without -p:SkipClientAppBuild=true." />
   </Target>
 
 </Project>

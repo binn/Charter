@@ -1,0 +1,31 @@
+# Codex CLI. `codex exec` is the non-interactive mode and takes the prompt as its final positional
+# argument; `--json` turns the run into a JSONL event stream on stdout.
+#
+# An OpenAI-compatible endpoint is reached by pointing the credential's base URL at it, which the
+# runner injects as OPENAI_BASE_URL alongside the key.
+#
+# Capabilities are deliberately empty. `codex exec` reports token counts but not a dollar figure, so
+# Charter estimates cost; the prompt arrives as an argument, so there is no channel to steer through.
+id: codex
+display_name: "Codex"
+version: 1
+install:
+  check: "codex --version"
+  hint: "npm install -g @openai/codex"
+invoke:
+  command: ["codex", "exec", "--json"]
+  prompt: "{prompt}"
+auth:
+  openai_api_key:            { env: "OPENAI_API_KEY" }
+  custom_openai_compatible:  { env: "OPENAI_API_KEY" }
+model_arg: ["--model", "{model}"]
+events:
+  format: jsonl
+  # Events are {"id":"0","msg":{"type":"agent_message","message":"..."}}. Command execution and
+  # patch application each emit a `_begin` and an `_end` event; Charter maps the `_begin` so the
+  # event lands in the stream when the work starts rather than when it finishes.
+  map:
+    tool_use:   "$.msg.type == 'exec_command_begin' || $.msg.type == 'patch_apply_begin' || $.msg.type == 'mcp_tool_call_begin'"
+    file_write: "$.msg.type == 'patch_apply_begin'"
+    message:    "$.msg.type == 'agent_message'"
+capabilities: []

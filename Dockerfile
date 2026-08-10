@@ -90,6 +90,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=build /app/publish/ ./
 
+# Agent adapters are data, not code (section 12b), so they ship as YAML beside the app rather than
+# being compiled in. Without this the container fails at boot with "no adapter directory was found".
+# Operators add their own by mounting a directory and pointing CHARTER_ADAPTERS_PATH at it.
+COPY adapters/ ./adapters/
+
 # Section 2.3: one HTTP port, all config from environment variables.
 ENV PORT=8080 \
     ASPNETCORE_ENVIRONMENT=Production \

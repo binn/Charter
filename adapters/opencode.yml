@@ -1,0 +1,26 @@
+# OpenCode. `opencode run <message>` is the headless mode. Its `--model` argument already takes a
+# provider-qualified identifier of the same shape Charter uses (`anthropic/claude-opus-5`), so the
+# resolved model substitutes straight in.
+#
+# events.format is `text`: `opencode run` prints a human-formatted transcript, not a machine-readable
+# event stream, so pane 2 degrades to a raw log and milestones are not promoted into the status
+# thread. docs/adapters.md has the full table of what that costs.
+id: opencode
+display_name: "OpenCode"
+version: 1
+install:
+  check: "opencode --version"
+  hint: "npm install -g opencode-ai"
+invoke:
+  command: ["opencode", "run"]
+  prompt: "{prompt}"
+auth:
+  anthropic_api_key: { env: "ANTHROPIC_API_KEY" }
+  openai_api_key:    { env: "OPENAI_API_KEY" }
+  openrouter_key:    { env: "OPENROUTER_API_KEY" }
+  google_api_key:    { env: "GOOGLE_GENERATIVE_AI_API_KEY" }
+  xai_api_key:       { env: "XAI_API_KEY" }
+model_arg: ["--model", "{model}"]
+events:
+  format: text
+capabilities: []

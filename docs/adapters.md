@@ -13,17 +13,20 @@ Charter release, and you can drop one into your own instance without forking.
 
 ## Adapters shipped in-tree
 
-| Adapter | Notes |
-|---|---|
-| `claude-code` | Subscription OAuth or API key. Point it at a gateway with `ANTHROPIC_BASE_URL`. |
-| `codex` | OpenAI-compatible endpoints. |
-| `gemini-cli` | |
-| `opencode` | Multi-provider. |
-| `pi` | A minimal four-tool core over 20-plus providers, with subscription login. The widest model coverage from a single adapter — a good default when you want provider flexibility. |
-| `cursor-agent` | |
-| `aider` | |
+| Adapter | Output | Notes |
+|---|---|---|
+| `claude-code` | `jsonl` | Subscription OAuth or API key. Point it at a gateway with `ANTHROPIC_BASE_URL`. Reports cost, resumes, and steers. |
+| `codex` | `jsonl` | OpenAI-compatible endpoints. Reports token counts but not a dollar figure, so cost is estimated. |
+| `gemini-cli` | `text` | Its JSON output mode prints one aggregate object when the run finishes, which is not a stream Charter can classify while the agent works. |
+| `opencode` | `text` | Multi-provider, and its `--model` already takes Charter's `provider/model` form. Prints a human transcript rather than an event stream. |
+| `pi` | `jsonl` | A minimal four-tool core over 20-plus providers, with subscription login. The widest model coverage from a single adapter — a good default when you want provider flexibility. |
+| `cursor-agent` | `jsonl` | Authenticates against a Cursor account rather than a model provider, so it needs a `cursor_api_key` credential. Charter does not store that kind yet, and offers no models for this adapter until it does. |
+| `aider` | `text` | Resolves models through LiteLLM, so it reads the standard provider keys. No machine-readable output mode. |
 
-Select one per repository, or per session where the repository permits a choice.
+Select one per repository, or per session where the repository permits a choice. The `text` adapters
+still build and still open pull requests — see
+[what they cost the requester](#text-format-adapters-degrade-and-here-is-exactly-how) before choosing
+one.
 
 ## The schema
 
@@ -64,12 +67,41 @@ capabilities: [steering, resume, cost_reporting]
 | `install.check` | yes | Command run to detect the CLI. A zero exit means installed. |
 | `install.hint` | yes | Shown to an engineer when the check fails. Tell them how to install it. |
 | `invoke.command` | yes | Argument vector used to start the agent. Not a shell string — no shell is involved, so quoting and `&&` do not work. |
-| `invoke.prompt` | yes | How the spec reaches the agent: `stdin`, or an argument placeholder. |
+| `invoke.prompt` | yes | How the spec reaches the agent. Either the literal `stdin`, or a template containing `{prompt}` that is appended to the argument vector — `"{prompt}"` for a positional argument, `"--message={prompt}"` for a flag. |
 | `auth` | yes | Maps credential kinds Charter knows about to the environment variable this CLI reads. |
-| `model_arg` | no | Arguments appended to select a model. `{model}` is substituted with the resolved model identifier. Omit if the CLI takes its model from configuration only. |
+| `model_arg` | no | Arguments appended to select a model. `{model}` is substituted with the resolved model identifier. Omit if the CLI takes its model from configuration only — but if you include it, one of the arguments must contain `{model}`, or the model you chose would never reach the CLI. |
 | `events.format` | yes | `jsonl` or `text`. See below — this is the field that decides how good the experience is. |
-| `events.map` | for `jsonl` | JSONPath-style predicates mapping the agent's output lines onto Charter's event types. |
-| `capabilities` | yes | What the adapter supports: `steering`, `resume`, `cost_reporting`. Anything absent is treated as unsupported. |
+| `events.map` | for `jsonl` | Predicates mapping the agent's output lines onto Charter's event types. Required when the format is `jsonl`, and rejected when it is `text` — a text stream has no structured lines to match. |
+| `capabilities` | yes | What the adapter supports: `steering`, `resume`, `cost_reporting`. Anything absent is treated as unsupported. Declare an empty list rather than omitting the key. |
+
+### Versioning and unknown keys
+
+Every Charter YAML file carries `version: 1`, and an adapter file is no exception. A missing version,
+or a version this Charter does not support, fails at load with a message naming the version it does
+support. This is the one field Charter refuses to guess at: a file written for a schema it does not
+know is not safe to interpret under the rules it does know.
+
+**Unknown keys warn and are ignored, never fail.** That applies to top-level keys, keys inside
+`install`, `invoke`, `events` and each `auth` entry, credential kinds Charter does not recognise,
+capabilities it does not recognise, and event types it does not classify. An adapter file written for
+a newer Charter keeps working on an older one, minus the parts the older one cannot do. The warnings
+are logged once at startup rather than swallowed, so you can see what was skipped.
+
+Everything else is a hard failure at load, naming the file and the field: a missing required key, a
+value of the wrong shape, an `events.map` predicate that does not parse, or a capability the declared
+invocation cannot support. Charter reports every problem in the file at once rather than one per
+restart.
+
+### Capabilities have to be true
+
+Two of the three are checked against the rest of the file, because section 12b is explicit that
+pretending parity is worse than documenting a degraded experience:
+
+| Capability | Requires | Why |
+|---|---|---|
+| `cost_reporting` | `events.format: jsonl` | There is no machine-readable line to read a cost from otherwise. Drop the capability and Charter estimates from token counts instead. |
+| `steering` | `invoke.prompt: stdin` | An argument-delivered prompt leaves no open channel to send further instructions down. |
+| `resume` | nothing | Charter takes your word for it. |
 
 ### Event mapping
 
@@ -79,6 +111,41 @@ on a normalised event stream. `events.map` is how an agent's own output shape be
 Each key is a Charter event type; each value is a predicate evaluated against one output line. The
 minimum useful set is `tool_use`, `file_write`, and `message`. An adapter that maps `file_write`
 accurately is one that can drive the code pane; one that does not, cannot.
+
+A line may match more than one type, and that is intended: `{"type":"tool_call","tool":"edit"}` is
+both a `tool_use` and a `file_write`. Charter records every type the line matched, most specific
+first, so `file_write` wins where the two disagree.
+
+#### What you can write in a predicate
+
+The expression language is deliberately small — enough to classify a line, and no more. It is not
+JSONPath, and it does not become JSONPath if you write more of it: anything outside this list is a
+load-time error naming the file and the event type, not a predicate that quietly never matches.
+
+| You can write | Example |
+|---|---|
+| A path from `$`, the whole parsed line | `$.type` |
+| Nested keys, array indexes, quoted keys | `$.message.content[0].name`, `$['msg']['type']` |
+| `==` and `!=` against a string, number, `true`, `false` or `null` | `$.type == 'tool_call'`, `$.exit_code != 0` |
+| `&&`, `\|\|`, `!`, and parentheses | `$.type == 'a' && ($.tool == 'edit' \|\| $.tool == 'write')` |
+| A bare path, as a truthiness test | `$.tool` is true when the key is present and not `null`, `false`, `0`, or `""` |
+
+Strings take single or double quotes, with `\\`, `\'`, `\"`, `\n`, `\r` and `\t` escapes.
+
+Three behaviours are worth knowing before you debug a mapping that matches nothing:
+
+- **A missing key and a JSON `null` are the same thing.** Both equal `null`, and both are falsey. So
+  `$.parent == null` matches a line that has no `parent` key at all.
+- **Comparison is strict about type.** `$.n == 1` does not match `{"n":"1"}`. If the agent quotes its
+  numbers, quote them in the predicate too.
+- **Objects and arrays are never equal to anything.** Compare something inside them instead.
+
+Not supported, and rejected at load: `>`, `<`, `>=`, `<=`, `=~`, `=`, recursive descent (`..`),
+wildcards (`[*]`), filter expressions (`[?(...)]`), and functions. Bare identifiers are not paths —
+write `$.type`, not `type`.
+
+Predicates are parsed once when the adapter loads. After that, evaluation cannot fail: a line that is
+blank, unmatched, or not valid JSON at all is classified as such rather than ending the session.
 
 ## Requirements on an adapter
 
@@ -130,8 +197,9 @@ where you have the choice, and use `text` adapters knowing what the requester wi
    echo "add a comment to README.md" | pi --print --output-format jsonl < /dev/null
    ```
 
-5. **Make it available to your instance.** A local adapter file is loaded from the same `adapters/`
-   directory as the shipped ones, so mount or bake it in alongside them. It is picked up on startup.
+5. **Make it available to your instance.** See [where adapters are loaded from](#where-adapters-are-loaded-from)
+   below. Adding a new agent means dropping the file into `adapters/`; changing a shipped one means a
+   local directory on `CHARTER_ADAPTERS_PATH`. Either way it is picked up on startup.
 
 6. **Confirm the CLI is installed on the runner.** The adapter describes how to invoke an agent; it
    does not install one. Prebuilt Charter runner images carry the common CLIs. A Charter Agent in
@@ -142,6 +210,35 @@ where you have the choice, and use `text` adapters knowing what the requester wi
 
 Contributing an adapter upstream is a pull request adding one file. That is the intended path — the
 coding-agent landscape changes monthly and Charter should not need a release to keep up.
+
+## Where adapters are loaded from
+
+Charter loads adapter files from a list of directories, in order, at startup:
+
+1. **`adapters/`**, the directory that ships with Charter. Found by looking beside the application and
+   in its parent directories, so it works from a source checkout and from a published build.
+2. **Every directory in `CHARTER_ADAPTERS_PATH`**, separated by `:`, in the order you list them.
+
+**Later wins, by `id`.** A file on `CHARTER_ADAPTERS_PATH` whose `id` matches a shipped adapter
+replaces it entirely — not field by field — and Charter logs which file replaced which at startup. A
+file with a new `id` adds an adapter. That is the mechanism for changing a shipped adapter without
+forking: copy it, edit it, and mount your copy.
+
+```bash
+CHARTER_ADAPTERS_PATH=/etc/charter/adapters
+```
+
+Two rules that exist to stop silent surprises:
+
+- **Two files in the same directory claiming one `id` is an error** naming both files. Within one
+  directory there is no defensible winner, and picking one quietly is how you end up debugging an
+  adapter that is not the one you edited. Put the override in a `CHARTER_ADAPTERS_PATH` directory
+  instead.
+- **A directory on `CHARTER_ADAPTERS_PATH` that does not exist is an error**, not a silent skip. A
+  mistyped mount path should tell you, rather than leaving your override doing nothing.
+
+If no adapter directory resolves at all, Charter refuses to start: an instance with no adapters cannot
+dispatch a session, and finding that out at boot beats finding it out with a requester waiting.
 
 ## Model and adapter compatibility
 

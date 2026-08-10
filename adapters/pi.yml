@@ -1,0 +1,25 @@
+# Pi — the widest model coverage from a single adapter, and the worked example in spec 12b.
+# Kept byte-for-byte in step with the spec so the schema always has one canonical reference file.
+id: pi
+display_name: "Pi"
+version: 1
+install:
+  check: "pi --version"
+  hint: "npx @earendil-works/pi-coding-agent"
+invoke:
+  command: ["pi", "--print", "--output-format", "jsonl"]
+  prompt: stdin
+auth:
+  anthropic_api_key:  { env: "ANTHROPIC_API_KEY" }
+  openai_api_key:     { env: "OPENAI_API_KEY" }
+  openrouter_key:     { env: "OPENROUTER_API_KEY" }
+  google_api_key:     { env: "GEMINI_API_KEY" }
+  xai_api_key:        { env: "XAI_API_KEY" }
+model_arg: ["--model", "{model}"]
+events:
+  format: jsonl
+  map:
+    tool_use:   "$.type == 'tool_call'"
+    file_write: "$.tool == 'edit' || $.tool == 'write'"
+    message:    "$.type == 'assistant'"
+capabilities: [steering, resume, cost_reporting]

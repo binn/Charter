@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using Charter.Logging;
 using Serilog.Events;
 
@@ -15,9 +16,16 @@ namespace Charter.Configuration;
 /// and validation reports every problem at once rather than failing lazily on first use.
 /// </para>
 /// <para>
-/// This type deliberately covers only what the host needs to boot. The full <c>CharterConfig</c> of
-/// section 4.2 - GitHub App credentials, model selection, budgets, OAuth providers - is a later
-/// deliverable and belongs alongside this parser, not in place of it.
+/// This type deliberately covers only what the host needs to boot: Serilog, the listening port and
+/// the database connection are all needed before a container exists to resolve anything from. The
+/// full <see cref="CharterConfig"/> of section 4.2 sits alongside it and parses the same variables
+/// through the same section parsers, so the two cannot drift; <see cref="CharterConfig.ToStartupOptions"/>
+/// projects this subset out of it once the full config has been validated.
+/// </para>
+/// <para>
+/// One deliberate difference: <c>DATABASE_URL</c> is optional here and required in
+/// <see cref="CharterConfig"/> (section 4.2). The host boots without it so that <c>/ready</c> can
+/// report the missing variable, rather than the process dying before it can say anything at all.
 /// </para>
 /// </remarks>
 public sealed record StartupOptions
@@ -79,102 +87,66 @@ public sealed record StartupOptions
     {
         ArgumentNullException.ThrowIfNull(read);
 
-        var problems = new List<string>();
+        // The same accumulating reader and the same section parsers the full CharterConfig uses, so
+        // the boot subset and the full config cannot disagree about a value or about its message.
+        var reader = new EnvReader(read);
 
-        var port = 8080;
-        var rawPort = Trimmed(read("PORT"));
-        if (rawPort is not null &&
-            (!int.TryParse(rawPort, NumberStyles.Integer, CultureInfo.InvariantCulture, out port) ||
-             port is < 1 or > 65535))
+        var port = reader.Int("PORT", 8080, 1, 65535, "a TCP port between 1 and 65535");
+        var logging = LoggingConfig.Parse(reader);
+        var telemetry = TelemetryConfig.Parse(reader);
+        var database = DatabaseConfig.Parse(reader, required: false);
+
+        // Section 4.1: every problem at once, not the first one found.
+        var blocking = reader.Problems
+            .Where(problem => problem.Severity == ConfigSeverity.Error)
+            .Select(problem => problem.Text)
+            .ToList();
+
+        if (blocking.Count > 0)
         {
-            problems.Add($"PORT must be a TCP port between 1 and 65535, got '{rawPort}'");
-            port = 8080;
-        }
-
-        var loggingMode = LoggingMode.Default;
-        var rawLoggingMode = Trimmed(read("LOGGING_MODE"));
-        if (rawLoggingMode is not null)
-        {
-            loggingMode = rawLoggingMode.ToUpperInvariant() switch
-            {
-                "DEFAULT" => LoggingMode.Default,
-                "JSON" => LoggingMode.Json,
-                "RAILWAY_JSON" => LoggingMode.RailwayJson,
-                _ => Invalid(),
-            };
-
-            LoggingMode Invalid()
-            {
-                problems.Add(
-                    $"LOGGING_MODE must be one of DEFAULT, JSON, RAILWAY_JSON, got '{rawLoggingMode}'");
-                return LoggingMode.Default;
-            }
-        }
-
-        var minimumLevel = LogEventLevel.Information;
-        var rawLevel = Trimmed(read("CHARTER_LOG_LEVEL"));
-        if (rawLevel is not null && !Enum.TryParse(rawLevel, ignoreCase: true, out minimumLevel))
-        {
-            problems.Add(
-                "CHARTER_LOG_LEVEL must be one of verbose, debug, information, warning, error, fatal, " +
-                $"got '{rawLevel}'");
-            minimumLevel = LogEventLevel.Information;
-        }
-
-        string? connectionString = null;
-        var rawDatabaseUrl = Trimmed(read("DATABASE_URL"));
-        if (rawDatabaseUrl is not null)
-        {
-            try
-            {
-                connectionString = DatabaseUrl.ToNpgsql(rawDatabaseUrl);
-            }
-            catch (ConfigException ex)
-            {
-                problems.AddRange(ex.Problems);
-            }
-        }
-
-        var otlpProtocol = Trimmed(read("OTEL_EXPORTER_OTLP_PROTOCOL")) ?? "grpc";
-        if (otlpProtocol is not ("grpc" or "http/protobuf"))
-        {
-            problems.Add(
-                $"OTEL_EXPORTER_OTLP_PROTOCOL must be grpc or http/protobuf, got '{otlpProtocol}'");
-            otlpProtocol = "grpc";
-        }
-
-        var includeTranscripts = false;
-        var rawIncludeTranscripts = Trimmed(read("CHARTER_LOG_INCLUDE_TRANSCRIPTS"));
-        if (rawIncludeTranscripts is not null && !bool.TryParse(rawIncludeTranscripts, out includeTranscripts))
-        {
-            problems.Add(
-                $"CHARTER_LOG_INCLUDE_TRANSCRIPTS must be true or false, got '{rawIncludeTranscripts}'");
-            includeTranscripts = false;
-        }
-
-        if (problems.Count > 0)
-        {
-            throw new ConfigException(problems);
+            throw new ConfigException(blocking);
         }
 
         return new StartupOptions
         {
             Port = port,
-            LoggingMode = loggingMode,
-            MinimumLogLevel = minimumLevel,
-            SeqUrl = Trimmed(read("CHARTER_SEQ_URL")),
-            SeqApiKey = Trimmed(read("CHARTER_SEQ_API_KEY")),
-            OtlpEndpoint = Trimmed(read("OTEL_EXPORTER_OTLP_ENDPOINT")),
-            OtlpHeaders = ParseHeaders(Trimmed(read("OTEL_EXPORTER_OTLP_HEADERS"))),
-            OtlpProtocol = otlpProtocol,
-            ServiceName = Trimmed(read("OTEL_SERVICE_NAME")) ?? "charter",
-            DatabaseConnectionString = connectionString,
-            IncludeTranscripts = includeTranscripts,
+            LoggingMode = logging.Mode,
+            MinimumLogLevel = logging.MinimumLevel,
+            SeqUrl = logging.SeqUrl,
+            SeqApiKey = logging.SeqApiKey?.Reveal(),
+            OtlpEndpoint = telemetry.OtlpEndpoint,
+            OtlpHeaders = telemetry.OtlpHeaders,
+            OtlpProtocol = telemetry.OtlpProtocol,
+            ServiceName = telemetry.ServiceName,
+            DatabaseConnectionString = database?.ConnectionString.Reveal(),
+            IncludeTranscripts = logging.IncludeTranscripts,
         };
     }
 
-    private static string? Trimmed(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    /// <summary>
+    /// A redacted summary. The connection string carries the database password and
+    /// <see cref="SeqApiKey"/> is a credential, so neither may appear in a log line, a crash dump or
+    /// an error page (section 20b.2).
+    /// </summary>
+    public override string ToString()
+    {
+        var text = new StringBuilder("StartupOptions { ");
+        text.Append(CultureInfo.InvariantCulture, $"Port = {Port}, ");
+        text.Append(CultureInfo.InvariantCulture, $"LoggingMode = {LoggingMode}, ");
+        text.Append(CultureInfo.InvariantCulture, $"MinimumLogLevel = {MinimumLogLevel}, ");
+        text.Append(CultureInfo.InvariantCulture, $"SeqUrl = {SeqUrl ?? "(unset)"}, ");
+        text.Append(CultureInfo.InvariantCulture, $"SeqApiKey = {Redact(SeqApiKey)}, ");
+        text.Append(CultureInfo.InvariantCulture, $"OtlpEndpoint = {OtlpEndpoint ?? "(unset)"}, ");
+        text.Append(CultureInfo.InvariantCulture, $"OtlpHeaders = {OtlpHeaders.Count} header(s), ");
+        text.Append(CultureInfo.InvariantCulture, $"OtlpProtocol = {OtlpProtocol}, ");
+        text.Append(CultureInfo.InvariantCulture, $"ServiceName = {ServiceName}, ");
+        text.Append(CultureInfo.InvariantCulture, $"DatabaseConnectionString = {Redact(DatabaseConnectionString)}, ");
+        text.Append(CultureInfo.InvariantCulture, $"IncludeTranscripts = {IncludeTranscripts} }}");
+        return text.ToString();
+    }
+
+    private static string Redact(string? value)
+        => value is null ? "(unset)" : Secret.Placeholder;
 
     /// <summary>Parses the W3C-Baggage-shaped <c>OTEL_EXPORTER_OTLP_HEADERS</c> value.</summary>
     internal static IReadOnlyDictionary<string, string> ParseHeaders(string? raw)

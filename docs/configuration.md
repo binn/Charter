@@ -169,6 +169,29 @@ base64 -i charter-app.2026-08-10.private-key.pem | tr -d '\n'
 
 Every backend, what it can run, and how to register a Charter Agent are in [runners.md](runners.md).
 
+## Agent adapters
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `CHARTER_ADAPTERS_PATH` | no | — | Colon-separated directories of your own adapter YAML. Loaded after the shipped adapters; later directories win by adapter id. |
+
+Adapters are data rather than code, so supporting a new coding agent is a YAML file instead of a
+Charter release. The shipped set lives at `/app/adapters` in the container.
+
+Set this to add your own adapters or to override a shipped one without forking:
+
+```bash
+CHARTER_ADAPTERS_PATH=/etc/charter/adapters:/opt/charter/local-adapters
+```
+
+A directory listed here that does not exist fails startup rather than being skipped. A typo would
+otherwise present as an adapter that silently vanished, which is far harder to diagnose.
+
+Two files in the same directory claiming the same adapter id is also an error, and names both files.
+Overriding is something you do across directories, deliberately, not by accident within one.
+
+The schema, the shipped adapters, and what each one can do are in [adapters.md](adapters.md).
+
 ## Observability
 
 | Variable | Required | Default | Notes |

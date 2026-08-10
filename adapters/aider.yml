@@ -1,0 +1,29 @@
+# Aider. `--message` runs one instruction and exits, which is the headless mode; `--yes-always`
+# answers its confirmation prompts, and without it a dispatched session hangs waiting for a TTY.
+# `--no-pretty` drops the ANSI redraw so the captured log is readable, and `--no-auto-commits` leaves
+# committing to the Charter shim, which is what enforces path scope on what actually lands.
+#
+# Aider resolves models through LiteLLM, so it reads the standard provider environment variables.
+#
+# events.format is `text`: aider has no machine-readable output mode. Everything in the degradation
+# table in docs/adapters.md applies — no milestone promotion, no clickable file-write events,
+# estimated rather than reported cost.
+id: aider
+display_name: "Aider"
+version: 1
+install:
+  check: "aider --version"
+  hint: "uv tool install --python python3.12 aider-chat"
+invoke:
+  command: ["aider", "--yes-always", "--no-pretty", "--no-auto-commits", "--no-check-update"]
+  prompt: "--message={prompt}"
+auth:
+  anthropic_api_key: { env: "ANTHROPIC_API_KEY" }
+  openai_api_key:    { env: "OPENAI_API_KEY" }
+  openrouter_key:    { env: "OPENROUTER_API_KEY" }
+  google_api_key:    { env: "GEMINI_API_KEY" }
+  xai_api_key:       { env: "XAI_API_KEY" }
+model_arg: ["--model", "{model}"]
+events:
+  format: text
+capabilities: []

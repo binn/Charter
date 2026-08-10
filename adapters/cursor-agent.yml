@@ -1,0 +1,28 @@
+# Cursor Agent CLI. `--print` is the headless mode and `--force` stops it pausing for approval.
+#
+# Cursor authenticates against a Cursor account rather than against the underlying model provider, so
+# the credential kind here is `cursor_api_key`. That kind is NOT in the CredentialGrant enumeration in
+# spec 20b.2 yet. Until it is, Charter has no credential that satisfies this adapter and the
+# compatibility resolver will correctly offer zero model choices for it — which is the honest failure,
+# not a silent one. Adding the kind to CredentialGrant is all that is needed.
+id: cursor-agent
+display_name: "Cursor Agent"
+version: 1
+install:
+  check: "cursor-agent --version"
+  hint: "curl https://cursor.com/install -fsS | bash"
+invoke:
+  command: ["cursor-agent", "--print", "--force", "--output-format", "stream-json"]
+  prompt: stdin
+auth:
+  cursor_api_key: { env: "CURSOR_API_KEY" }
+model_arg: ["--model", "{model}"]
+events:
+  format: jsonl
+  # Cursor's stream-json mirrors the Claude Code envelope: assistant turns carry a content array whose
+  # blocks are either text or tool_use. Tool names are lower-case here.
+  map:
+    tool_use:   "$.type == 'assistant' && $.message.content[0].type == 'tool_use'"
+    file_write: "$.message.content[0].name == 'write' || $.message.content[0].name == 'edit'"
+    message:    "$.type == 'assistant' && $.message.content[0].type == 'text'"
+capabilities: []

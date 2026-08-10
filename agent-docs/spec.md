@@ -86,7 +86,7 @@ Selected via `CHARTER_RUNNER=agent|github-actions|docker`. Multiple may be enabl
 | ORM | EF Core 10 | Npgsql provider |
 | DB | PostgreSQL 16+ | Only external dependency |
 | Realtime | SignalR | Same port as HTTP |
-| LLM | `Anthropic` NuGet (official C# SDK, v10+) | Currently beta; pin the version. **Do not** use `Anthropic` v3.x — that's the unrelated tryAGI community package, now at `tryAGI.Anthropic`. |
+| LLM | `Anthropic` NuGet (official C# SDK) | GA at 12.x — pin the exact version. **Do not** use `Anthropic` v3.x or below: those are the unrelated tryAGI community package, now published as `tryAGI.Anthropic`. The version list jumps 3.7.1 → 10.0.1 at the handover. Note `MessageCreateParams.Temperature` is `[Obsolete]` and newer models reject it with a 400. |
 | Frontend | React + Vite + TypeScript | Bundled with the app — see §3.1 |
 | UI | shadcn/ui + Tailwind | Plus custom components |
 | Code viewer | Monaco (`DiffEditor`) | Lazy-loaded route split; never in the requester bundle |
@@ -185,6 +185,7 @@ The shim is a separate project precisely because all three backends need it: Git
 | `CHARTER_UPDATE_CHECK` | no | `true` | §28 — the only outbound call Charter initiates |
 | `CHARTER_UPDATE_CHANNEL` | no | `stable` | `stable` \| `prerelease` |
 | `CHARTER_ALLOW_REPO_CREATION` | no | `false` | §26.10 — repo creation is a privilege escalation |
+| `CHARTER_ADAPTERS_PATH` | no | — | `:`-separated directories of operator-supplied adapter YAML (§12b). Loaded after the in-tree `adapters/`; later directories win by `id`, so an operator can override a shipped adapter without forking. A listed directory that does not exist is an error, not a silent skip. |
 | `CHARTER_DEMO` | no | `false` | §30.6 — seeds a fake org, disables outbound calls |
 
 \* At least one model credential must be resolvable at startup — either an instance-level key here or a linked `CredentialGrant` in the database. Startup validation fails if neither exists.
@@ -665,7 +666,7 @@ capabilities: [steering, resume, cost_reporting]
 | `gemini-cli` | |
 | `opencode` | Multi-provider |
 | `pi` | Minimal four-tool core over 20+ providers, with subscription login. **The widest model coverage from a single adapter** — good default when the org wants provider flexibility. |
-| `cursor-agent` | |
+| `cursor-agent` | Authenticates against a Cursor account, not a model provider — hence the `cursor_api_key` credential kind, which is not interchangeable with the others |
 | `aider` | |
 
 ### Requirements on an adapter
@@ -910,7 +911,8 @@ An **unqualified identifier is treated as `anthropic/`**, which is why the §4.2
 CredentialGrant   id, org_id, owner_user_id,
                   kind(anthropic_oauth | anthropic_api_key | openai_oauth |
                        openai_api_key | google_api_key | xai_api_key |
-                       openrouter_key | custom_openai_compatible),
+                       openrouter_key | cursor_api_key |
+                       custom_openai_compatible),
                   base_url,                     -- for self-hosted / proxied endpoints
                   scope(personal | shared_pool),
                   secret_encrypted, refresh_token_encrypted, expires_at,

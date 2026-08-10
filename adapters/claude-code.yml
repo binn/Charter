@@ -1,0 +1,29 @@
+# Claude Code. `--print` is the headless mode; `--output-format stream-json` needs `--verbose`
+# to emit one JSON object per line rather than a single summary at the end.
+#
+# A gateway or proxy is configured on the credential's base URL, which the runner injects as
+# ANTHROPIC_BASE_URL. That is a property of the credential, not a separate credential kind, so it
+# does not appear in the auth block below.
+id: claude-code
+display_name: "Claude Code"
+version: 1
+install:
+  check: "claude --version"
+  hint: "npm install -g @anthropic-ai/claude-code"
+invoke:
+  command: ["claude", "--print", "--verbose", "--output-format", "stream-json"]
+  prompt: stdin
+auth:
+  anthropic_oauth:   { env: "CLAUDE_CODE_OAUTH_TOKEN" }
+  anthropic_api_key: { env: "ANTHROPIC_API_KEY" }
+model_arg: ["--model", "{model}"]
+events:
+  format: jsonl
+  # stream-json emits assistant turns as {"type":"assistant","message":{"content":[...]}}, where each
+  # content block is either {"type":"text",...} or {"type":"tool_use","name":"Edit",...}. Charter
+  # inspects the first content block: Claude Code emits one block per streamed message object.
+  map:
+    tool_use:   "$.type == 'assistant' && $.message.content[0].type == 'tool_use'"
+    file_write: "$.message.content[0].name == 'Write' || $.message.content[0].name == 'Edit' || $.message.content[0].name == 'NotebookEdit'"
+    message:    "$.type == 'assistant' && $.message.content[0].type == 'text'"
+capabilities: [steering, resume, cost_reporting]
