@@ -1,6 +1,9 @@
 using Charter.Configuration;
+using Charter.Data;
 using Charter.Diagnostics;
 using Charter.Logging;
+using Charter.Models;
+using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -10,23 +13,29 @@ using Serilog.Events;
 
 // Section 4.1: validate everything once at startup and, if invalid, print *all* problems at once and
 // exit non-zero. This runs before the logging pipeline exists, so it writes to stderr directly.
-StartupOptions options;
-try
-{
-    options = StartupOptions.FromEnvironment();
-}
-catch (ConfigException ex)
+var parsed = CharterConfigParser.Parse();
+
+if (!parsed.IsValid)
 {
     await Console.Error.WriteLineAsync("Charter cannot start. Fix the following configuration problems:");
-    foreach (var problem in ex.Problems)
-    {
-        await Console.Error.WriteLineAsync($"  - {problem}");
-    }
-
+    await Console.Error.WriteLineAsync(parsed.Describe());
     return 1;
 }
 
+var config = parsed.ConfigOrThrow();
+
+// The boot subset is projected from the validated config rather than re-read, so the two can never
+// disagree about a value they both carry.
+var options = config.ToStartupOptions();
+
 Log.Logger = CharterLogging.CreateLogger(options);
+
+// Warnings do not stop startup, but they are the difference between "misconfigured" and "silently
+// doing something you did not intend", so they are logged rather than swallowed.
+foreach (var warning in parsed.Warnings)
+{
+    Log.Warning("Configuration: {Problem}", warning.Text);
+}
 
 try
 {
@@ -47,6 +56,15 @@ try
     builder.Services.AddSerilog();
     builder.Services.AddSingleton(options);
     builder.Services.AddProblemDetails();
+
+    // Each subsystem owns its own registrations, so this stays a list of decisions rather than a
+    // wiring dump. Order matters: credentials need both the key config and the DbContext.
+    builder.Services.AddCharterConfig(config);
+    builder.Services.AddCharterPreflight();
+    builder.Services.AddCharterData(config.Database.ConnectionString.Reveal());
+    builder.Services.AddCharterModels();
+    builder.Services.AddCharterCredentials();
+    builder.Services.AddCharterAdapters();
 
     builder.Services
         .AddOpenTelemetry()
@@ -82,6 +100,21 @@ try
         });
 
     var app = builder.Build();
+
+    // Section 2.3: migrations run on boot. A PaaS offers no pre-deploy hook, so this is the only
+    // place they can run, and serving against a stale schema is worse than failing to start.
+    await using (var scope = app.Services.CreateAsyncScope())
+    {
+        var database = scope.ServiceProvider.GetRequiredService<CharterDbContext>();
+        var pending = (await database.Database.GetPendingMigrationsAsync()).ToArray();
+
+        if (pending.Length > 0)
+        {
+            Log.Information("Applying {Count} pending migration(s): {Migrations}", pending.Length, pending);
+            await database.Database.MigrateAsync();
+            Log.Information("Migrations applied");
+        }
+    }
 
     app.UseSerilogRequestLogging(logging =>
     {
