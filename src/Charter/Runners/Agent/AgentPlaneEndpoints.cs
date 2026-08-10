@@ -72,7 +72,16 @@ public static class AgentPlaneEndpoints
         //
         // Skipping the routes is also the honest behaviour: with the backend disabled there is
         // nothing to pair with, so /api/agent/* should be absent rather than present and broken.
-        if (endpoints.ServiceProvider.GetService<AgentPlaneService>() is null)
+        //
+        // Asked of the registrations rather than resolved: AgentPlaneService is scoped, and
+        // `endpoints.ServiceProvider` is the root one. Resolving a scoped service from the root
+        // throws outright under ValidateScopes - which is the default in Development, so
+        // `dotnet run` with CHARTER_RUNNER=agent died here - and in Production silently pins a
+        // request-scoped DbContext to the lifetime of the process. IServiceProviderIsService answers
+        // the question actually being asked, which is whether anything registered it.
+        var registrations = endpoints.ServiceProvider.GetService<IServiceProviderIsService>();
+
+        if (registrations is null || !registrations.IsService(typeof(AgentPlaneService)))
         {
             return endpoints;
         }

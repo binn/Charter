@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Http;
 
 namespace Charter.Api;
 
@@ -28,6 +29,22 @@ public static class CharterApiJson
     /// protocol, for one.
     /// </summary>
     public static JsonSerializerOptions CreateWritableCopy() => CreateOptions(freeze: false);
+
+    /// <summary>
+    /// A body of literal <c>null</c>, for a resource whose absence is an answer.
+    /// </summary>
+    /// <remarks>
+    /// <c>GET /api/setup/checklist</c> resolves to <c>SetupChecklist | null</c>: a requester's
+    /// dashboard has no checklist, and that is not an error the page should have to render (section
+    /// 30.2). <see cref="Microsoft.AspNetCore.Http.Results"/><c>.Json(null)</c> writes an empty body
+    /// rather than the four bytes <c>null</c>, and an empty body is not JSON — the client's
+    /// <c>response.json()</c> throws on it. So the null case is written explicitly.
+    /// </remarks>
+    public static IResult NullOr<T>(T? value)
+        where T : class
+        => value is null
+            ? Results.Text("null", "application/json")
+            : Results.Json(value, Options);
 
     private static JsonSerializerOptions CreateOptions(bool freeze)
     {

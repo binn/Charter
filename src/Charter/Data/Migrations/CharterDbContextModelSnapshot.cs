@@ -616,6 +616,59 @@ namespace Charter.Data.Migrations
                     b.ToTable("deployments", (string)null);
                 });
 
+            modelBuilder.Entity("Charter.Domain.EmailDelivery", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("At")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("at");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("detail");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("Recipient")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("recipient");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)")
+                        .HasColumnName("summary");
+
+                    b.HasKey("Id")
+                        .HasName("pk_email_deliveries");
+
+                    b.HasIndex(new[] { "At" }, "ix_email_deliveries_at")
+                        .IsDescending()
+                        .HasDatabaseName("ix_email_deliveries_at");
+
+                    b.HasIndex(new[] { "At" }, "ix_email_deliveries_failed_at")
+                        .IsDescending()
+                        .HasDatabaseName("ix_email_deliveries_failed_at")
+                        .HasFilter("outcome = 'failed'");
+
+                    b.ToTable("email_deliveries", (string)null);
+                });
+
             modelBuilder.Entity("Charter.Domain.Event", b =>
                 {
                     b.Property<Guid>("Id")
@@ -656,6 +709,33 @@ namespace Charter.Data.Migrations
                         .HasDatabaseName("ux_events_session_id_seq");
 
                     b.ToTable("events", (string)null);
+                });
+
+            modelBuilder.Entity("Charter.Domain.ExplainThisUsage", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<DateOnly>("Day")
+                        .HasColumnType("date")
+                        .HasColumnName("day");
+
+                    b.Property<DateTimeOffset>("LastUsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_used_at");
+
+                    b.Property<int>("Used")
+                        .HasColumnType("integer")
+                        .HasColumnName("used");
+
+                    b.HasKey("UserId", "Day")
+                        .HasName("pk_explain_this_usage");
+
+                    b.HasIndex("Day")
+                        .HasDatabaseName("ix_explain_this_usage_day");
+
+                    b.ToTable("explain_this_usage", (string)null);
                 });
 
             modelBuilder.Entity("Charter.Domain.Identity", b =>
@@ -703,6 +783,79 @@ namespace Charter.Data.Migrations
                         .HasDatabaseName("ux_identities_provider_provider_user_id");
 
                     b.ToTable("identities", (string)null);
+                });
+
+            modelBuilder.Entity("Charter.Domain.Invitation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<Guid?>("ConsumedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("consumed_by_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("email");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<Guid>("InvitedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("invited_by_user_id");
+
+                    b.Property<Guid>("OrgId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("org_id");
+
+                    b.Property<DateTimeOffset?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.PrimitiveCollection<string[]>("Roles")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("roles");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("token_hash");
+
+                    b.HasKey("Id")
+                        .HasName("pk_invitations");
+
+                    b.HasIndex("ConsumedByUserId")
+                        .HasDatabaseName("ix_invitations_consumed_by_user_id");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_invitations_expires_at");
+
+                    b.HasIndex("InvitedByUserId")
+                        .HasDatabaseName("ix_invitations_invited_by_user_id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ux_invitations_token_hash");
+
+                    b.HasIndex("OrgId", "Email")
+                        .HasDatabaseName("ix_invitations_org_id_email");
+
+                    b.ToTable("invitations", (string)null);
                 });
 
             modelBuilder.Entity("Charter.Domain.Job", b =>
@@ -987,6 +1140,30 @@ namespace Charter.Data.Migrations
                         .HasDatabaseName("ix_milestones_session_id_created_at");
 
                     b.ToTable("milestones", (string)null);
+                });
+
+            modelBuilder.Entity("Charter.Domain.NotificationChannelPreference", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("Channel")
+                        .HasColumnType("text")
+                        .HasColumnName("channel");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("UserId", "Channel")
+                        .HasName("pk_notification_channels");
+
+                    b.ToTable("notification_channels", (string)null);
                 });
 
             modelBuilder.Entity("Charter.Domain.Organization", b =>
@@ -1852,6 +2029,16 @@ namespace Charter.Data.Migrations
                         .HasConstraintName("fk_events_sessions_session_id");
                 });
 
+            modelBuilder.Entity("Charter.Domain.ExplainThisUsage", b =>
+                {
+                    b.HasOne("Charter.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_explain_this_usage_users_user_id");
+                });
+
             modelBuilder.Entity("Charter.Domain.Identity", b =>
                 {
                     b.HasOne("Charter.Domain.User", null)
@@ -1860,6 +2047,29 @@ namespace Charter.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_identities_users_user_id");
+                });
+
+            modelBuilder.Entity("Charter.Domain.Invitation", b =>
+                {
+                    b.HasOne("Charter.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("ConsumedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_invitations_users_consumed_by_user_id");
+
+                    b.HasOne("Charter.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("InvitedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_invitations_users_invited_by_user_id");
+
+                    b.HasOne("Charter.Domain.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrgId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_invitations_organizations_org_id");
                 });
 
             modelBuilder.Entity("Charter.Domain.LedgerEntry", b =>
@@ -1923,6 +2133,16 @@ namespace Charter.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_milestones_sessions_session_id");
+                });
+
+            modelBuilder.Entity("Charter.Domain.NotificationChannelPreference", b =>
+                {
+                    b.HasOne("Charter.Domain.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_notification_channels_users_user_id");
                 });
 
             modelBuilder.Entity("Charter.Domain.Recap", b =>

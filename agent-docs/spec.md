@@ -302,7 +302,22 @@ Deployment        change_request_id, provider, url, state, reported_at
 
 Walkthrough       session_id, level, body_md, generated_at, cost_usd
 Recap             session_id, body_md, risk_items (jsonb), generated_at, cost_usd
-ConceptLedger     user_id, concept, first_explained_at, times_referenced
+ConceptLedger     user_id, concept, first_explained_at, last_referenced_at, times_referenced
+                  -- last_referenced_at orders the capped injection window of §13: the prompt gets
+                  -- the most-recent N concepts, so without the column teaching re-explains what it
+                  -- already taught
+ExplainThisUsage  user_id, day, used, last_used_at
+                  -- §13's per-user daily cap on the one unbounded teaching surface; PK (user_id, day)
+
+NotificationChannel  user_id, channel(email|slack|discord), enabled
+                  -- §22. PK (user_id, channel). No per-state column, and it must not grow one.
+                  -- An absent row means the default: email on, the others off
+EmailDelivery     at, recipient, kind, status(sent|skipped|rate_limited|failed), summary, detail
+                  -- change spec 001 C.3's admin-visible delivery record. Retained, not unbounded
+Invitation        org_id, email, token_hash, roles[], invited_by_user_id,
+                  created_at, expires_at, consumed_at, consumed_by_user_id, revoked_at
+                  -- §30.2. Single use; the hash is a SHA-256 digest of the emailed token and the
+                  -- token itself is never stored
 
 LedgerEntry       org_id, user_id, session_id, budget_ids[],
                   category(build|teach|refine|recap|recon|scaffold|chat),

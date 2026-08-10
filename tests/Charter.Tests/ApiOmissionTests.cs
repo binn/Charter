@@ -42,6 +42,21 @@ public class ApiOmissionTests
         "technicalApproach",
         "scope",
         "risks",
+
+        // Section 14 and section 7.5, added with panes 2 and 3 and withheld on the same terms. The
+        // recap names files, branches and deviations; the actions panel names the branch it would
+        // stop writes to. Both are engineer-shaped all the way down, which is why their nested keys
+        // are listed too — `ApiPayloads.Keys` walks the whole document, so a recap smuggled inside
+        // some other property would still fail this.
+        "recap",
+        "sessionActions",
+        "deviations",
+        "couldNotVerify",
+        "reviewOrder",
+        "autoDispatched",
+        "riskReasons",
+        "canTakeOver",
+        "handedOff",
     ];
 
     [Theory]
@@ -83,7 +98,70 @@ public class ApiOmissionTests
         Assert.Contains("commitSha", keys);
         Assert.Contains("costUsd", keys);
         Assert.Contains("eventSeq", keys);
+        Assert.Contains("recap", keys);
+        Assert.Contains("sessionActions", keys);
         Assert.Contains(ApiScenario.CommitSha, body, StringComparison.Ordinal);
+        Assert.Contains(ApiScenario.HeadBranch, body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheRecapAndTheActionPanelAreAbsentKeysRatherThanNullOnes()
+    {
+        // The rule this suite exists for, applied to the two properties added with panes 2 and 3.
+        // A deserialiser cannot tell absent from null, so this reads the document.
+        var scenario = ApiScenario.Build();
+
+        using var requester = JsonDocument.Parse(await scenario.RenderDetailAsync(scenario.Requester));
+        Assert.False(requester.RootElement.TryGetProperty("recap", out _));
+        Assert.False(requester.RootElement.TryGetProperty("sessionActions", out _));
+
+        using var engineer = JsonDocument.Parse(await scenario.RenderDetailAsync(scenario.Engineer));
+        Assert.True(engineer.RootElement.TryGetProperty("recap", out var recap));
+        Assert.True(engineer.RootElement.TryGetProperty("sessionActions", out var actions));
+
+        // And they are usable, not merely present.
+        Assert.NotEmpty(recap.GetProperty("summaryMd").GetString()!);
+        Assert.Equal(ApiScenario.HeadBranch, actions.GetProperty("branch").GetString());
+    }
+
+    [Fact]
+    public async Task TheRecapNeverReachesARequesterEvenAsText()
+    {
+        // Section 14's recap is prose, so the key check is not enough on its own: a summary leaking
+        // into some requester-facing string would keep every key test green.
+        var scenario = ApiScenario.Build();
+        var body = await scenario.RenderDetailAsync(scenario.Requester);
+
+        Assert.DoesNotContain("src/Auth/LoginController.cs", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Session recap", body, StringComparison.Ordinal);
+        Assert.DoesNotContain(ApiScenario.HeadBranch, body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheEngineersTranscriptCarriesTheLinkageSectionTwelveNeeds()
+    {
+        // Omission must not be over-applied in the other direction either: an engineer's pane 2 is
+        // useless without `kind`, the milestone run marking and a total to page against.
+        var scenario = ApiScenario.Build();
+
+        using var document = JsonDocument.Parse(await scenario.RenderDetailAsync(scenario.Engineer));
+        var transcript = document.RootElement.GetProperty("transcript");
+
+        Assert.Equal(scenario.Events.Count, transcript.GetProperty("totalCount").GetInt32());
+
+        var write = transcript
+            .GetProperty("events")
+            .EnumerateArray()
+            .Single(row => row.GetProperty("kind").GetString() == "file_write");
+
+        Assert.Equal("src/Auth/LoginController.cs", write.GetProperty("path").GetString());
+        Assert.NotNull(write.GetProperty("milestoneId").GetString());
+
+        // The adapter's own event name travels verbatim beside the projection (section 12b).
+        Assert.Equal("file_write", write.GetProperty("type").GetString());
+
+        // `level` is absent on an ordinary row rather than stamped `info` on every one of them.
+        Assert.False(write.TryGetProperty("level", out _));
     }
 
     [Fact]

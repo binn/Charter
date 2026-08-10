@@ -50,6 +50,19 @@ public static class OrchestrationServiceCollectionExtensions
             if (provider.GetService<CharterConfig>() is { } config)
             {
                 options.BaseUrl = config.BaseUrl;
+                options.BuildModel = config.Models.Build.ToString();
+
+                // CHARTER_RUNNER is a list in preference order (section 2.2), so the first entry is
+                // what a new session is queued against. Routing still decides at dispatch time.
+                if (config.Runners.Count > 0)
+                {
+                    options.DefaultRunner = config.Runners[0] switch
+                    {
+                        RunnerBackend.GitHubActions => Charter.Domain.RunnerKind.GitHubActions,
+                        RunnerBackend.Docker => Charter.Domain.RunnerKind.Docker,
+                        _ => Charter.Domain.RunnerKind.Agent,
+                    };
+                }
             }
 
             configure?.Invoke(options);
@@ -71,8 +84,15 @@ public static class OrchestrationServiceCollectionExtensions
 
         services.AddScoped<SessionJournal>();
         services.AddScoped<ISessionDispatchPlanner, SessionDispatchPlanner>();
+        services.TryAddScoped<IAutoDispatchGate, AutoDispatchGate>();
         services.AddScoped<SessionCoordinator>();
+
+        // One handler per job type, resolved by the dispatcher. A type with no handler is deferred
+        // rather than completed, so a missing registration here shows up as work that never runs
+        // rather than as work that quietly disappears.
         services.AddScoped<IQueuedJobHandler, BuildJobHandler>();
+        services.AddScoped<IQueuedJobHandler, RefineJobHandler>();
+        services.AddScoped<IQueuedJobHandler, RecapJobHandler>();
 
         services.AddHostedService<SessionOrchestrator>();
         services.AddHostedService<QueueDispatcher>();

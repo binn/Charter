@@ -100,6 +100,27 @@ docker compose exec -T postgres psql -U charter -d postgres \
 This applies to development instances only. From 1.0, migrations are additive and forward-only, and
 this section goes away.
 
+#### Tables added by the latest amendment
+
+Four tables joined `InitialCreate`. All four are additive — nothing was renamed or dropped, and no
+existing row needs a backfill — but three of them change what an instance keeps between restarts, so
+they are worth knowing about.
+
+| Table | What it holds | What you would notice |
+|---|---|---|
+| `notification_channels` | One row per user per channel, keyed on the pair | Notification preferences survive a restart. **A user with no rows keeps the default — email on, Slack and Discord off** — so nothing needs backfilling and nobody's notifications change on upgrade |
+| `email_deliveries` | Recent attempted sends: recipient, template name, outcome, and the mail server's own words on a failure | The admin settings delivery list is no longer empty after a redeploy. Retention is enforced by Charter — 30 days or 2,000 rows, whichever comes first — and pruning is automatic |
+| `invitations` | Outstanding and spent invitations (§30.2): email, roles, inviter, expiry, and a **SHA-256 digest of the token, never the token** | An invitation link works across a restart. It is single-use and expires after 7 days; a lost link is reissued, never recovered — nothing in the database can reproduce it |
+| `explain_this_usage` | One counter row per user per UTC day for the *explain this* teaching cap | A reader's daily allowance is no longer reset by a deploy. Rows older than 30 days are dropped as the reader's next explanation is counted |
+
+`concept_ledger` also gained `last_referenced_at`. It is what orders the capped "most recent
+concepts" window Charter passes into a teaching prompt; without it, teaching re-explains what it has
+already taught.
+
+**On backups and privacy.** `email_deliveries` records the address each message went to, and
+`invitations` records the address each invitation was sent to. Both are now in your database dumps.
+Neither holds message content, and both are pruned. See [privacy.md](privacy.md).
+
 ### If a migration fails
 
 Charter fails to start rather than serving traffic against a half-migrated database. The startup logs

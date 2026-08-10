@@ -22,6 +22,10 @@ public static class DataServiceCollectionExtensions
         services.AddDbContext<CharterDbContext>(options => ConfigureNpgsql(options, connectionString));
         services.AddScoped<JobQueue>();
 
+        // Section 2.3: state that must survive a restart lives in Postgres, so the stores that other
+        // subsystems declare as seams are bound here rather than left on their in-memory defaults.
+        services.AddCharterStores();
+
         return services;
     }
 

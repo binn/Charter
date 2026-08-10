@@ -67,6 +67,21 @@ public static class ApiProblems
                 + "nothing you already sent has been lost.",
         statusCode: StatusCodes.Status429TooManyRequests);
 
+    /// <summary>
+    /// Something this instance is not set up to do. Not the caller's mistake, and not a crash.
+    /// </summary>
+    /// <remarks>
+    /// Pane 3 needs to read repository content, and an instance with no version-control client
+    /// wired cannot. Answering 404 would say the file does not exist and 500 would say Charter
+    /// broke; both send somebody looking in the wrong place.
+    /// </remarks>
+    public static IResult Unavailable(string detail) => Results.Problem(
+        title: "Charter cannot do that here",
+        detail: string.IsNullOrWhiteSpace(detail)
+            ? "This instance is not configured for that. An administrator can change it in settings."
+            : Sentence(detail),
+        statusCode: StatusCodes.Status503ServiceUnavailable);
+
     /// <summary>An unhandled failure, rendered without a stack trace (section 11).</summary>
     public static IResult Unexpected() => Results.Problem(
         title: "Something went wrong",

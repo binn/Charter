@@ -337,12 +337,38 @@ public class OrchestrationWiringTests
                      typeof(SessionJournal),
                      typeof(SessionCoordinator),
                      typeof(ISessionDispatchPlanner),
-                     typeof(IQueuedJobHandler),
+                     typeof(IAutoDispatchGate),
                  })
         {
             var descriptor = Assert.Single(services, candidate => candidate.ServiceType == type);
             Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
         }
+
+        // One handler per job type, so this one is a collection rather than a single registration —
+        // but every member of it still has to be scoped for the same reason.
+        var handlers = services.Where(candidate => candidate.ServiceType == typeof(IQueuedJobHandler)).ToList();
+
+        Assert.Equal(3, handlers.Count);
+        Assert.All(handlers, descriptor => Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime));
+    }
+
+    [Fact]
+    public void EveryJobTypeTheApiQueuesHasAHandler()
+    {
+        var services = Registered();
+
+        var handled = services
+            .Where(descriptor => descriptor.ServiceType == typeof(IQueuedJobHandler))
+            .Select(descriptor => descriptor.ImplementationType!)
+            .ToList();
+
+        // The dispatcher defers a job type with no handler rather than completing it, so a missing
+        // registration is not a crash — it is a queue that quietly stops moving. These three are what
+        // the API writes: intake and replies write Refine, the spend gate writes Build, and "Works"
+        // writes Recap.
+        Assert.Contains(typeof(RefineJobHandler), handled);
+        Assert.Contains(typeof(BuildJobHandler), handled);
+        Assert.Contains(typeof(RecapJobHandler), handled);
     }
 
     [Fact]

@@ -544,6 +544,355 @@ public sealed class RequestCommandService
         return CommandOutcome.Ok();
     }
 
+    /// <summary>
+    /// Section 7.5's first post-hoc action: the normal review path, merge as usual.
+    /// </summary>
+    /// <remarks>
+    /// Charter has no merge button (section 7.4) and this is not one. It records that an engineer has
+    /// read the work and moves the request to <c>in_review</c> so the requester's thread stops saying
+    /// the agent is still going; the merge gate remains branch protection and CODEOWNERS, outside
+    /// Charter entirely.
+    /// </remarks>
+    public async Task<CommandOutcome> ApproveSessionAsync(
+        MemberSnapshot member,
+        Guid requestId,
+        CancellationToken cancellationToken = default)
+    {
+        var (outcome, view, session) = await LoadForSessionActionAsync(member, requestId, cancellationToken);
+        if (!outcome.Succeeded)
+        {
+            return outcome;
+        }
+
+        var now = clock.GetUtcNow();
+
+        session!.TransitionTo(SessionStatus.InReview, now);
+
+        var tracked = await database.Requests.SingleOrDefaultAsync(row => row.Id == requestId, cancellationToken);
+        tracked?.TransitionTo(RequestStatus.InReview, now);
+
+        Audit(member, ApiAuditActions.SessionApproved, session.Id, now);
+        await database.SaveChangesAsync(cancellationToken);
+
+        await stream.PublishAsync(
+            requestId,
+            RequestStreamEvents.Status(ApiRequestStatus.InReview),
+            cancellationToken);
+
+        return CommandOutcome.Ok();
+    }
+
+    /// <summary>
+    /// Section 7.5 "Steer": continue the existing session with a new instruction; same branch, same
+    /// thread.
+    /// </summary>
+    public async Task<CommandOutcome> SteerSessionAsync(
+        MemberSnapshot member,
+        Guid requestId,
+        SteerSessionBody body,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        var instruction = body.Instruction?.Trim();
+        if (string.IsNullOrWhiteSpace(instruction))
+        {
+            return CommandOutcome.Invalid("Say what it should do next.");
+        }
+
+        if (instruction.Length > MaxRawTextLength)
+        {
+            return CommandOutcome.Invalid("That is longer than we can take in one go.");
+        }
+
+        var (outcome, view, session) = await LoadForSessionActionAsync(member, requestId, cancellationToken);
+        if (!outcome.Succeeded)
+        {
+            return outcome;
+        }
+
+        var now = clock.GetUtcNow();
+
+        session!.TransitionTo(SessionStatus.Running, now);
+
+        var tracked = await database.Requests.SingleOrDefaultAsync(row => row.Id == requestId, cancellationToken);
+        tracked?.TransitionTo(RequestStatus.Running, now);
+
+        Audit(member, ApiAuditActions.SessionSteered, session.Id, now);
+        await database.SaveChangesAsync(cancellationToken);
+
+        // Section 2.3: the queue row is the record. Same session id, so the runner continues rather
+        // than starting again — that is what "same branch, same thread" means in the payload.
+        await jobs.EnqueueAsync(
+            JobType.Build,
+            JsonSerializer.Serialize(
+                new { requestId, session_id = session.Id, steer = instruction },
+                CharterApiJson.Options),
+            now: now,
+            cancellationToken: cancellationToken);
+
+        await stream.PublishAsync(
+            requestId,
+            RequestStreamEvents.Status(ApiRequestStatus.Running),
+            cancellationToken);
+
+        return CommandOutcome.Ok();
+    }
+
+    /// <summary>
+    /// Section 7.5 "Revise and rebuild": fork the spec, edit it, dispatch a fresh session onto the
+    /// same branch.
+    /// </summary>
+    /// <remarks>
+    /// A fork is a new <see cref="Spec"/> version rather than an edit of the old one, because the
+    /// version somebody approved has to stay readable next to the version that was built. The
+    /// structured fields come across from the parent: an engineer editing the markdown is editing the
+    /// instruction, not re-authoring the acceptance criteria the requester agreed to (section 10b),
+    /// and silently replacing those with whatever a parser made of the prose would break the one
+    /// thing section 10b says must never drift.
+    /// </remarks>
+    public async Task<CommandOutcome> ReviseSessionAsync(
+        MemberSnapshot member,
+        Guid requestId,
+        ReviseSessionBody body,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+
+        var revised = body.RevisedSpecMd?.Trim();
+        if (string.IsNullOrWhiteSpace(revised))
+        {
+            return CommandOutcome.Invalid("Send the revised plan, not an empty one.");
+        }
+
+        if (revised.Length > MaxSpecLength)
+        {
+            return CommandOutcome.Invalid("That plan is longer than we can take in one go.");
+        }
+
+        var (outcome, view, session) = await LoadForSessionActionAsync(member, requestId, cancellationToken);
+        if (!outcome.Succeeded)
+        {
+            return outcome;
+        }
+
+        if (view!.Aggregate.Spec is not { } parent)
+        {
+            return CommandOutcome.Conflict("there is no plan to revise yet");
+        }
+
+        var now = clock.GetUtcNow();
+
+        var fork = Spec.Draft(
+            requestId,
+            parent.Version + 1,
+            parent.Title,
+            parent.Outcome,
+            revised,
+            parent.AcceptanceCriteria,
+            parent.TechnicalApproach,
+            parent.Scope,
+            parent.Risks,
+            openQuestions: null,
+            now);
+
+        // The engineer revising it is the person vetting it, so the spend gate is already answered
+        // (section 7.5). Recording the approval is what keeps "who authorised this session" true.
+        fork.Approve(member.UserId, now);
+        database.Specs.Add(fork);
+
+        var tracked = await database.Requests.SingleOrDefaultAsync(row => row.Id == requestId, cancellationToken);
+        tracked?.TransitionTo(RequestStatus.Queued, now);
+
+        Audit(member, ApiAuditActions.SessionRevised, session!.Id, now);
+        await database.SaveChangesAsync(cancellationToken);
+
+        await jobs.EnqueueAsync(
+            JobType.Build,
+            JsonSerializer.Serialize(
+                new { requestId, specId = fork.Id, revisedFrom = session.Id },
+                CharterApiJson.Options),
+            now: now,
+            cancellationToken: cancellationToken);
+
+        await stream.PublishAsync(
+            requestId,
+            RequestStreamEvents.Status(ApiRequestStatus.Queued),
+            cancellationToken);
+
+        return CommandOutcome.Ok();
+    }
+
+    /// <summary>
+    /// Section 7.5 "Take over": Charter marks the session <c>handed_off</c> and stops touching it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is irreversible, and it has to be.</strong> Section 7.5 calls an agent and a human
+    /// editing the same branch concurrently <em>"the one genuinely destructive failure mode in this
+    /// design"</em>, so this is not a flag a later dispatch could decline to read. Three things make
+    /// it stick, and each one is sufficient on its own:
+    /// </para>
+    /// <list type="number">
+    /// <item><description>
+    /// <see cref="Session.HandOff"/> moves the session to a status <see cref="Session.IsTerminal"/>
+    /// includes, and the dispatch planner returns no dispatch for a terminal session — so nothing can
+    /// be sent to a runner for it, by any path, ever again.
+    /// </description></item>
+    /// <item><description>
+    /// Every queued build job for this session is cancelled here, so work already in the queue when
+    /// the button was pressed does not dispatch a second later.
+    /// </description></item>
+    /// <item><description>
+    /// Steer and revise refuse a handed-off session below, and the projection stops offering them —
+    /// the two halves of the same rule, which is why they read the session status rather than each
+    /// other.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// There is deliberately no un-take-over endpoint. Recovering is starting a new request, which
+    /// makes a new session on a new branch, and that is the only shape in which "hand it back" is
+    /// safe.
+    /// </para>
+    /// </remarks>
+    public async Task<CommandOutcome> TakeOverSessionAsync(
+        MemberSnapshot member,
+        Guid requestId,
+        CancellationToken cancellationToken = default)
+    {
+        var (outcome, view, session) = await LoadForSessionActionAsync(member, requestId, cancellationToken);
+        if (!outcome.Succeeded)
+        {
+            return outcome;
+        }
+
+        var now = clock.GetUtcNow();
+
+        // The latch is a status the whole system already refuses to dispatch, not a new flag.
+        session!.HandOff(now);
+
+        // And the cancel latch too, so a runner already holding this session stops rather than
+        // finishing its current write. Section 11's cancel path reads exactly this column.
+        session.RequestCancellation(now);
+
+        var tracked = await database.Requests.SingleOrDefaultAsync(row => row.Id == requestId, cancellationToken);
+        tracked?.TransitionTo(RequestStatus.InReview, now);
+
+        await CancelQueuedBuildJobsAsync(requestId, session.Id, view!.Aggregate.Spec?.Id, cancellationToken);
+
+        Audit(member, ApiAuditActions.SessionHandedOff, session.Id, now);
+        await database.SaveChangesAsync(cancellationToken);
+
+        await stream.PublishAsync(
+            requestId,
+            RequestStreamEvents.Status(ApiRequestStatus.InReview),
+            cancellationToken);
+        await stream.PublishAsync(requestId, RequestStreamEvents.Ended(now), cancellationToken);
+
+        return CommandOutcome.Ok();
+    }
+
+    /// <summary>The longest revised plan the fork endpoint accepts.</summary>
+    public const int MaxSpecLength = 32_000;
+
+    /// <summary>
+    /// The three checks every section 7.5 action shares.
+    /// </summary>
+    /// <remarks>
+    /// Repository read is the gate, because section 7.4 makes it the one that names an engineer, and
+    /// it is the same flag <see cref="SessionActionsProjection"/> reads to decide whether to offer the
+    /// controls at all. A handed-off session refuses everything, which is the irreversibility of
+    /// take-over expressed once rather than in each of the three commands that must respect it.
+    /// </remarks>
+    private async Task<(CommandOutcome Outcome, RequestView? View, Session? Session)> LoadForSessionActionAsync(
+        MemberSnapshot member,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(member);
+
+        var view = await queries.LoadAsync(member, requestId, cancellationToken);
+        if (view is null)
+        {
+            return (CommandOutcome.NotFound(), null, null);
+        }
+
+        if (!view.Visibility.Transcript)
+        {
+            return (
+                CommandOutcome.Forbidden("these actions need read access to the repository"),
+                null,
+                null);
+        }
+
+        if (view.Aggregate.Session is not { } snapshot)
+        {
+            return (CommandOutcome.Conflict("nothing has been built for this request yet"), null, null);
+        }
+
+        var session = await database.Sessions.SingleOrDefaultAsync(
+            row => row.Id == snapshot.Id,
+            cancellationToken);
+
+        if (session is null)
+        {
+            return (CommandOutcome.NotFound(), null, null);
+        }
+
+        if (session.Status == SessionStatus.HandedOff)
+        {
+            return (
+                CommandOutcome.Conflict(
+                    "an engineer has taken this branch over, so Charter no longer writes to it"),
+                null,
+                null);
+        }
+
+        return (CommandOutcome.Ok(), view, session);
+    }
+
+    /// <summary>
+    /// Cancels build work already in the queue for this session.
+    /// </summary>
+    /// <remarks>
+    /// The payload shapes differ by who wrote them — intake writes <c>specId</c>, the orchestrator
+    /// writes <c>session_id</c> — so this matches on any identifier that names this request's work
+    /// rather than on one spelling. Being generous is the safe direction: the cost of cancelling one
+    /// job too many is a build that has to be asked for again, and the cost of missing one is the
+    /// concurrent write section 7.5 calls destructive.
+    /// </remarks>
+    private async Task CancelQueuedBuildJobsAsync(
+        Guid requestId,
+        Guid sessionId,
+        Guid? specId,
+        CancellationToken cancellationToken)
+    {
+        var pending = await database.Jobs
+            .Where(job => job.Type == JobType.Build && job.Status == JobStatus.Pending)
+            .ToListAsync(cancellationToken);
+
+        foreach (var job in pending)
+        {
+            if (Mentions(job.Payload, requestId) || Mentions(job.Payload, sessionId)
+                || (specId is { } spec && Mentions(job.Payload, spec)))
+            {
+                job.Cancel();
+            }
+        }
+    }
+
+    private static bool Mentions(string payload, Guid id)
+        => payload.Contains(id.ToString("D"), StringComparison.OrdinalIgnoreCase);
+
+    private void Audit(MemberSnapshot member, string action, Guid sessionId, DateTimeOffset now)
+        => database.AuditLogs.Add(AuditLog.Record(
+            member.OrgId,
+            action,
+            targetType: "session",
+            actorUserId: member.UserId,
+            targetId: sessionId.ToString(),
+            now: now));
+
     private Task<Spec?> LoadSpecAsync(Guid requestId, int version, CancellationToken cancellationToken)
         => database.Specs.SingleOrDefaultAsync(
             row => row.RequestId == requestId && row.Version == version,

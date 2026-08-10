@@ -72,6 +72,19 @@ public class DataModelShapeTests : IDisposable
         // Section 33.3: the registered Charter Agents, holding verifiers for the pairing token and
         // the long-lived credential rather than either value.
         (typeof(RunnerAgent), "runner_agents"),
+
+        // Section 13's per-user daily cap on the one unbounded teaching surface.
+        (typeof(ExplainThisUsage), "explain_this_usage"),
+
+        // Section 22's per-user channel preference. No per-state column, and an absent row is the
+        // default rather than an opt-out.
+        (typeof(NotificationChannelPreference), "notification_channels"),
+
+        // Change spec 001 C.3's admin-visible delivery record, retained rather than unbounded.
+        (typeof(EmailDelivery), "email_deliveries"),
+
+        // Section 30.2's invitations, holding a digest of the token rather than the token.
+        (typeof(Invitation), "invitations"),
     ];
 
     public static TheoryData<Type, string> ExpectedTableNames
@@ -479,6 +492,126 @@ public class DataModelShapeTests : IDisposable
 
         Assert.Equal("ck_repo_scopes_member_xor_role", constraint.Name);
         Assert.Equal("(member_id IS NULL) <> (role IS NULL)", constraint.Sql);
+    }
+
+    [Fact]
+    public void TheConceptLedgerCarriesTheColumnTheInjectionWindowIsOrderedOn()
+    {
+        // Section 13 caps the injection at the most-recent few dozen concepts. Without
+        // last_referenced_at there is no "most recent", and teaching re-explains what it has already
+        // taught - which is the entire mechanism the ledger exists for.
+        var entity = _model.FindEntityType(typeof(ConceptLedger));
+        Assert.NotNull(entity);
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("last_referenced_at", columns);
+        Assert.False(Property<ConceptLedger>(nameof(ConceptLedger.LastReferencedAt)).IsNullable);
+
+        var index = entity.GetIndexes()
+            .Single(candidate => candidate.GetDatabaseName() == "ix_concept_ledger_user_id_last_referenced_at");
+
+        Assert.Equal(["UserId", "LastReferencedAt"], index.Properties.Select(property => property.Name));
+        Assert.Equal(new[] { false, true }, index.IsDescending!);
+    }
+
+    [Fact]
+    public void TheNotificationPreferenceIsKeyedOnUserAndChannelAndHasNoPerStateColumn()
+    {
+        // Section 22: two states fire, and somebody who wants neither wants no notifications. A
+        // per-state column would be a matrix of checkboxes for a set with two members, and the spec
+        // says it should not grow one.
+        var entity = _model.FindEntityType(typeof(NotificationChannelPreference));
+        Assert.NotNull(entity);
+
+        var key = entity.FindPrimaryKey();
+        Assert.NotNull(key);
+        Assert.Equal(["UserId", "Channel"], key.Properties.Select(property => property.Name));
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Equal(["channel", "enabled", "updated_at", "user_id"], columns.Order());
+        Assert.DoesNotContain(columns, column => column?.Contains("state", StringComparison.Ordinal) == true);
+
+        AssertDelete<NotificationChannelPreference>(
+            nameof(NotificationChannelPreference.UserId),
+            DeleteBehavior.Cascade);
+    }
+
+    [Fact]
+    public void TheDeliveryLogRecordsWhoAndWhatHappenedAndNeverTheMessage()
+    {
+        var entity = _model.FindEntityType(typeof(EmailDelivery));
+        Assert.NotNull(entity);
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("recipient", columns);
+        Assert.Contains("outcome", columns);
+        Assert.DoesNotContain("subject", columns);
+        Assert.DoesNotContain("body", columns);
+        Assert.DoesNotContain("body_html", columns);
+
+        // No foreign key to users: mail goes to invitees who have no account yet, and a log that
+        // could only record members would be empty exactly when somebody is debugging an invitation.
+        Assert.Empty(entity.GetForeignKeys());
+
+        // Retention sweeps by age from one end and the settings page reads the other.
+        Assert.Contains(entity.GetIndexes(), index => index.GetDatabaseName() == "ix_email_deliveries_at");
+
+        var failures = entity.GetIndexes()
+            .Single(index => index.GetDatabaseName() == "ix_email_deliveries_failed_at");
+
+        Assert.Equal("outcome = 'failed'", failures.GetFilter());
+    }
+
+    [Fact]
+    public void AnInvitationStoresADigestAndNeverTheToken()
+    {
+        // Section 30.2's link creates an account, so it is a credential and the row holds a verifier
+        // - the same rule CredentialGrant and the agent pairing token follow.
+        var entity = _model.FindEntityType(typeof(Invitation));
+        Assert.NotNull(entity);
+
+        var table = StoreObjectIdentifier.Create(entity, StoreObjectType.Table)!.Value;
+        var columns = entity.GetProperties().Select(property => property.GetColumnName(table)).ToArray();
+
+        Assert.Contains("token_hash", columns);
+        Assert.DoesNotContain("token", columns);
+        Assert.DoesNotContain("secret", columns);
+
+        Assert.Equal(
+            Invitation.TokenHashLength,
+            Property<Invitation>(nameof(Invitation.TokenHash)).GetMaxLength());
+
+        // Redemption arrives with a token and no identity, so the digest has to find the row.
+        AssertUniqueIndex<Invitation>("ux_invitations_token_hash");
+
+        // The inviter outlives the invitation: an admin who leaves must not take the record of who
+        // they invited with them.
+        AssertDelete<Invitation>(nameof(Invitation.InvitedByUserId), DeleteBehavior.Restrict);
+        AssertDelete<Invitation>(nameof(Invitation.ConsumedByUserId), DeleteBehavior.SetNull);
+        AssertDelete<Invitation>(nameof(Invitation.OrgId), DeleteBehavior.Cascade);
+    }
+
+    [Fact]
+    public void TheExplainThisCounterIsADayPerPersonAndNotATimestamp()
+    {
+        var entity = _model.FindEntityType(typeof(ExplainThisUsage));
+        Assert.NotNull(entity);
+
+        var key = entity.FindPrimaryKey();
+        Assert.NotNull(key);
+        Assert.Equal(["UserId", "Day"], key.Properties.Select(property => property.Name));
+
+        // A `date`, because the window is a whole UTC day: a timestamp invites a comparison that
+        // lands halfway through one.
+        Assert.Equal("date", ColumnType<ExplainThisUsage>(nameof(ExplainThisUsage.Day)));
+
+        AssertDelete<ExplainThisUsage>(nameof(ExplainThisUsage.UserId), DeleteBehavior.Cascade);
     }
 
     [Fact]

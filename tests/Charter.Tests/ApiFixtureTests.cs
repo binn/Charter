@@ -5,6 +5,7 @@ using Charter.Api.Projects;
 using Charter.Api.Requests;
 using Charter.Auth.Authorization;
 using Charter.Domain;
+using Charter.Recaps;
 using Charter.Refinement;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -128,8 +129,10 @@ public sealed class ApiScenario
         IReadOnlyList<VerificationArtifact> artifacts,
         ChangeRequest changeRequest,
         RequestFeedback? feedback,
-        ConversationRecord conversation)
+        ConversationRecord conversation,
+        Charter.Domain.Recap recap)
     {
+        Recap = recap;
         Feedback = feedback;
         Conversation = conversation;
         Organization = organization;
@@ -175,6 +178,16 @@ public sealed class ApiScenario
     public IReadOnlyList<VerificationArtifact> Artifacts { get; }
 
     public ChangeRequest ChangeRequest { get; }
+
+    /// <summary>
+    /// Section 14's recap row, composed through the real <see cref="RecapComposer"/>.
+    /// </summary>
+    /// <remarks>
+    /// Composed rather than hand-written, for the same reason the spec carries a technical approach:
+    /// a fixture that wrote its own markdown would let <c>RecapProjection</c> and the composer drift
+    /// apart while every test stayed green.
+    /// </remarks>
+    public Charter.Domain.Recap Recap { get; }
 
     /// <summary>Section 11: the latest verdict, when somebody has pressed one of the two buttons.</summary>
     public RequestFeedback? Feedback { get; }
@@ -366,7 +379,56 @@ public sealed class ApiScenario
             artifacts: [artifact],
             changeRequest,
             feedback,
-            conversation);
+            conversation,
+            ComposeRecap(document, session.Id, at.AddHours(2)));
+    }
+
+    /// <summary>
+    /// The section 14 recap, built through the real ranker and composer.
+    /// </summary>
+    /// <remarks>
+    /// The two files it touches are deliberately the ones section 14 says must float and sink: a
+    /// login controller and a test. A recap whose ranking happened to be alphabetical would then pass
+    /// nothing, which is the property <c>ApiRecapTests</c> checks.
+    /// </remarks>
+    public static Charter.Domain.Recap ComposeRecap(SpecDocument document, Guid sessionId, DateTimeOffset at)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+
+        var ranked = RecapFileRiskRanker.Rank(
+        [
+            new RecapFileChange("tests/Quotes/QuoteWizardTests.cs") { LinesAdded = 40 },
+            new RecapFileChange("src/Auth/LoginController.cs") { LinesAdded = 9, LinesRemoved = 2 },
+        ]);
+
+        var payload = new RecapPayload
+        {
+            WhatAndWhy = "The wizard read the vertical off the quote row, so this adds a per-user preference.",
+            Deviations =
+            [
+                new RecapDeviationPayload
+                {
+                    What = "Keyed the preference on the auth user id",
+                    SpecSaid = "The remembered choice is yours alone",
+                    Why = "the wizard only has the auth id in scope",
+                    Where = "src/Auth/LoginController.cs",
+                },
+                new RecapDeviationPayload
+                {
+                    What = "Cached the resolved user id on the accessor",
+                },
+            ],
+            FileNotes = [new RecapFileNotePayload { Path = "src/Auth/LoginController.cs", Note = "Resolves the signed-in user." }],
+            CouldNotVerify = ["No test covers two tabs picking different verticals."],
+        };
+
+        var (body, riskItems, _) = RecapComposer.Compose(
+            new RecapEvidence { SessionId = sessionId, Spec = document, AutoDispatched = false },
+            ranked,
+            payload,
+            new RecapOptions());
+
+        return Charter.Domain.Recap.Generate(sessionId, body, riskItems, CostUsd, at);
     }
 
     /// <summary>What section 7.4 says this member may be shown, via the real policy.</summary>
@@ -398,6 +460,21 @@ public sealed class ApiScenario
             Feedback = RequestPresentation.Feedback(Feedback),
             ApprovedByName = RequesterUser.DisplayName,
             AwaitingApprovalFrom = "Tomas Beck",
+
+            // The query service loads these on exactly these terms (section 7.4), so the fixture
+            // filters them the same way rather than handing the projection rows it would never see.
+            TotalEvents = visibility.Transcript ? Events.Count : 0,
+            ChangedPaths = visibility.Code
+                ?
+                [
+                    .. Events
+                        .Select(row => RequestPresentation.TranscriptPath(row.Type, row.Payload))
+                        .Where(path => path is not null)
+                        .Select(path => path!),
+                ]
+                : [],
+            Recap = visibility.Transcript ? Recap : null,
+            HandedOffByName = Session.Status == SessionStatus.HandedOff ? EngineerUser.DisplayName : null,
         };
     }
 

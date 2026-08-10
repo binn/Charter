@@ -226,6 +226,43 @@ public partial class InitialCreate : Migration
             });
 
         migrationBuilder.CreateTable(
+            name: "email_deliveries",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                recipient = table.Column<string>(type: "character varying(320)", maxLength: 320, nullable: false),
+                kind = table.Column<string>(type: "character varying(60)", maxLength: 60, nullable: false),
+                outcome = table.Column<string>(type: "text", nullable: false),
+                summary = table.Column<string>(type: "character varying(300)", maxLength: 300, nullable: false),
+                detail = table.Column<string>(type: "character varying(1000)", maxLength: 1000, nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_email_deliveries", x => x.id);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "explain_this_usage",
+            columns: table => new
+            {
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                day = table.Column<DateOnly>(type: "date", nullable: false),
+                used = table.Column<int>(type: "integer", nullable: false),
+                last_used_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_explain_this_usage", x => new { x.user_id, x.day });
+                table.ForeignKey(
+                    name: "fk_explain_this_usage_users_user_id",
+                    column: x => x.user_id,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
             name: "identities",
             columns: table => new
             {
@@ -242,6 +279,65 @@ public partial class InitialCreate : Migration
                 table.PrimaryKey("pk_identities", x => x.id);
                 table.ForeignKey(
                     name: "fk_identities_users_user_id",
+                    column: x => x.user_id,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "invitations",
+            columns: table => new
+            {
+                id = table.Column<Guid>(type: "uuid", nullable: false),
+                org_id = table.Column<Guid>(type: "uuid", nullable: false),
+                email = table.Column<string>(type: "character varying(320)", maxLength: 320, nullable: false),
+                token_hash = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
+                roles = table.Column<string[]>(type: "text[]", nullable: false),
+                invited_by_user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                consumed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                consumed_by_user_id = table.Column<Guid>(type: "uuid", nullable: true),
+                revoked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_invitations", x => x.id);
+                table.ForeignKey(
+                    name: "fk_invitations_organizations_org_id",
+                    column: x => x.org_id,
+                    principalTable: "organizations",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Cascade);
+                table.ForeignKey(
+                    name: "fk_invitations_users_consumed_by_user_id",
+                    column: x => x.consumed_by_user_id,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.SetNull);
+                table.ForeignKey(
+                    name: "fk_invitations_users_invited_by_user_id",
+                    column: x => x.invited_by_user_id,
+                    principalTable: "users",
+                    principalColumn: "id",
+                    onDelete: ReferentialAction.Restrict);
+            });
+
+        migrationBuilder.CreateTable(
+            name: "notification_channels",
+            columns: table => new
+            {
+                user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                channel = table.Column<string>(type: "text", nullable: false),
+                enabled = table.Column<bool>(type: "boolean", nullable: false),
+                updated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+            },
+            constraints: table =>
+            {
+                table.PrimaryKey("pk_notification_channels", x => new { x.user_id, x.channel });
+                table.ForeignKey(
+                    name: "fk_notification_channels_users_user_id",
                     column: x => x.user_id,
                     principalTable: "users",
                     principalColumn: "id",
@@ -918,6 +1014,19 @@ public partial class InitialCreate : Migration
             descending: new[] { false, true });
 
         migrationBuilder.CreateIndex(
+            name: "ix_email_deliveries_at",
+            table: "email_deliveries",
+            column: "at",
+            descending: new bool[0]);
+
+        migrationBuilder.CreateIndex(
+            name: "ix_email_deliveries_failed_at",
+            table: "email_deliveries",
+            column: "at",
+            descending: new bool[0],
+            filter: "outcome = 'failed'");
+
+        migrationBuilder.CreateIndex(
             name: "ix_events_created_at",
             table: "events",
             column: "created_at");
@@ -929,6 +1038,11 @@ public partial class InitialCreate : Migration
             unique: true);
 
         migrationBuilder.CreateIndex(
+            name: "ix_explain_this_usage_day",
+            table: "explain_this_usage",
+            column: "day");
+
+        migrationBuilder.CreateIndex(
             name: "ix_identities_user_id",
             table: "identities",
             column: "user_id");
@@ -937,6 +1051,32 @@ public partial class InitialCreate : Migration
             name: "ux_identities_provider_provider_user_id",
             table: "identities",
             columns: new[] { "provider", "provider_user_id" },
+            unique: true);
+
+        migrationBuilder.CreateIndex(
+            name: "ix_invitations_consumed_by_user_id",
+            table: "invitations",
+            column: "consumed_by_user_id");
+
+        migrationBuilder.CreateIndex(
+            name: "ix_invitations_expires_at",
+            table: "invitations",
+            column: "expires_at");
+
+        migrationBuilder.CreateIndex(
+            name: "ix_invitations_invited_by_user_id",
+            table: "invitations",
+            column: "invited_by_user_id");
+
+        migrationBuilder.CreateIndex(
+            name: "ix_invitations_org_id_email",
+            table: "invitations",
+            columns: new[] { "org_id", "email" });
+
+        migrationBuilder.CreateIndex(
+            name: "ux_invitations_token_hash",
+            table: "invitations",
+            column: "token_hash",
             unique: true);
 
         migrationBuilder.CreateIndex(
@@ -1173,7 +1313,16 @@ public partial class InitialCreate : Migration
             name: "deployments");
 
         migrationBuilder.DropTable(
+            name: "email_deliveries");
+
+        migrationBuilder.DropTable(
+            name: "explain_this_usage");
+
+        migrationBuilder.DropTable(
             name: "identities");
+
+        migrationBuilder.DropTable(
+            name: "invitations");
 
         migrationBuilder.DropTable(
             name: "jobs");
@@ -1183,6 +1332,9 @@ public partial class InitialCreate : Migration
 
         migrationBuilder.DropTable(
             name: "milestones");
+
+        migrationBuilder.DropTable(
+            name: "notification_channels");
 
         migrationBuilder.DropTable(
             name: "recaps");

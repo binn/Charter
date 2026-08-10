@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Charter.Data;
 using Charter.Domain;
@@ -142,13 +143,15 @@ public sealed class PreviewArtifactPublisher
     private readonly PreviewReachabilityProbe _probe;
     private readonly TimeProvider _clock;
     private readonly ILogger<PreviewArtifactPublisher> _logger;
+    private readonly PreviewReadyAnnouncer? _announcer;
 
     public PreviewArtifactPublisher(
         CharterDbContext database,
         DeploymentOptions options,
         PreviewReachabilityProbe probe,
         TimeProvider clock,
-        ILogger<PreviewArtifactPublisher> logger)
+        ILogger<PreviewArtifactPublisher> logger,
+        PreviewReadyAnnouncer? announcer = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(options);
@@ -161,6 +164,7 @@ public sealed class PreviewArtifactPublisher
         _probe = probe;
         _clock = clock;
         _logger = logger;
+        _announcer = announcer;
     }
 
     /// <summary>Applies a deployment to the session's hosted preview artifact, and saves.</summary>
@@ -211,7 +215,7 @@ public sealed class PreviewArtifactPublisher
                 // down, and the countdown is the mitigation for the confusion expiry causes.
                 var expiresAt = isNewPreview ? _options.ExpiryFor(now) : artifact.ExpiresAt;
 
-                if (isNewPreview || !string.Equals(artifact.Payload, payload, StringComparison.Ordinal))
+                if (isNewPreview || !SamePayload(artifact.Payload, payload))
                 {
                     artifact.MarkReady(
                         url: deployment.Url,
@@ -280,6 +284,16 @@ public sealed class PreviewArtifactPublisher
                 deployment.Provider);
         }
 
+        // Section 6: the artifact turning Ready is the moment the request reaches PreviewReady, the
+        // second and last state that notifies anybody. Run whether or not this call changed
+        // anything — the state and the notification are separate facts, and a reconcile that found
+        // the artifact already Ready must still finish a transition an earlier one was interrupted
+        // part-way through (section 2.3).
+        if (artifact.State == VerificationArtifactState.Ready && _announcer is not null)
+        {
+            await _announcer.AnnounceAsync(sessionId, cancellationToken);
+        }
+
         return new PreviewPublication(changed, artifact.State);
     }
 
@@ -296,6 +310,33 @@ public sealed class PreviewArtifactPublisher
         return JsonSerializer.Serialize(
             new StoredHostedPreview { Url = url, Reachability = reachability },
             PayloadOptions);
+    }
+
+    /// <summary>
+    /// Whether the stored body already says what the fresh one says.
+    /// </summary>
+    /// <remarks>
+    /// Compared as JSON rather than as characters, because the column is <c>jsonb</c>: Postgres parses
+    /// what it is given and renders its own spelling back, so <c>{"url":"x"}</c> returns as
+    /// <c>{"url": "x"}</c>. A textual comparison therefore never matches once the row has been read
+    /// back, and this method runs on a loop every few seconds — the difference between "quiet unless
+    /// something changed" and a write, a log line and a save on every single sweep.
+    /// </remarks>
+    private static bool SamePayload(string? stored, string fresh)
+    {
+        if (string.IsNullOrWhiteSpace(stored))
+        {
+            return false;
+        }
+
+        try
+        {
+            return JsonNode.DeepEquals(JsonNode.Parse(stored), JsonNode.Parse(fresh));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static JsonSerializerOptions CreatePayloadOptions()

@@ -47,6 +47,27 @@ public sealed class SessionOrchestrator : BackgroundService
         SessionStatus.NeedsInput,
     ];
 
+    /// <summary>
+    /// Session states whose run finished with something to review, and therefore want a recap.
+    /// </summary>
+    /// <remarks>
+    /// Every state section 6 puts on or after <c>Running</c> that is not a failure. A session still
+    /// <c>Queued</c> has not run; <c>Failed</c>, <c>Cancelled</c> and <c>Stale</c> produced nothing to
+    /// orient anybody through; <c>NoChangesNeeded</c> is a success with, by definition, no change to
+    /// read. <c>HandedOff</c> is included: an engineer who took the branch over is exactly the person
+    /// who wants to know what the agent did to it before they arrived (section 7.5).
+    /// </remarks>
+    private static readonly SessionStatus[] RecappableStatuses =
+    [
+        SessionStatus.Running,
+        SessionStatus.NeedsInput,
+        SessionStatus.PrOpen,
+        SessionStatus.PreviewReady,
+        SessionStatus.InReview,
+        SessionStatus.Merged,
+        SessionStatus.HandedOff,
+    ];
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly OrchestrationOptions _options;
     private readonly ILogger<SessionOrchestrator> _logger;
@@ -94,6 +115,18 @@ public sealed class SessionOrchestrator : BackgroundService
             _logger.LogInformation("Reclaimed {Count} job(s) from expired leases", reclaimed);
         }
 
+        var openJobs = await OpenBuildJobSessionsAsync(db, cancellationToken);
+
+        // The gap either side of the spend gate. Approval writes the request's new status and the
+        // build job in two transactions, so a container that dies between them leaves a request that
+        // says "building this now" with nothing building it. Nothing else looks for that: the session
+        // recovery below reconciles sessions, and this one does not have a session yet.
+        await RecoverApprovedSpecsAsync(db, queue, openJobs, cancellationToken);
+
+        // Section 14: a run that has finished and has no recap. Swept rather than triggered off the
+        // callback that reported the completion, because the control plane can restart between them.
+        await RequestRecapsAsync(db, queue, cancellationToken);
+
         var sessions = await db.Sessions
             .AsNoTracking()
             .Where(session => LiveStatuses.Contains(session.Status))
@@ -106,7 +139,6 @@ public sealed class SessionOrchestrator : BackgroundService
             return [];
         }
 
-        var openJobs = await OpenBuildJobSessionsAsync(db, cancellationToken);
         var reconciliations = new List<SessionReconciliation>(sessions.Count);
 
         // Change spec 001 part A: session → change request. Resolved optionally so a host that wires
@@ -279,7 +311,148 @@ public sealed class SessionOrchestrator : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Re-queues specifications that were approved and never dispatched (section 2.3).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Approval and the job that acts on it are two writes, and the container can die between them.
+    /// The recoverable half is the one that lands first — the approval, on the specification row —
+    /// so this reads that and rebuilds the second. It is deliberately the <em>same</em> payload the
+    /// API writes, going through the <em>same</em> handler, because a recovery path that takes a
+    /// different route is a path nobody exercises until the day it matters.
+    /// </para>
+    /// <para>
+    /// Nothing here is idempotent by luck. A specification that already has a session, or already has
+    /// a build job naming it, is skipped; and if two replicas somehow both enqueued, the session id
+    /// derived from the specification is the same for both and the second insert loses.
+    /// </para>
+    /// </remarks>
+    public async Task<int> RecoverApprovedSpecsAsync(
+        CharterDbContext db,
+        JobQueue queue,
+        IReadOnlySet<Guid> openJobs,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(queue);
+        ArgumentNullException.ThrowIfNull(openJobs);
+
+        var stranded = await (from request in db.Requests.AsNoTracking()
+                              where request.Status == RequestStatus.Queued
+                              join spec in db.Specs.AsNoTracking() on request.Id equals spec.RequestId
+                              where spec.ApprovedAt != null
+                                    && !db.Sessions.Any(session => session.SpecId == spec.Id)
+                              orderby spec.ApprovedAt
+                              select new { RequestId = request.Id, SpecId = spec.Id })
+            .Take(100)
+            .ToListAsync(cancellationToken);
+
+        var recovered = 0;
+
+        foreach (var entry in stranded)
+        {
+            if (openJobs.Contains(SpecBuildPayload.SessionIdFor(entry.SpecId)))
+            {
+                continue;
+            }
+
+            await queue.EnqueueAsync(
+                JobType.Build,
+                new SpecBuildPayload { RequestId = entry.RequestId, SpecId = entry.SpecId }.ToJson(),
+                cancellationToken: cancellationToken);
+
+            recovered++;
+
+            _logger.LogInformation(
+                "Re-queued approved specification {SpecId} on request {RequestId}: it was approved and "
+                + "never dispatched",
+                entry.SpecId,
+                entry.RequestId);
+        }
+
+        return recovered;
+    }
+
+    /// <summary>
+    /// Queues the engineer recap for every session whose run has finished and has none (section 14).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A sweep rather than a continuation off the completion callback, for section 2.3's reason: the
+    /// control plane can restart between a run ending and anybody noticing, and a callback that fired
+    /// into a process that is no longer there leaves the engineer with no recap and nothing to say so.
+    /// The trigger is therefore a fact in Postgres — a <c>session_ended</c> event, a session that did
+    /// not fail, and no recap row — which is true whether or not this process was running at the time.
+    /// </para>
+    /// <para>
+    /// Failures are excluded deliberately. Section 14's recap orients an engineer through a change
+    /// they are about to review, and a session that failed produced nothing to review; section 11
+    /// already routes that to an engineer by a different path.
+    /// </para>
+    /// </remarks>
+    public async Task<int> RequestRecapsAsync(
+        CharterDbContext db,
+        JobQueue queue,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(queue);
+
+        var finished = await db.Sessions
+            .AsNoTracking()
+            .Where(session => RecappableStatuses.Contains(session.Status))
+            .Where(session => db.Events.Any(@event =>
+                @event.SessionId == session.Id && @event.Type == EventTypes.SessionEnded))
+            .Where(session => !db.Recaps.Any(recap => recap.SessionId == session.Id))
+            .OrderBy(session => session.CreatedAt)
+            .Take(50)
+            .Select(session => session.Id)
+            .ToListAsync(cancellationToken);
+
+        if (finished.Count == 0)
+        {
+            return 0;
+        }
+
+        // The queue itself is the other half of the guard. The sweep runs every fifteen seconds, and
+        // without this it would queue one recap per pass for as long as the row took to be claimed.
+        var queued = await db.Jobs
+            .AsNoTracking()
+            .Where(job => job.Type == JobType.Recap
+                          && (job.Status == JobStatus.Pending || job.Status == JobStatus.Claimed))
+            .Select(job => job.Payload)
+            .ToListAsync(cancellationToken);
+
+        var alreadyQueued = queued
+            .Select(payload => RecapJobPayload.TryParse(payload)?.SessionId)
+            .Where(id => id is not null)
+            .Select(id => id!.Value)
+            .ToHashSet();
+
+        var requested = 0;
+
+        foreach (var sessionId in finished.Where(id => !alreadyQueued.Contains(id)))
+        {
+            await queue.EnqueueAsync(
+                JobType.Recap,
+                new RecapJobPayload { SessionId = sessionId }.ToJson(),
+                cancellationToken: cancellationToken);
+
+            requested++;
+
+            _logger.LogInformation("Queued the engineer recap for session {SessionId}", sessionId);
+        }
+
+        return requested;
+    }
+
     /// <summary>Sessions that already have a build job waiting or in flight.</summary>
+    /// <remarks>
+    /// Both payload shapes count. An approval-shaped job names a specification rather than a session,
+    /// and the session id is a pure function of it — so a job that has not been claimed yet still
+    /// answers "somebody is going to build this", and the sweep does not enqueue a second one.
+    /// </remarks>
     private static async Task<HashSet<Guid>> OpenBuildJobSessionsAsync(
         CharterDbContext db,
         CancellationToken cancellationToken)
@@ -292,12 +465,40 @@ public sealed class SessionOrchestrator : BackgroundService
             .ToListAsync(cancellationToken);
 
         var sessions = new HashSet<Guid>();
+        var specs = new HashSet<Guid>();
 
         foreach (var payload in payloads)
         {
             if (BuildJobPayload.TryParse(payload) is { } parsed)
             {
                 sessions.Add(parsed.SessionId);
+                continue;
+            }
+
+            if (SpecBuildPayload.TryParse(payload) is { } approved)
+            {
+                specs.Add(approved.SpecId);
+
+                if (!approved.IsRebuild)
+                {
+                    sessions.Add(SpecBuildPayload.SessionIdFor(approved.SpecId));
+                }
+            }
+        }
+
+        if (specs.Count > 0)
+        {
+            // A rebuild's session id is derived from a feedback row, so it cannot be computed here.
+            // Every live session on a specification a queued job names is covered by that job.
+            var onSpec = await db.Sessions
+                .AsNoTracking()
+                .Where(session => specs.Contains(session.SpecId))
+                .Select(session => session.Id)
+                .ToListAsync(cancellationToken);
+
+            foreach (var id in onSpec)
+            {
+                sessions.Add(id);
             }
         }
 

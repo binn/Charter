@@ -75,6 +75,21 @@ carry is scrubbed of commit hashes, forge URLs, and stack frames before it is re
 Mail goes to the server you configured and nowhere else. There is no third-party sending service and
 no tracking pixel — the templates load no images at all.
 
+### What Charter keeps about a send
+
+Every attempt is recorded in your own database so that a delivery failure is visible in admin
+settings rather than only in a log line somebody has to go looking for. A record holds the recipient
+address, the template name, the outcome, and whatever the mail server said if it refused — **no
+subject line, no body, and never a credential**.
+
+It is pruned automatically: 30 days, or 2,000 attempts, whichever comes first. Nothing else keeps a
+standing list of who this instance has written to.
+
+An invitation is stored the same way you would expect a credential to be. The row holds the invited
+address, the roles offered, who sent it, and a SHA-256 digest of the emailed token — **never the
+token**. Nobody with a database dump can turn one back into a working invitation link, and nobody
+inside Charter can retrieve a link that was lost; it is reissued instead.
+
 ## Where observability data goes
 
 Only where you point it. All three log sinks are off unless you enable them, and none of them has a

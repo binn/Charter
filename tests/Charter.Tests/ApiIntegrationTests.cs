@@ -167,8 +167,6 @@ public class ApiIntegrationTests
             return;
         }
 
-        var before = await fixture.Db.Jobs.CountAsync(TestContext.Current.CancellationToken);
-
         var (outcome, requestId) = await fixture.Commands().CreateAsync(
             fixture.Requester,
             new CreateRequestBody
@@ -187,13 +185,20 @@ public class ApiIntegrationTests
         // Section 10: nothing reaches an agent without passing through refinement first.
         Assert.Equal(RequestStatus.Refining, filed.Status);
 
-        var after = await fixture.Db.Jobs.CountAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(before + 1, after);
-
-        var job = await fixture.Db.Jobs
+        // Scoped to this request's own id rather than to a count of the whole table: these suites
+        // share one throwaway database and run in parallel, so "one more row than a moment ago" is a
+        // statement about the other tests as much as about this one.
+        var candidates = await fixture.Db.Jobs
             .OrderByDescending(row => row.CreatedAt)
-            .FirstAsync(TestContext.Current.CancellationToken);
+            .Take(20)
+            .ToListAsync(TestContext.Current.CancellationToken);
 
+        // The payload is jsonb, which no `Contains` translates to, so the match happens here.
+        var job = Assert.Single(
+            candidates,
+            row => row.Payload.Contains(requestId.ToString(), StringComparison.Ordinal));
+
+        // Section 10: nothing reaches an agent without passing through refinement first.
         Assert.Equal(JobType.Refine, job.Type);
     }
 

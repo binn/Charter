@@ -51,6 +51,25 @@ public sealed class OrchestrationOptions
     public int DefaultTimeoutMinutes { get; set; } = 60;
 
     /// <summary>
+    /// The backend a new session is queued against, from <c>CHARTER_RUNNER</c> (section 2.2).
+    /// </summary>
+    /// <remarks>
+    /// A preference, not a constraint: <see cref="Runners.IRunnerRegistry.RouteAsync"/> honours it
+    /// when that backend can run the work and falls back to the first enabled one when it cannot, so
+    /// an instance whose only runner changed between approval and dispatch still dispatches.
+    /// </remarks>
+    public Domain.RunnerKind DefaultRunner { get; set; } = Domain.RunnerKind.Agent;
+
+    /// <summary>
+    /// The model a new session runs on, from <c>CHARTER_MODEL_BUILD</c> (sections 4.2, 20b.1).
+    /// </summary>
+    /// <remarks>
+    /// Recorded on the session at creation rather than read at dispatch, so an operator who changes
+    /// the default does not silently change what an already-approved specification will be built by.
+    /// </remarks>
+    public string BuildModel { get; set; } = Configuration.ModelConfig.DefaultBuild;
+
+    /// <summary>
     /// The instance's public URL, from <c>CHARTER_BASE_URL</c>. Callback and spec URLs are built from
     /// it, so a runner in a GitHub-hosted VM can reach the control plane.
     /// </summary>

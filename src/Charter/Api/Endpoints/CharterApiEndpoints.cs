@@ -1,8 +1,13 @@
 using System.Globalization;
+using Charter.Api.Changes;
 using Charter.Api.Contracts;
 using Charter.Api.Requests;
+using Charter.Api.Runners;
+using Charter.Api.Settings;
+using Charter.Api.Setup;
 using Charter.Api.Viewer;
 using Charter.Auth.Authorization;
+using Charter.Domain;
 using Microsoft.AspNetCore.Routing;
 
 namespace Charter.Api.Endpoints;
@@ -41,7 +46,11 @@ public static class CharterApiEndpoints
         MapViewer(api);
         MapProjects(api);
         MapRequests(api);
+        MapSessionActions(api);
         MapApprovals(api);
+        MapRunners(api);
+        MapSetup(api);
+        MapSettings(api);
 
         return endpoints;
     }
@@ -345,6 +354,305 @@ public static class CharterApiEndpoints
             })
 
             // Rebuilding runs a session. Section 31 counts it as intake.
+            .WithMetadata(IntakeRateLimitMetadata.Instance);
+    }
+
+    /// <summary>Panes 2 and 3 (section 12), and section 7.5's four post-hoc actions.</summary>
+    private static void MapSessionActions(IEndpointRouteBuilder api)
+    {
+        var requests = api.MapGroup("/requests");
+
+        requests.MapGet("/{id}/transcript", async (
+            string id,
+            string? cursor,
+            long? aroundSeq,
+            int? limit,
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            TranscriptQueryService transcripts,
+            CancellationToken cancellationToken) =>
+        {
+            var (member, requestId, failure) = await ResolveAsync(http, authorization, id, cancellationToken);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            var read = await transcripts.ReadAsync(
+                member!,
+                requestId,
+                new TranscriptWindow(cursor, aroundSeq, limit),
+                cancellationToken);
+
+            return read.Status switch
+            {
+                TranscriptReadStatus.Ok => Json(read.Page),
+
+                // Section 7.4, in the shape a fetch has. The same rule that keeps `transcript` out of
+                // the detail body keeps the page out of this one.
+                TranscriptReadStatus.Forbidden => ApiProblems.Forbidden(read.Reason),
+                _ => ApiProblems.NotFound(),
+            };
+        });
+
+        requests.MapGet("/{id}/changes/{*path}", async (
+            string id,
+            string path,
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            FileDiffService diffs,
+            CancellationToken cancellationToken) =>
+        {
+            var (member, requestId, failure) = await ResolveAsync(http, authorization, id, cancellationToken);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            var read = await diffs.ReadAsync(member!, requestId, path, cancellationToken);
+
+            return read.Status switch
+            {
+                FileDiffReadStatus.Ok => Json(read.Diff),
+                FileDiffReadStatus.Forbidden => ApiProblems.Forbidden(read.Reason),
+                FileDiffReadStatus.Unavailable => ApiProblems.Unavailable(read.Reason),
+                _ => ApiProblems.NotFound(),
+            };
+        });
+
+        requests.MapPost("/{id}/session/approve", async (
+            string id,
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            RequestCommandService commands,
+            CancellationToken cancellationToken) =>
+        {
+            var (member, requestId, failure) = await ResolveAsync(http, authorization, id, cancellationToken);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            return ToResult(await commands.ApproveSessionAsync(member!, requestId, cancellationToken));
+        });
+
+        requests.MapPost("/{id}/session/steer", async (
+                string id,
+                SteerSessionBody body,
+                HttpContext http,
+                ICharterAuthorizationService authorization,
+                RequestCommandService commands,
+                CancellationToken cancellationToken) =>
+            {
+                var (member, requestId, failure) = await ResolveAsync(http, authorization, id, cancellationToken);
+                if (failure is not null)
+                {
+                    return failure;
+                }
+
+                return ToResult(await commands.SteerSessionAsync(
+                    member!,
+                    requestId,
+                    body ?? new SteerSessionBody(),
+                    cancellationToken));
+            })
+
+            // Steering spends model tokens exactly as intake does (section 31).
+            .WithMetadata(IntakeRateLimitMetadata.Instance);
+
+        requests.MapPost("/{id}/session/revise", async (
+                string id,
+                ReviseSessionBody body,
+                HttpContext http,
+                ICharterAuthorizationService authorization,
+                RequestCommandService commands,
+                CancellationToken cancellationToken) =>
+            {
+                var (member, requestId, failure) = await ResolveAsync(http, authorization, id, cancellationToken);
+                if (failure is not null)
+                {
+                    return failure;
+                }
+
+                return ToResult(await commands.ReviseSessionAsync(
+                    member!,
+                    requestId,
+                    body ?? new ReviseSessionBody(),
+                    cancellationToken));
+            })
+            .WithMetadata(IntakeRateLimitMetadata.Instance);
+
+        requests.MapPost("/{id}/session/take-over", async (
+            string id,
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            RequestCommandService commands,
+            CancellationToken cancellationToken) =>
+        {
+            var (member, requestId, failure) = await ResolveAsync(http, authorization, id, cancellationToken);
+            if (failure is not null)
+            {
+                return failure;
+            }
+
+            return ToResult(await commands.TakeOverSessionAsync(member!, requestId, cancellationToken));
+        });
+    }
+
+    /// <summary>Settings → Runners (section 33.3).</summary>
+    private static void MapRunners(IEndpointRouteBuilder api)
+    {
+        var runners = api.MapGroup("/runners");
+
+        runners.MapGet("/", async (
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            RunnersQueryService query,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            if (!member.HasRole(MemberRole.Admin))
+            {
+                return ApiProblems.Forbidden("the runners list belongs to administrators");
+            }
+
+            return Json(await query.DescribeAsync(member, cancellationToken));
+        });
+
+        runners.MapPost("/pairing-tokens", async (
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            RunnersCommandService commands,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            var (outcome, token) = await commands.IssuePairingTokenAsync(member, cancellationToken);
+
+            // Section 33.3: shown exactly once, so it is the body of the response that created it and
+            // there is no second endpoint that reads it back.
+            return outcome.Succeeded && token is not null
+                ? Results.Json(token, CharterApiJson.Options, statusCode: StatusCodes.Status201Created)
+                : ToResult(outcome);
+        });
+
+        runners.MapDelete("/{agentId}", async (
+            string agentId,
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            RunnersCommandService commands,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            if (!Guid.TryParse(agentId, CultureInfo.InvariantCulture, out var id))
+            {
+                return ApiProblems.NotFound();
+            }
+
+            return ToResult(await commands.RevokeAsync(member, id, cancellationToken));
+        });
+    }
+
+    /// <summary>The admin setup checklist (section 30.2).</summary>
+    private static void MapSetup(IEndpointRouteBuilder api)
+    {
+        var setup = api.MapGroup("/setup");
+
+        setup.MapGet("/checklist", async (
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            SetupChecklistService checklist,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            // Null, not 403: a requester's dashboard has no checklist on it, and the client resolves
+            // this to `SetupChecklist | null` rather than to an error it would have to render.
+            return CharterApiJson.NullOr(await checklist.DescribeAsync(member, cancellationToken));
+        });
+
+        setup.MapPost("/checklist/dismiss", async (
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            SetupChecklistService checklist,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            var (outcome, dismissed) = await checklist.DismissAsync(member, cancellationToken);
+
+            return outcome.Succeeded && dismissed is not null ? Json(dismissed) : ToResult(outcome);
+        });
+    }
+
+    /// <summary>Admin settings: email availability and the test send (change spec 001 part C.3).</summary>
+    private static void MapSettings(IEndpointRouteBuilder api)
+    {
+        var settings = api.MapGroup("/settings");
+
+        settings.MapGet("/email", async (
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            EmailSettingsService email,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            var (outcome, described) = await email.DescribeAsync(member, cancellationToken);
+
+            return outcome.Succeeded && described is not null ? Json(described) : ToResult(outcome);
+        });
+
+        settings.MapPost("/email/test", async (
+                SendTestEmailBody body,
+                HttpContext http,
+                ICharterAuthorizationService authorization,
+                EmailSettingsService email,
+                CancellationToken cancellationToken) =>
+            {
+                var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+                if (member is null)
+                {
+                    return ApiProblems.Unauthorized();
+                }
+
+                var (outcome, result) = await email.SendTestAsync(
+                    member,
+                    body ?? new SendTestEmailBody(),
+                    cancellationToken);
+
+                // A mail server that refused the message is a 200 carrying `sent: false` and the
+                // server's own words. The only non-2xx here is "you are not an administrator".
+                return outcome.Succeeded && result is not null ? Json(result) : ToResult(outcome);
+            })
+
+            // A test send is a message to a real inbox, so it is limited like intake (section 31).
             .WithMetadata(IntakeRateLimitMetadata.Instance);
     }
 

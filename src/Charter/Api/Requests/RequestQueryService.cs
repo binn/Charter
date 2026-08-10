@@ -235,7 +235,35 @@ public sealed class RequestQueryService
             ? []
             : await LoadEventsAsync(session.Id, cancellationToken);
 
-        var earlier = events.Count == RequestProjection.TranscriptPageSize;
+        // Pane 2 says "of 12,480", so the count is a count rather than the page's own length.
+        var totalEvents = session is null || !visibility.Transcript
+            ? 0
+            : await database.Events
+                .AsNoTracking()
+                .LongCountAsync(row => row.SessionId == session.Id, cancellationToken);
+
+        var earlier = totalEvents > events.Count;
+
+        // Pane 3 lists the whole change while pane 2 shows one page of it, so the file list is its
+        // own query. Deriving it from the page would hide a file whose only write fell outside.
+        var changedPaths = session is null || !visibility.Code
+            ? []
+            : await LoadChangedPathsAsync(session.Id, cancellationToken);
+
+        // Section 14. Loaded on the same terms as pane 2 — it names files, branches and deviations.
+        var recap = session is null || !visibility.Transcript
+            ? null
+            : await database.Recaps
+                .AsNoTracking()
+                .Where(row => row.SessionId == session.Id)
+                .OrderByDescending(row => row.GeneratedAt)
+                .FirstOrDefaultAsync(cancellationToken);
+
+        // Section 7.5: who took it over. The session row records that it happened; the audit log is
+        // what attributes it to a named human, which is what guardrail 5 of section 7.3 is for.
+        var handedOffBy = session is { Status: SessionStatus.HandedOff }
+            ? await ResolveHandOffActorAsync(member.OrgId, session.Id, cancellationToken)
+            : null;
 
         var approvedBy = spec?.ApprovedBy is { } approverId
             ? await ResolveDisplayNameAsync(approverId, cancellationToken)
@@ -279,6 +307,10 @@ public sealed class RequestQueryService
                 ApprovedByName = approvedBy,
                 AwaitingApprovalFrom = await ResolveApproverNameAsync(member.OrgId, cancellationToken),
                 HasEarlierEvents = earlier,
+                TotalEvents = totalEvents,
+                ChangedPaths = changedPaths,
+                Recap = recap,
+                HandedOffByName = handedOffBy,
             },
             visibility);
     }
@@ -436,6 +468,59 @@ public sealed class RequestQueryService
 
         page.Reverse();
         return page;
+    }
+
+    /// <summary>Every path this session's transcript recorded a write to, in first-write order.</summary>
+    private async Task<IReadOnlyList<string>> LoadChangedPathsAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        var payloads = await database.Events
+            .AsNoTracking()
+            .Where(row => row.SessionId == sessionId && row.Type == EventTypes.FileWrite)
+            .OrderBy(row => row.Seq)
+            .Select(row => row.Payload)
+            .ToListAsync(cancellationToken);
+
+        var paths = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var payload in payloads)
+        {
+            if (RequestPresentation.TranscriptPath(EventTypes.FileWrite, payload) is { } path && seen.Add(path))
+            {
+                paths.Add(path);
+            }
+        }
+
+        return paths;
+    }
+
+    /// <summary>
+    /// Who took a session over (section 7.5), by display name.
+    /// </summary>
+    /// <remarks>
+    /// The audit row is the record. Reading the name from it rather than from a column on the session
+    /// keeps the one place that answers "which named human did this" as the one place, and means a
+    /// take-over performed by a build that predates any such column still reads correctly.
+    /// </remarks>
+    private async Task<string?> ResolveHandOffActorAsync(
+        Guid orgId,
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        var target = sessionId.ToString();
+
+        var actor = await database.AuditLogs
+            .AsNoTracking()
+            .Where(row => row.OrgId == orgId
+                          && row.Action == ApiAuditActions.SessionHandedOff
+                          && row.TargetId == target)
+            .OrderByDescending(row => row.CreatedAt)
+            .Select(row => row.ActorUserId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return actor is { } userId ? await ResolveDisplayNameAsync(userId, cancellationToken) : null;
     }
 
     /// <summary>

@@ -89,12 +89,42 @@ public sealed class BuildJobHandler : IQueuedJobHandler
         ArgumentNullException.ThrowIfNull(job);
 
         var payload = BuildJobPayload.TryParse(job.Payload);
+
         if (payload is null)
         {
-            // Unparseable payloads never become parseable. Failing is right; retrying is not, so the
-            // message says so and the attempts run out quickly.
-            return JobHandlingResult.Failed(
-                "The build job's payload is not valid JSON with a session_id, so there is nothing to dispatch.");
+            // The other shape: an approved specification with no session yet (section 7.5). Turning
+            // it into one is the step between the spend gate and the execution plane, and it happens
+            // here rather than at approval so that one durable row — this job — carries the whole of
+            // it across a restart (section 2.3).
+            if (SpecBuildPayload.TryParse(job.Payload) is not { } approved)
+            {
+                // Unparseable payloads never become parseable. Failing is right; retrying is not, so
+                // the message says so and the attempts run out quickly.
+                return JobHandlingResult.Failed(
+                    "The build job's payload names neither a session nor a specification, so there is "
+                    + "nothing to dispatch.");
+            }
+
+            var materialization = await _coordinator.EnsureSessionAsync(approved, cancellationToken);
+
+            if (materialization.Session is null)
+            {
+                return materialization.WaitingForApproval
+                    ? JobHandlingResult.Deferred(
+                        materialization.Explanation ?? "This is waiting on somebody to approve it.",
+                        _options.LockRetryInterval)
+                    : JobHandlingResult.Failed(
+                        materialization.Explanation ?? "The specification could not become a session.");
+            }
+
+            _logger.LogInformation(
+                "Build job {JobId} for specification {SpecId} resolved to session {SessionId} ({Origin})",
+                job.Id,
+                approved.SpecId,
+                materialization.Session.Id,
+                materialization.Created ? "created" : "already existed");
+
+            payload = new BuildJobPayload { SessionId = materialization.Session.Id };
         }
 
         var outcome = await _coordinator.DispatchAsync(payload, cancellationToken);

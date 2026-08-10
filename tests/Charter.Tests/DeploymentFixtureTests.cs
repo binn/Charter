@@ -200,6 +200,10 @@ internal sealed class DeploymentScenario
             null,
             now);
 
+        // Where section 6 puts a request whose change request is open and whose preview is being
+        // built. A preview binding to a request still in Draft would not be a scenario.
+        request.TransitionTo(RequestStatus.PrOpen, now);
+
         var spec = Spec.Draft(
             request.Id,
             1,
@@ -259,6 +263,18 @@ internal sealed class DeploymentFixture : IAsyncDisposable
     /// <summary>What section 18's generic webhook writes.</summary>
     public DeploymentBinder Binder() => new(Db, Clock, NullLogger<DeploymentBinder>.Instance);
 
+    /// <summary>Everything the requester was told, so section 6's two states can be counted.</summary>
+    public RecordingNotificationService Notifications { get; } = new();
+
+    /// <summary>Section 6's <c>PreviewReady</c> transition, over this fixture's clock.</summary>
+    public PreviewReadyAnnouncer Announcer(DeploymentOptions options, bool notify = true)
+        => new(
+            Db,
+            options,
+            Clock,
+            NullLogger<PreviewReadyAnnouncer>.Instance,
+            notify ? Notifications : null);
+
     /// <summary>The publisher, with a probe that answers from <paramref name="handler"/>.</summary>
     public PreviewArtifactPublisher Publisher(
         DeploymentOptions options,
@@ -271,7 +287,8 @@ internal sealed class DeploymentFixture : IAsyncDisposable
                 options,
                 NullLogger<PreviewReachabilityProbe>.Instance),
             Clock,
-            NullLogger<PreviewArtifactPublisher>.Instance);
+            NullLogger<PreviewArtifactPublisher>.Instance,
+            Announcer(options));
 
     /// <summary>Both ingestion paths, wired to <paramref name="providers"/>.</summary>
     public DeploymentIngestor Ingestor(

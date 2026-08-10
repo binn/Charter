@@ -10,11 +10,14 @@ using Charter.GitHub;
 using Charter.Domain;
 using Charter.Hubs;
 using Charter.Models;
+using Charter.Notifications;
 using Charter.Orchestration;
 using Charter.Refinement;
 using Charter.Runners;
 using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
@@ -100,11 +103,20 @@ public class ApiPhaseOneLoopTests
         Assert.Equal(JobType.Build, await world.LatestJobTypeAsync());
 
         // ── session ──────────────────────────────────────────────────────────────────────────────
-        var sessionId = await world.StartSessionAsync(spec, token);
-        var dispatch = await world.Coordinator().DispatchAsync(new BuildJobPayload { SessionId = sessionId }, token);
+        // Nothing constructs a session here. The approval wrote a build job naming the specification,
+        // and the dispatcher claiming that row is what turns it into a session and hands it to a
+        // backend — the step section 23 puts between approval and execution.
+        Assert.Equal(1, await world.RunQueueAsync(token));
 
-        Assert.Equal(DispatchDecision.Dispatched, dispatch.Decision);
-        Assert.Single(world.Runner.Dispatches);
+        var sessionId = await world.SessionIdAsync(requestId, token);
+        var dispatched = Assert.Single(world.Runner.Dispatches);
+
+        Assert.Equal(sessionId, dispatched.SessionId);
+        Assert.Equal(PhaseOneWorld.BaseSha, dispatched.BaseCommitSha);
+        Assert.Equal(SessionStatus.Running, await world.SessionStatusAsync(sessionId));
+
+        // Section 7.5: a human pressed the button, so the change request is not labelled unreviewed.
+        Assert.False(await world.AutoDispatchedAsync(sessionId));
 
         // What a runner streams back while it works. Section 2.3: these rows, not anything held in
         // the process, are what the rest of the loop reads.
@@ -135,6 +147,28 @@ public class ApiPhaseOneLoopTests
         Assert.Equal(VerificationArtifactState.Ready, artifact.State);
         Assert.Equal(PhaseOneWorld.PreviewUrl, artifact.Url);
         Assert.NotNull(artifact.ExpiresAt);
+
+        // ── PreviewReady ─────────────────────────────────────────────────────────────────────────
+        // Section 6's second and last notifying state. The artifact turning Ready is the event, and
+        // the requester is told once — not on every reconcile.
+        Assert.Equal(RequestStatus.PreviewReady, await world.RequestStatusAsync(requestId));
+        Assert.Equal(SessionStatus.PreviewReady, await world.SessionStatusAsync(sessionId));
+
+        var told = Assert.Single(world.Notifications.Sent);
+
+        Assert.Equal(RequestStatus.PreviewReady, told.Status);
+        Assert.Equal(world.RequesterMember.UserId, told.Recipient.UserId);
+        Assert.Equal(spec.AcceptanceCriteria, told.WhatToCheck);
+
+        // Section 7.4, in the one place it is easiest to leak: an email. No commit, no repository.
+        var mail = JsonSerializer.Serialize(told);
+        Assert.DoesNotContain(PhaseOneWorld.HeadSha, mail, StringComparison.Ordinal);
+        Assert.DoesNotContain(PhaseOneWorld.BaseSha, mail, StringComparison.Ordinal);
+        Assert.DoesNotContain(PhaseOneWorld.RepoFullName, mail, StringComparison.Ordinal);
+
+        // Running the poll again is the same news. Nobody is told twice.
+        await world.Ingestor().PollAsync(context, token);
+        Assert.Single(world.Notifications.Sent);
 
         // ── what to check ────────────────────────────────────────────────────────────────────────
         // Section 27.7: the list beside the button is the approved acceptance criteria, verbatim. Not
@@ -206,11 +240,11 @@ public class ApiPhaseOneLoopTests
             },
             token);
 
-        var (spec, _) = await world.RefineAsync(requestId, token);
+        await world.RefineAsync(requestId, token);
         await world.Commands().ApproveSpecAsync(world.Approver, requestId, version: 1, token);
+        await world.RunQueueAsync(token);
 
-        var sessionId = await world.StartSessionAsync(spec, token);
-        await world.Coordinator().DispatchAsync(new BuildJobPayload { SessionId = sessionId }, token);
+        var sessionId = await world.SessionIdAsync(requestId, token);
         await world.RunnerReportsAsync(sessionId, token);
         await world.Publisher().PublishAsync(sessionId, token);
 
@@ -343,6 +377,7 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
 
     private readonly string _schema;
     private readonly string _connectionString;
+    private readonly ServiceProvider _container;
 
     private PhaseOneWorld(
         CharterDbContext db,
@@ -364,7 +399,42 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
         VersionControl = new FakeVersionControlProvider { AuthorLogin = AuthorLogin };
         VersionControlRegistry = new VersionControlProviderRegistry([VersionControl]);
         Deployments = new StubDeploymentProvider();
-        Runner = new RecordingRunner();
+        Runner = new RecordingRunner(RunnerKind.Agent);
+        Notifications = new RecordingNotificationService();
+
+        // The refiner's two canned turns: a refusal to guess, then the spec the answer unblocks.
+        ModelClient = new RefinementStubClient()
+            .Enqueue(JsonSerializer.Serialize(new
+            {
+                resolution = "clarify",
+                message = "Before I write this down — one question.",
+                clarifying_questions = new[] { "Should that apply to quotes you started before today?" },
+            }))
+            .Enqueue(JsonSerializer.Serialize(new
+            {
+                resolution = "spec",
+                message = "Here's what I've understood.",
+                spec = new
+                {
+                    title = "Remember the last selected vertical",
+                    outcome = "When you start a new quote, the vertical you chose last time is already selected.",
+                    acceptance_criteria = new[]
+                    {
+                        "Starting a new quote pre-selects the vertical you chose on your previous quote.",
+                        "A person who has never created a quote still starts on Solar.",
+                    },
+                    technical_approach = "Add a per-user preference row and read it on quote creation.",
+                    scope = new
+                    {
+                        files = new[] { "src/Features/Quotes/QuoteWizard.cs" },
+                        paths = new[] { "src/Features/Quotes/**" },
+                    },
+                    risks = new[] { "Touching the wizard's session state could affect in-flight quotes." },
+                    open_questions = Array.Empty<string>(),
+                },
+            }));
+
+        _container = BuildContainer();
     }
 
     public CharterDbContext Db { get; }
@@ -385,6 +455,12 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
 
     public RecordingRunner Runner { get; }
 
+    /// <summary>What the requester was told, and nothing else was.</summary>
+    public RecordingNotificationService Notifications { get; }
+
+    /// <summary>The refinement model, with its canned turns.</summary>
+    public RefinementStubClient ModelClient { get; }
+
     public Guid RepoId => Repo.Id;
 
     public MemberSnapshot Requester => MemberSnapshot.From(RequesterMember);
@@ -396,6 +472,17 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
         Provider = DeploymentProviderKind.None,
         PreviewTtl = TimeSpan.FromHours(8),
         ProbeReachability = false,
+        BaseUrl = new Uri("https://charter.example.test/"),
+    };
+
+    private OrchestrationOptions Orchestration { get; } = new()
+    {
+        DispatcherLockKey = Random.Shared.NextInt64(),
+        WorkerId = $"loop-{Guid.NewGuid():N}",
+        BaseUrl = new Uri("https://charter.example.test/"),
+        DefaultRunner = RunnerKind.Agent,
+        BuildModel = "anthropic/claude-opus-5",
+        BatchSize = 8,
     };
 
     public static async Task<PhaseOneWorld?> CreateAsync()
@@ -451,6 +538,10 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
             {
               "project": { "name": "Quote tool", "description": "The internal quoting wizard." },
               "limits": { "max_session_usd": 3.4 },
+              "scopes": {
+                "allow": ["src/Features/**", "src/Web/Components/**"],
+                "deny": ["src/Auth/**", "**/Migrations/**", ".github/**", "infra/**"]
+              },
               "glossary": { "vertical": "The kind of installation a quote is for." }
             }
             """,
@@ -468,7 +559,13 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
         await db.SaveChangesAsync(token);
         db.ChangeTracker.Clear();
 
-        return new PhaseOneWorld(db, schema, scoped, organization, requester, approver, repo);
+        var world = new PhaseOneWorld(db, schema, scoped, organization, requester, approver, repo);
+
+        // Where `main` is now. Section 17 needs a revision on both sides of the staleness comparison,
+        // so the planner resolves the base branch to a commit before a session is dispatched.
+        world.VersionControl.BranchHeads[repo.BaseBranch] = BaseSha;
+
+        return world;
     }
 
     public RequestQueryService Queries()
@@ -488,22 +585,93 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
             TimeProvider.System);
 
     public SessionCoordinator Coordinator()
-    {
-        var options = new OrchestrationOptions
-        {
-            DispatcherLockKey = Random.Shared.NextInt64(),
-            WorkerId = $"loop-{Guid.NewGuid():N}",
-            BaseUrl = new Uri("https://charter.example.test/"),
-        };
-
-        return new SessionCoordinator(
+        => new(
             Db,
             new SessionJournal(Db),
             new RunnerRegistry([Runner]),
-            new SessionDispatchPlanner(Db, options),
+            new SessionDispatchPlanner(Db, Orchestration, VersionControlRegistry),
             new JobQueue(Db),
-            options,
-            NullLogger<SessionCoordinator>.Instance);
+            Orchestration,
+            NullLogger<SessionCoordinator>.Instance,
+            new AutoDispatchGate(
+                new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+                NullLogger<AutoDispatchGate>.Instance));
+
+    /// <summary>
+    /// The control plane's own half of section 2.1, over this world's schema.
+    /// </summary>
+    /// <remarks>
+    /// A real container rather than hand-built services, because the point of the queue is that
+    /// nobody calls a handler — the dispatcher claims a row, finds the handler registered for its
+    /// type, and runs it. Each scope gets its own <see cref="CharterDbContext"/> for the same reason
+    /// it does in production: a claim, a handler and an assertion are three different units of work.
+    /// </remarks>
+    private ServiceProvider BuildContainer()
+    {
+        var services = new ServiceCollection();
+
+        services.AddLogging();
+        services.AddSingleton(TimeProvider.System);
+        services.AddCharterData(_connectionString);
+
+        services.AddSingleton(Orchestration);
+        services.AddSingleton<IRunnerRegistry>(new RunnerRegistry([Runner]));
+        services.AddSingleton<IVersionControlProviderRegistry>(VersionControlRegistry);
+
+        services.AddScoped<SessionJournal>();
+        services.AddScoped<ISessionDispatchPlanner, SessionDispatchPlanner>();
+        services.AddScoped<ICharterAuthorizationService>(provider => new CharterAuthorizationService(
+            provider.GetRequiredService<CharterDbContext>(),
+            new AuditWriter(provider.GetRequiredService<CharterDbContext>(), TimeProvider.System)));
+        services.AddScoped<IAutoDispatchGate, AutoDispatchGate>();
+        services.AddScoped<SessionCoordinator>();
+
+        // Refinement: the real refiner and the real handler, over a stubbed model and a stubbed
+        // credential chain. Nothing else about the turn is faked.
+        services.AddSingleton(new RefinementOptions());
+        services.AddSingleton<RefinementPromptBuilder>();
+        services.AddSingleton<IModelClientFactory>(new RefinementStubClientFactory(ModelClient));
+        services.AddSingleton<ICredentialResolver>(new AlwaysResolvesCredential());
+        services.AddScoped<ISpecRefiner, SpecRefiner>();
+
+        services.AddScoped<IQueuedJobHandler, BuildJobHandler>();
+        services.AddScoped<IQueuedJobHandler, RefineJobHandler>();
+
+        return services.BuildServiceProvider();
+    }
+
+    /// <summary>
+    /// Runs the real queue dispatcher until it has nothing left to claim.
+    /// </summary>
+    /// <remarks>
+    /// Deterministic on purpose: <c>DispatchOnceAsync</c> is one full cycle, so the test drives the
+    /// loop rather than sleeping past a timer and hoping.
+    /// </remarks>
+    public async Task<int> RunQueueAsync(CancellationToken cancellationToken)
+    {
+        var dispatcher = new QueueDispatcher(
+            _container.GetRequiredService<IServiceScopeFactory>(),
+            _container.GetRequiredService<IRunnerRegistry>(),
+            Orchestration,
+            NullLogger<QueueDispatcher>.Instance);
+
+        var handled = 0;
+
+        for (var pass = 0; pass < 8; pass++)
+        {
+            var claimed = await dispatcher.DispatchOnceAsync(cancellationToken);
+
+            if (claimed == 0)
+            {
+                break;
+            }
+
+            handled += claimed;
+        }
+
+        Db.ChangeTracker.Clear();
+
+        return handled;
     }
 
     public ChangeRequestPublisher Publisher()
@@ -521,7 +689,13 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
                 settings,
                 NullLogger<PreviewReachabilityProbe>.Instance),
             TimeProvider.System,
-            NullLogger<PreviewArtifactPublisher>.Instance);
+            NullLogger<PreviewArtifactPublisher>.Instance,
+            new PreviewReadyAnnouncer(
+                Db,
+                settings,
+                TimeProvider.System,
+                NullLogger<PreviewReadyAnnouncer>.Instance,
+                Notifications));
 
         return new DeploymentIngestor(
             Db,
@@ -532,124 +706,71 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
     }
 
     /// <summary>
-    /// The refinement conversation, both turns, and the spec row it leaves behind.
+    /// Both refinement turns, through the queue, exactly as intake and a reply drive them.
     /// </summary>
     /// <remarks>
-    /// The refiner and the conversation are the real ones over a stubbed model client. Persisting the
-    /// result is done here because nothing in the control plane yet handles a <c>Refine</c> job — the
-    /// queue row that intake writes has no consumer, so the step between it and a <c>Spec</c> row is
-    /// the one link in section 23's chain that has no owner.
+    /// Nothing is persisted by hand here any more. Intake queued a <c>Refine</c> job; the dispatcher
+    /// claims it and <c>RefineJobHandler</c> runs the turn, writes the conversation, and — on the
+    /// second turn — writes the <c>Spec</c> row and moves the request to <c>SpecReady</c>.
     /// </remarks>
     public async Task<(SpecDocument Spec, IReadOnlyList<string> Questions)> RefineAsync(
         Guid requestId,
         CancellationToken cancellationToken)
     {
-        var client = new RefinementStubClient()
-            .Enqueue(JsonSerializer.Serialize(new
-            {
-                resolution = "clarify",
-                message = "Before I write this down — one question.",
-                clarifying_questions = new[] { "Should that apply to quotes you started before today?" },
-            }))
-            .Enqueue(JsonSerializer.Serialize(new
-            {
-                resolution = "spec",
-                message = "Here's what I've understood.",
-                spec = new
-                {
-                    title = "Remember the last selected vertical",
-                    outcome = "When you start a new quote, the vertical you chose last time is already selected.",
-                    acceptance_criteria = new[]
-                    {
-                        "Starting a new quote pre-selects the vertical you chose on your previous quote.",
-                        "A person who has never created a quote still starts on Solar.",
-                    },
-                    technical_approach = "Add a per-user preference row and read it on quote creation.",
-                    scope = new
-                    {
-                        files = new[] { "src/Features/Quotes/QuoteWizard.cs" },
-                        paths = new[] { "src/Features/Quotes/**" },
-                    },
-                    risks = new[] { "Touching the wizard's session state could affect in-flight quotes." },
-                    open_questions = Array.Empty<string>(),
-                },
-            }));
+        // Turn one: the refiner refuses to guess and asks a question (section 10).
+        Assert.Equal(1, await RunQueueAsync(cancellationToken));
 
-        var refiner = RefinementStubs.Refiner(client);
-        var context = RefinementStubs.Context();
-        var conversation = RefinementConversation.Start(InteractionMode.Plan);
-        var credential = new ModelCredential
-        {
-            Id = "grant-loop",
-            Kind = ModelCredentialKind.AnthropicApiKey,
-            Secret = new ModelSecret("sk-test-not-a-real-key"),
-        };
+        var questions = await ClarifyingQuestionsAsync(requestId, cancellationToken);
+        Assert.NotEmpty(questions);
+        Assert.Equal(RequestStatus.Refining, await RequestStatusAsync(requestId));
 
-        var request = await Db.Requests.SingleAsync(row => row.Id == requestId, cancellationToken);
-
-        var first = await refiner.AdvanceAsync(
-            conversation,
-            RequesterText.From(request.RawText),
-            context,
-            credential,
+        // Turn two: the requester answers, which is what unblocks the spec.
+        var replied = await Commands().SendRefinementMessageAsync(
+            Requester,
+            requestId,
+            new SendRefinementMessageBody { Body = "no, only new ones" },
             cancellationToken);
 
-        var clarification = Assert.IsType<RefinementOutcome.NeedsClarification>(first.Outcome);
+        Assert.True(replied.Succeeded);
+        Assert.Equal(1, await RunQueueAsync(cancellationToken));
 
-        var second = await refiner.AdvanceAsync(
-            conversation,
-            RequesterText.From("no, only new ones"),
-            context,
-            credential,
-            cancellationToken);
+        var row = await Db.Specs
+            .AsNoTracking()
+            .SingleAsync(spec => spec.RequestId == requestId, cancellationToken);
 
-        var proposed = Assert.IsType<RefinementOutcome.SpecProposed>(second.Outcome);
-        var now = DateTimeOffset.UtcNow;
-
-        var record = ConversationRecord.Start(Organization.Id, InteractionMode.Plan, requestId, now);
-        record.AppendRequesterMessage(request.RawText, now);
-        record.AppendCharterTurn(
-            ConversationTurnKind.ClarifyingQuestion,
-            clarification.Questions[0],
-            now.AddSeconds(1));
-        record.AppendRequesterMessage("no, only new ones", now.AddSeconds(2));
-        record.AppendCharterTurn(ConversationTurnKind.SpecProposed, proposed.RequesterMessage, now.AddSeconds(3));
-
-        var row = SpecDocumentMapper.ToDraft(proposed.Spec, requestId, version: 1, now.AddSeconds(3));
-
-        Db.Conversations.Add(record);
-        Db.Specs.Add(row);
-        request.TransitionTo(RequestStatus.SpecReady, now.AddSeconds(3));
-
-        await Db.SaveChangesAsync(cancellationToken);
-        Db.ChangeTracker.Clear();
-
-        return (proposed.Spec, clarification.Questions);
+        return (SpecDocumentMapper.ToDocument(row), questions);
     }
 
-    /// <summary>
-    /// Creates the session the approved spec is built by, and starts it at the base commit.
-    /// </summary>
-    /// <remarks>
-    /// Also unowned: <c>ApproveSpecAsync</c> writes a <c>Build</c> job keyed on the request and the
-    /// spec, and <c>BuildJobHandler</c> reads one keyed on a session, so nothing turns an approved
-    /// spec into a <see cref="Session"/>. The row is created here so the rest of the chain can be
-    /// exercised as it will run once that step exists.
-    /// </remarks>
-    public async Task<Guid> StartSessionAsync(SpecDocument spec, CancellationToken cancellationToken)
+    /// <summary>What the refiner asked, read back out of the conversation it wrote.</summary>
+    private async Task<IReadOnlyList<string>> ClarifyingQuestionsAsync(
+        Guid requestId,
+        CancellationToken cancellationToken)
     {
-        var row = await Db.Specs.AsNoTracking().SingleAsync(
-            candidate => candidate.Title == spec.Title,
-            cancellationToken);
-
-        var session = Session.Queue(row.Id, RunnerKind.Agent, "anthropic/claude-opus-5");
-        session.Start(BaseSha);
-
-        Db.Sessions.Add(session);
-        await Db.SaveChangesAsync(cancellationToken);
         Db.ChangeTracker.Clear();
 
-        return session.Id;
+        var conversation = await Db.Conversations
+            .AsNoTracking()
+            .Include(row => row.Turns)
+            .SingleAsync(row => row.RequestId == requestId, cancellationToken);
+
+        return
+        [
+            .. conversation.Turns
+                .Where(turn => turn.Kind == ConversationTurnKind.ClarifyingQuestion)
+                .Select(turn => turn.AuthoredText.TrimStart('-', ' ')),
+        ];
+    }
+
+    /// <summary>The session the approved specification became.</summary>
+    public async Task<Guid> SessionIdAsync(Guid requestId, CancellationToken cancellationToken)
+    {
+        Db.ChangeTracker.Clear();
+
+        return await (from spec in Db.Specs.AsNoTracking()
+                      where spec.RequestId == requestId
+                      join session in Db.Sessions.AsNoTracking() on spec.Id equals session.SpecId
+                      select session.Id)
+            .SingleAsync(cancellationToken);
     }
 
     /// <summary>What the runner streams back, and the branch it says it pushed.</summary>
@@ -693,6 +814,13 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
             .Select(row => row.Status)
             .SingleAsync(TestContext.Current.CancellationToken);
 
+    public async Task<bool> AutoDispatchedAsync(Guid sessionId)
+        => await Db.Sessions
+            .AsNoTracking()
+            .Where(row => row.Id == sessionId)
+            .Select(row => row.AutoDispatched)
+            .SingleAsync(TestContext.Current.CancellationToken);
+
     public async Task<SessionStatus> SessionStatusAsync(Guid sessionId)
         => await Db.Sessions
             .AsNoTracking()
@@ -731,6 +859,7 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await _container.DisposeAsync();
         await Db.DisposeAsync();
 
         try
@@ -762,6 +891,63 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
             RequestStreamEvent engineerFrame,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+}
+
+/// <summary>Everything Charter told anybody, so the test can read it.</summary>
+/// <remarks>
+/// Deliberately the real <see cref="INotificationService"/> seam rather than a fake channel: the
+/// section 6 gate lives inside the service, and a test that stubbed the channel would be asserting on
+/// its own copy of the rule instead of on Charter's.
+/// </remarks>
+internal sealed class RecordingNotificationService : INotificationService
+{
+    private readonly List<RequestNotification> _sent = [];
+
+    public IReadOnlyList<RequestNotification> Sent => _sent;
+
+    public Task<NotificationOutcome> NotifyAsync(
+        RequestNotification notification,
+        CancellationToken cancellationToken = default)
+    {
+        if (!NotifyWorthyStates.Notifies(notification.Status))
+        {
+            return Task.FromResult(new NotificationOutcome
+            {
+                Kind = NotificationOutcomeKind.NotNotifyWorthy,
+            });
+        }
+
+        _sent.Add(notification);
+
+        return Task.FromResult(new NotificationOutcome { Kind = NotificationOutcomeKind.Delivered });
+    }
+}
+
+/// <summary>A credential chain with one grant in it, so refinement can spend nothing convincingly.</summary>
+internal sealed class AlwaysResolvesCredential : ICredentialResolver
+{
+    private static readonly ModelCredential Grant = new()
+    {
+        Id = "grant-loop",
+        Kind = ModelCredentialKind.AnthropicApiKey,
+        Secret = new ModelSecret("sk-test-not-a-real-key"),
+    };
+
+    public Task<ModelCredentialResolution> ResolveAsync(
+        ModelCredentialQuery query,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(ModelCredentialResolution.Success(
+            new ResolvedModelCredential(Grant, ModelCredentialTier.OrganizationMeteredKey)));
+
+    public Task ReportFailureAsync(
+        ResolvedModelCredential credential,
+        ModelClientException failure,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+    public Task ReportSuccessAsync(
+        ResolvedModelCredential credential,
+        ModelCompletion completion,
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
 }
 
 /// <summary>A preview platform that answers when polled, and does nothing else.</summary>

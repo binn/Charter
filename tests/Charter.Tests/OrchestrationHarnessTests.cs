@@ -1,3 +1,5 @@
+using Charter.Auth.Audit;
+using Charter.Auth.Authorization;
 using Charter.Configuration;
 using Charter.Data;
 using Charter.Domain;
@@ -143,6 +145,7 @@ internal sealed class ControlPlaneInstance : IAsyncDisposable
         var services = new ServiceCollection();
 
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Warning));
+        services.AddSingleton(TimeProvider.System);
         services.AddDbContext<CharterDbContext>(
             builder => DataServiceCollectionExtensions.ConfigureNpgsql(builder, database.ConnectionString),
             ServiceLifetime.Scoped);
@@ -152,6 +155,12 @@ internal sealed class ControlPlaneInstance : IAsyncDisposable
         services.AddScoped<ISessionDispatchPlanner, SessionDispatchPlanner>();
         services.AddScoped<SessionCoordinator>();
         services.AddScoped<IQueuedJobHandler, BuildJobHandler>();
+
+        // Section 7.5's spend gate, resolved from the same rows an admin edits. Registered rather
+        // than stubbed so a test that writes an auto-dispatch policy row gets the real answer.
+        services.AddScoped<IAuditWriter, AuditWriter>();
+        services.AddScoped<ICharterAuthorizationService, CharterAuthorizationService>();
+        services.AddScoped<IAutoDispatchGate, AutoDispatchGate>();
 
         services.AddSingleton(options);
         services.AddSingleton<IAgentRunner>(backend);
@@ -211,6 +220,78 @@ internal sealed class ControlPlaneInstance : IAsyncDisposable
         });
     }
 
+    /// <summary>
+    /// Seeds everything the spend gate leaves behind: a request, a specification, and no session.
+    /// </summary>
+    /// <remarks>
+    /// The state the control plane is in the instant after somebody presses Approve. Whether the
+    /// specification carries an approver is the whole difference between section 7.5's two paths, so
+    /// it is the parameter.
+    /// </remarks>
+    public async Task<SpendGateSeed> SeedApprovedSpecAsync(
+        CancellationToken cancellationToken,
+        bool approved = true,
+        bool autoDispatchPolicy = false,
+        string repoFullName = "acme/spectra")
+    {
+        return await InScopeAsync(async provider =>
+        {
+            var db = provider.GetRequiredService<CharterDbContext>();
+
+            var organization = Organization.Create("Acme");
+            var user = User.Create($"{Guid.NewGuid():N}@example.test", "Ayesha");
+            var repo = Repo.Connect(organization.Id, 42, repoFullName);
+            repo.TransitionTo(RepoStatus.Ready);
+
+            var member = Member.Create(organization.Id, user.Id, [MemberRole.Requester]);
+
+            var request = Request.File(organization.Id, repo.Id, user.Id, "Remember the last selected vertical");
+            request.TransitionTo(approved ? RequestStatus.Queued : RequestStatus.SpecReady);
+
+            var spec = Spec.Draft(
+                request.Id,
+                1,
+                "Remember the last selected vertical",
+                "The wizard opens on the vertical you used last time.",
+                "## Approach\nPersist the selection.",
+                """["Vertical is pre-selected on return"]""");
+
+            if (approved)
+            {
+                spec.Approve(user.Id);
+            }
+
+            db.Organizations.Add(organization);
+            db.Users.Add(user);
+            db.Members.Add(member);
+            db.Repos.Add(repo);
+            db.Requests.Add(request);
+            db.Specs.Add(spec);
+
+            if (autoDispatchPolicy)
+            {
+                db.AutoDispatchPolicies.Add(AutoDispatchPolicy.Create(organization.Id, enabled: true));
+            }
+
+            await db.SaveChangesAsync(cancellationToken);
+
+            return new SpendGateSeed(organization.Id, user.Id, repo.Id, request.Id, spec.Id);
+        });
+    }
+
+    /// <summary>Writes the build job the spend gate writes: a request and a specification, no session.</summary>
+    public Task<Job> EnqueueSpecBuildAsync(SpendGateSeed approved, CancellationToken cancellationToken)
+        => InScopeAsync(provider => provider.GetRequiredService<SessionCoordinator>().EnqueueSpecAsync(
+            new SpecBuildPayload { RequestId = approved.RequestId, SpecId = approved.SpecId },
+            cancellationToken));
+
+    /// <summary>Every session in the database. The count is what the no-double-dispatch claim rests on.</summary>
+    public Task<List<Session>> SessionsAsync(CancellationToken cancellationToken)
+        => InScopeAsync(async provider => await provider.GetRequiredService<CharterDbContext>()
+            .Sessions
+            .AsNoTracking()
+            .ToListAsync(cancellationToken));
+
     public Task<Job> EnqueueBuildAsync(Guid sessionId, CancellationToken cancellationToken)
         => InScopeAsync(provider => provider.GetRequiredService<SessionCoordinator>().EnqueueAsync(
             new BuildJobPayload { SessionId = sessionId },
@@ -261,3 +342,11 @@ internal sealed class ControlPlaneInstance : IAsyncDisposable
     /// <summary>Disposes without the graceful path: this is what a killed container looks like.</summary>
     public async ValueTask KillAsync() => await _provider.DisposeAsync();
 }
+
+/// <summary>What the spend gate leaves behind, before anything has been built.</summary>
+internal sealed record SpendGateSeed(
+    Guid OrganizationId,
+    Guid RequesterId,
+    Guid RepoId,
+    Guid RequestId,
+    Guid SpecId);

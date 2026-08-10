@@ -290,6 +290,20 @@ response time is not a user-enumeration oracle.
 **Repeated failures are throttled** per address and client, in process. This is a brake on guessing,
 not a distributed rate limiter; a horizontally scaled deployment throttles per instance.
 
+**An invitation link is a credential, and is stored like one.** The invitation row holds a SHA-256
+digest of the emailed token, never the token. Nobody with a database dump — yours or an attacker's —
+can replay one against the redemption endpoint, and nobody inside Charter can retrieve a link that
+was lost; it is reissued instead. An invitation is **single use**, enforced by the database rather
+than by a check in front of it: redemption is one conditional update, so two clicks on the same link
+at the same instant produce one account and one refusal. Links expire after seven days, and an admin
+can withdraw one that has not been spent.
+
+The digest is a plain hash rather than a PBKDF2 verifier, unlike a password. A password is
+low-entropy and needs a slow hash to survive an offline attack; an invitation token is 256 bits of
+CSPRNG output, where the cheapest attack is guessing the entire keyspace. What the plain digest buys
+is the indexed lookup — a redemption arrives with a token and no identity, so the token has to find
+its own row.
+
 **Signing in with a configured OAuth provider never creates an account.** A verified external subject
 resolves to an existing user by its provider subject id, or by an email address that already belongs to
 someone here — otherwise it is refused. Accounts come from the setup token or from an invitation, both

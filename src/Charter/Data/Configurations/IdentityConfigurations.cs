@@ -122,3 +122,61 @@ internal sealed class IdentityConfiguration : IEntityTypeConfiguration<Domain.Id
         builder.HasIndex(identity => identity.UserId).HasDatabaseName("ix_identities_user_id");
     }
 }
+
+internal sealed class InvitationConfiguration : IEntityTypeConfiguration<Invitation>
+{
+    public void Configure(EntityTypeBuilder<Invitation> builder)
+    {
+        builder.ToTable("invitations");
+        builder.HasKey(invitation => invitation.Id);
+
+        builder.Property(invitation => invitation.Id).ValueGeneratedNever();
+        builder.Property(invitation => invitation.Email).HasMaxLength(Invitation.MaxEmailLength).IsRequired();
+
+        // Section 30.2's credential. Fixed-length because it is a SHA-256 digest in hex and nothing
+        // else may ever be written here - a shorter value is a bug, and a longer one is a token.
+        builder.Property(invitation => invitation.TokenHash)
+            .HasMaxLength(Invitation.TokenHashLength)
+            .IsRequired();
+
+        builder.PrimitiveCollection(invitation => invitation.Roles)
+            .HasEnumElements<IReadOnlyList<MemberRole>, MemberRole>()
+            .IsRequired();
+
+        builder.Property(invitation => invitation.CreatedAt).IsRequired();
+        builder.Property(invitation => invitation.ExpiresAt).IsRequired();
+        builder.Property(invitation => invitation.ConsumedAt);
+        builder.Property(invitation => invitation.RevokedAt);
+
+        builder.HasOne<Organization>()
+            .WithMany()
+            .HasForeignKey(invitation => invitation.OrgId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // The inviter outlives the invitation, and an admin who leaves must not take the audit trail
+        // of who they invited with them - so this is Restrict rather than Cascade.
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(invitation => invitation.InvitedByUserId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(invitation => invitation.ConsumedByUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
+        // Redemption arrives with a token and no identity, so the digest is how the row is found.
+        // Unique because two invitations sharing a digest would mean the CSPRNG repeated itself.
+        builder.HasIndex(invitation => invitation.TokenHash)
+            .IsUnique()
+            .HasDatabaseName("ux_invitations_token_hash");
+
+        // The settings list: who has been invited and not yet accepted.
+        builder.HasIndex(invitation => new { invitation.OrgId, invitation.Email })
+            .HasDatabaseName("ix_invitations_org_id_email");
+
+        // Sweeping tokens nobody spent.
+        builder.HasIndex(invitation => invitation.ExpiresAt)
+            .HasDatabaseName("ix_invitations_expires_at");
+    }
+}

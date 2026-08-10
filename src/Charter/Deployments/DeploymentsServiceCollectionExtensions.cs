@@ -62,6 +62,7 @@ public static class DeploymentsServiceCollectionExtensions
         // Scoped: these read and write rows through the request's CharterDbContext. The binder is
         // section 18's existing one, deliberately reused rather than reimplemented.
         services.TryAddScoped<DeploymentBinder>();
+        services.TryAddScoped<PreviewReadyAnnouncer>();
         services.TryAddScoped<PreviewArtifactPublisher>();
         services.TryAddScoped<PreviewExpiry>();
         services.TryAddScoped<DeploymentIngestor>();

@@ -76,6 +76,27 @@ public sealed class CharterDbContext : DbContext
 
     public DbSet<ConceptLedger> ConceptLedger => Set<ConceptLedger>();
 
+    /// <summary>
+    /// Section 13's per-user cap on <em>explain this</em>, one row per person per UTC day.
+    /// </summary>
+    public DbSet<ExplainThisUsage> ExplainThisUsage => Set<ExplainThisUsage>();
+
+    /// <summary>
+    /// Section 22's per-user channel preference. An absent row is the default — email on, the rest
+    /// off — which is what lets the default ship without a backfill.
+    /// </summary>
+    public DbSet<NotificationChannelPreference> NotificationChannels => Set<NotificationChannelPreference>();
+
+    /// <summary>
+    /// Attempted email sends (change spec 001 C.3). Pruned; see <c>EfEmailDeliveryLog</c>.
+    /// </summary>
+    public DbSet<EmailDelivery> EmailDeliveries => Set<EmailDelivery>();
+
+    /// <summary>
+    /// Outstanding and spent invitations (section 30.2). Holds a digest of the token, never the token.
+    /// </summary>
+    public DbSet<Invitation> Invitations => Set<Invitation>();
+
     public DbSet<CredentialGrant> CredentialGrants => Set<CredentialGrant>();
 
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
@@ -138,6 +159,10 @@ public sealed class CharterDbContext : DbContext
         modelBuilder.ApplyConfiguration(new WalkthroughConfiguration());
         modelBuilder.ApplyConfiguration(new RecapConfiguration());
         modelBuilder.ApplyConfiguration(new ConceptLedgerConfiguration());
+        modelBuilder.ApplyConfiguration(new ExplainThisUsageConfiguration());
+        modelBuilder.ApplyConfiguration(new NotificationChannelPreferenceConfiguration());
+        modelBuilder.ApplyConfiguration(new EmailDeliveryConfiguration());
+        modelBuilder.ApplyConfiguration(new InvitationConfiguration());
         modelBuilder.ApplyConfiguration(new CredentialGrantConfiguration());
         modelBuilder.ApplyConfiguration(new LedgerEntryConfiguration());
         modelBuilder.ApplyConfiguration(new BudgetConfiguration());

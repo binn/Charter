@@ -189,6 +189,13 @@ public sealed record TranscriptEventResponse
 {
     public required long Seq { get; init; }
 
+    /// <summary>
+    /// The adapter-independent classification (section 12b), and the only thing the client switches
+    /// on. See <see cref="ApiTranscriptEventKind"/> for why <see cref="Type"/> is not that thing.
+    /// </summary>
+    public required ApiTranscriptEventKind Kind { get; init; }
+
+    /// <summary>The adapter's own event name. Rendered verbatim; never parsed by the client.</summary>
     public required string Type { get; init; }
 
     public required string Summary { get; init; }
@@ -197,6 +204,26 @@ public sealed record TranscriptEventResponse
 
     /// <summary>Set on file-write events; clicking one opens pane 3 at this path.</summary>
     public string? Path { get; init; }
+
+    /// <summary>
+    /// Section 12: <em>"clicking a file-write event in pane 2 opens pane 3 at that hunk"</em>. An
+    /// index into that path's hunks, and absent when the write could not be attributed to one —
+    /// which is most of the time, because an agent reporting a write does not report a hunk.
+    /// </summary>
+    public int? HunkIndex { get; init; }
+
+    /// <summary>
+    /// The pane-1 milestone this event was promoted into or sits underneath.
+    /// </summary>
+    /// <remarks>
+    /// The reverse of <see cref="MilestoneResponse.EventSeq"/>, and what lets pane 2 mark the whole
+    /// run of events a milestone produced rather than only its first line. That marked run is what
+    /// makes the linkage teach (section 12).
+    /// </remarks>
+    public string? MilestoneId { get; init; }
+
+    /// <summary>Section 27.7's rule generalised: never colour alone.</summary>
+    public ApiTranscriptLevel? Level { get; init; }
 }
 
 /// <summary>
@@ -204,10 +231,27 @@ public sealed record TranscriptEventResponse
 /// </summary>
 public sealed record TranscriptPaneResponse
 {
+    /// <summary>One page, oldest-first within the page.</summary>
     public required IReadOnlyList<TranscriptEventResponse> Events { get; init; }
 
-    /// <summary>The lowest sequence still unfetched, or <c>null</c> at the beginning of the stream.</summary>
+    /// <summary>
+    /// The lowest sequence still unfetched, or <c>null</c> at the beginning of the stream.
+    /// </summary>
+    /// <remarks>
+    /// The one deliberate exception to this API's omit-when-null rule, and the reason the rule needs
+    /// an exception at all: <c>types.ts</c> declares this <c>string | null</c> rather than optional,
+    /// because <em>"there is no more"</em> is an answer the pane acts on. Section 7.4's omission is
+    /// about withholding; this is about reporting, and the two must not be spelled the same way.
+    /// </remarks>
+    [System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     public required string? NextCursor { get; init; }
+
+    /// <summary>
+    /// Every event in the session, so the pane can say <em>"of 12,480"</em> without loading them.
+    /// A count, not a page size — the two disagree on every page but the first.
+    /// </summary>
+    public required long TotalCount { get; init; }
 }
 
 /// <summary>One file pane 3 would show (section 12).</summary>
@@ -221,6 +265,16 @@ public sealed record ChangedFileResponse
 
     /// <summary>Section 14: auth, migrations, money math and external calls float to the top.</summary>
     public required ApiChangeRisk Risk { get; init; }
+
+    /// <summary>
+    /// Why this file ranks where it does — <em>"touches authentication"</em>, <em>"database
+    /// migration"</em>.
+    /// </summary>
+    /// <remarks>
+    /// Section 14's ranking is only useful if the reviewer can see the reasoning; an unexplained
+    /// "high" is noise. Absent rather than empty when nothing pushed the file either way.
+    /// </remarks>
+    public IReadOnlyList<string>? RiskReasons { get; init; }
 }
 
 /// <summary>Pane 3 (section 12). Present only with repository read access (section 7.4).</summary>
@@ -314,6 +368,18 @@ public sealed record RequestDetailResponse
 
     /// <summary>Pane 3. Omitted on the same terms as <see cref="Transcript"/>.</summary>
     public ChangesPaneResponse? Changes { get; init; }
+
+    /// <summary>
+    /// Section 14. Omitted on the same terms as <see cref="Transcript"/> — it names files, branches
+    /// and deviations, and is written for somebody who will read the diff.
+    /// </summary>
+    public EngineerRecapResponse? Recap { get; init; }
+
+    /// <summary>
+    /// Section 7.5's four post-hoc actions. Omitted entirely for a viewer who may perform none of
+    /// them, so the engineer controls are absent rather than disabled.
+    /// </summary>
+    public SessionActionsResponse? SessionActions { get; init; }
 }
 
 /// <summary><c>POST /api/requests</c>.</summary>

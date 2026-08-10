@@ -84,3 +84,29 @@ internal sealed class ConceptLedgerConfiguration : IEntityTypeConfiguration<Conc
             .HasDatabaseName("ix_concept_ledger_user_id_last_referenced_at");
     }
 }
+
+internal sealed class ExplainThisUsageConfiguration : IEntityTypeConfiguration<ExplainThisUsage>
+{
+    public void Configure(EntityTypeBuilder<ExplainThisUsage> builder)
+    {
+        builder.ToTable("explain_this_usage");
+
+        // The pair is the identity, so there is no surrogate key: the primary key is what makes the
+        // increment a single atomic upsert rather than a read followed by a write.
+        builder.HasKey(usage => new { usage.UserId, usage.Day });
+
+        // `date`, not a timestamp: the window is a whole UTC day, and storing an instant would
+        // invite a comparison that lands halfway through one.
+        builder.Property(usage => usage.Day).HasColumnType("date").IsRequired();
+        builder.Property(usage => usage.Used).IsRequired();
+        builder.Property(usage => usage.LastUsedAt).IsRequired();
+
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(usage => usage.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Pruning spent days sweeps by age.
+        builder.HasIndex(usage => usage.Day).HasDatabaseName("ix_explain_this_usage_day");
+    }
+}

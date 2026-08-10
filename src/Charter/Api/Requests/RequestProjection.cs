@@ -24,7 +24,12 @@ namespace Charter.Api.Requests;
 public static class RequestProjection
 {
     /// <summary>How many transcript rows one page of pane 2 carries (section 12).</summary>
-    public const int TranscriptPageSize = 200;
+    /// <remarks>
+    /// The same page size <see cref="TranscriptQueryService"/> uses, named once: the detail's tail and
+    /// the pane's own first backwards page must be the same window, or the client's first scroll
+    /// either repeats rows or skips them.
+    /// </remarks>
+    public const int TranscriptPageSize = TranscriptProjection.DefaultPageSize;
 
     /// <summary>The list row.</summary>
     public static RequestSummaryResponse Summary(RequestAggregate aggregate)
@@ -90,6 +95,22 @@ public static class RequestProjection
             // property is never written, which is the only form of "hidden" this API has.
             Transcript = visibility.Transcript ? Transcript(aggregate) : null,
             Changes = visibility.Code ? Changes(aggregate) : null,
+
+            // Section 14 and section 7.5, on the same terms and for the same reason: both name
+            // files, branches and deviations, and both are written for somebody who will read the
+            // diff. A viewer without pane 2 has neither key in their body.
+            Recap = visibility.Transcript
+                ? RecapProjection.Card(
+                    aggregate.Recap,
+                    session,
+                    aggregate.ChangeRequest?.Url,
+                    aggregate.ChangeRequestTerm)
+                : null,
+            SessionActions = SessionActionsProjection.Panel(
+                session,
+                aggregate.ChangeRequest,
+                visibility,
+                aggregate.HandedOffByName),
         };
     }
 
@@ -343,35 +364,58 @@ public static class RequestProjection
         };
     }
 
+    /// <summary>
+    /// The tail of pane 2, as the detail carries it.
+    /// </summary>
+    /// <remarks>
+    /// The detail ships the newest page so the pane has something to draw immediately; everything
+    /// after that — paging backwards, and the <c>aroundSeq</c> jump section 12 needs — goes through
+    /// <see cref="TranscriptQueryService"/>, which is the same projection over a different window.
+    /// </remarks>
     private static TranscriptPaneResponse Transcript(RequestAggregate aggregate)
     {
-        var events = aggregate.Events
-            .OrderBy(row => row.Seq)
-            .Select(row => new TranscriptEventResponse
-            {
-                Seq = row.Seq,
-                Type = row.Type,
-                Summary = RequestPresentation.TranscriptSummary(row.Type, row.Payload),
-                CreatedAt = row.CreatedAt,
-                Path = RequestPresentation.TranscriptPath(row.Type, row.Payload),
-            })
-            .ToList();
+        var sequences = aggregate.Events.ToDictionary(row => row.Id, row => row.Seq);
 
-        // Section 12: the cursor is the lowest sequence already fetched, never an offset, so paging
-        // cost does not grow with the transcript.
-        var nextCursor = aggregate.HasEarlierEvents && events.Count > 0
-            ? events[0].Seq.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            : null;
+        return TranscriptProjection.Page(
+            aggregate.Events,
+            aggregate.Milestones,
+            sequences,
 
-        return new TranscriptPaneResponse { Events = events, NextCursor = nextCursor };
+            // Falls back to the page's own length so a caller that did not count still reports a
+            // number that is true of what it sent, rather than zero beside a full page.
+            aggregate.TotalEvents == 0 ? aggregate.Events.Count : aggregate.TotalEvents,
+            aggregate.HasEarlierEvents);
     }
 
+    /// <summary>
+    /// Pane 3's file list, risk-first (section 14).
+    /// </summary>
+    /// <remarks>
+    /// When a recap exists, its ranking is the one that is used — <c>RecapFileRiskRanker</c> scored
+    /// those files with the repository's deny list in hand and wrote the reasons down, and a second
+    /// ranking here would be a quieter, worse answer that disagreed with the recap card three
+    /// hundred pixels away. Without a recap the paths are classified from the path alone, which is
+    /// all there is before one is generated.
+    /// </remarks>
     private static ChangesPaneResponse Changes(RequestAggregate aggregate)
     {
-        var files = aggregate.Events
-            .Select(row => RequestPresentation.TranscriptPath(row.Type, row.Payload))
-            .Where(path => !string.IsNullOrWhiteSpace(path))
-            .Select(path => path!)
+        var ranked = RecapProjection.RiskItems(aggregate.Recap?.RiskItems);
+        if (ranked.Count > 0)
+        {
+            return new ChangesPaneResponse { Files = [.. ranked.Select(RecapProjection.File)] };
+        }
+
+        var paths = aggregate.ChangedPaths.Count > 0
+            ? aggregate.ChangedPaths
+            :
+            [
+                .. aggregate.Events
+                    .Select(row => RequestPresentation.TranscriptPath(row.Type, row.Payload))
+                    .Where(path => !string.IsNullOrWhiteSpace(path))
+                    .Select(path => path!),
+            ];
+
+        var files = paths
             .Distinct(StringComparer.Ordinal)
             .Select(path => new ChangedFileResponse
             {

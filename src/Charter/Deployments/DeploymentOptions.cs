@@ -41,6 +41,23 @@ public sealed record DeploymentOptions
     /// <summary>Railway's settings, present only when <see cref="Provider"/> is Railway.</summary>
     public RailwayOptions? Railway { get; init; }
 
+    /// <summary>
+    /// <c>CHARTER_BASE_URL</c>: where the instance is reachable, so a notification can link to the
+    /// status thread (sections 11, 22).
+    /// </summary>
+    /// <remarks>
+    /// Read here as well as in <c>CharterConfig</c> rather than injected from it, because deployment
+    /// binding is registered before configuration is projected and a notification with no link is a
+    /// notification that tells somebody their preview is ready and gives them nowhere to click.
+    /// </remarks>
+    public Uri BaseUrl { get; init; } = new("http://localhost:8080/");
+
+    /// <summary>The status thread for one request (section 11).</summary>
+    public Uri ThreadUrlFor(Guid requestId) => new(BaseUrl, $"/requests/{requestId:D}");
+
+    /// <summary>Where a recipient changes their channel preference (section 22).</summary>
+    public Uri NotificationSettingsUrl => new(BaseUrl, "/settings/notifications");
+
     /// <summary>Everything wrong or noteworthy about the deployment configuration.</summary>
     /// <remarks>
     /// Carried rather than thrown away so the host can log the warnings once the logging pipeline
@@ -119,13 +136,21 @@ public sealed record DeploymentOptions
 
         var railway = RailwayOptions.Parse(reader, provider == DeploymentProviderKind.Railway);
 
-        return new DeploymentOptions
+        var options = new DeploymentOptions
         {
             Provider = provider,
             PreviewTtl = TimeSpan.FromHours(ttlHours),
             Railway = railway,
             Problems = reader.Problems,
         };
+
+        // Deliberately lenient. CHARTER_BASE_URL is validated where section 4.2 says it is, and a
+        // second parser rejecting it here would fail deployment binding for a variable it does not
+        // own. An unreadable value falls back to the default rather than taking the instance down.
+        return read("CHARTER_BASE_URL") is { Length: > 0 } baseUrl
+               && Uri.TryCreate(baseUrl.Trim(), UriKind.Absolute, out var parsed)
+            ? options with { BaseUrl = parsed }
+            : options;
     }
 
     /// <summary>The configuration for an instance that binds previews through the webhook alone.</summary>

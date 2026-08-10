@@ -154,4 +154,28 @@ public static class ApiEnumMap
         RunnerKind.Docker => "docker",
         _ => throw new ArgumentOutOfRangeException(nameof(runner), runner, "Unknown runner."),
     };
+
+    /// <summary>Section 33.2.</summary>
+    public static ApiAgentMode ToApi(this RunnerAgentMode mode) => mode switch
+    {
+        RunnerAgentMode.Docker => ApiAgentMode.Docker,
+        RunnerAgentMode.Native => ApiAgentMode.Native,
+        _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown agent mode."),
+    };
+
+    /// <summary>
+    /// Section 33.3.
+    /// </summary>
+    /// <remarks>
+    /// <c>draining</c> has no domain counterpart: an agent that has stopped heartbeating but still
+    /// holds leases is <c>online</c> in the column and offline in fact, and the runners list has to
+    /// say which. That distinction is made by the caller, which knows the clock, rather than here.
+    /// </remarks>
+    public static ApiAgentStatus ToApi(this RunnerAgentStatus status) => status switch
+    {
+        RunnerAgentStatus.Online => ApiAgentStatus.Online,
+        RunnerAgentStatus.Offline => ApiAgentStatus.Offline,
+        RunnerAgentStatus.Revoked => ApiAgentStatus.Revoked,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown agent status."),
+    };
 }

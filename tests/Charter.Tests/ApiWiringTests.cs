@@ -1,5 +1,9 @@
 using Charter.Api;
+using Charter.Api.Changes;
 using Charter.Api.Requests;
+using Charter.Api.Runners;
+using Charter.Api.Settings;
+using Charter.Api.Setup;
 using Charter.Api.Viewer;
 using Charter.Auth;
 using Charter.Configuration;
@@ -65,6 +69,28 @@ public class ApiWiringTests
         Assert.NotNull(provider.GetRequiredService<ViewerService>());
         Assert.NotNull(provider.GetRequiredService<IViewerPreferencesStore>());
         Assert.NotNull(provider.GetRequiredService<IRequestStreamPublisher>());
+
+        // The panes, the runners list, the checklist and the email screen.
+        Assert.NotNull(provider.GetRequiredService<TranscriptQueryService>());
+        Assert.NotNull(provider.GetRequiredService<FileDiffService>());
+        Assert.NotNull(provider.GetRequiredService<RunnersQueryService>());
+        Assert.NotNull(provider.GetRequiredService<RunnersCommandService>());
+        Assert.NotNull(provider.GetRequiredService<SetupChecklistService>());
+        Assert.NotNull(provider.GetRequiredService<EmailSettingsService>());
+    }
+
+    [Fact]
+    public void ThePanesResolveInAHostThatWiredNeitherGitHubNorTheAgentPlane()
+    {
+        // Pane 3 reads repository content and the runners page pairs agents, and neither dependency
+        // is guaranteed: `AddCharterGitHub` is a separate call and the agent plane is registered only
+        // when CHARTER_RUNNER includes `agent`. Both degrade to a plain sentence at request time
+        // rather than failing to resolve at boot, which is what this pins.
+        using var app = BuildApp();
+        using var scope = app.Services.CreateScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<Charter.Api.Changes.IRepositoryFileText>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<RunnersCommandService>());
     }
 
     [Fact]
@@ -136,6 +162,30 @@ public class ApiWiringTests
         { "POST", "/api/requests/{id}/cancel" },
         { "POST", "/api/requests/{id}/artifacts/{artifactId}/rebuild" },
         { "GET", "/api/approvals" },
+
+        // Panes 2 and 3 (section 12). The diff route is a catch-all because a repository path has
+        // slashes in it, encoded or not.
+        { "GET", "/api/requests/{id}/transcript" },
+        { "GET", "/api/requests/{id}/changes/{*path}" },
+
+        // The four post-hoc actions (section 7.5).
+        { "POST", "/api/requests/{id}/session/approve" },
+        { "POST", "/api/requests/{id}/session/steer" },
+        { "POST", "/api/requests/{id}/session/revise" },
+        { "POST", "/api/requests/{id}/session/take-over" },
+
+        // Settings → Runners (section 33.3).
+        { "GET", "/api/runners/" },
+        { "POST", "/api/runners/pairing-tokens" },
+        { "DELETE", "/api/runners/{agentId}" },
+
+        // The admin setup checklist (section 30.2).
+        { "GET", "/api/setup/checklist" },
+        { "POST", "/api/setup/checklist/dismiss" },
+
+        // Admin settings → Email (change spec 001 part C.3).
+        { "GET", "/api/settings/email" },
+        { "POST", "/api/settings/email/test" },
     };
 
     [Theory]

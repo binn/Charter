@@ -1,25 +1,7 @@
-using Charter.Api;
-using Charter.Auth;
 using Charter.Configuration;
-using Charter.Data;
-using Charter.Deployments;
-using Charter.Diagnostics;
-using Charter.GitHub;
+using Charter.Hosting;
 using Charter.Logging;
-using Charter.Models;
-using Charter.Onboarding;
-using Charter.Recaps;
-using Charter.Refinement;
-using Charter.Runners;
-using Charter.Teaching;
-using Charter.Runners.Agent;
-using Microsoft.EntityFrameworkCore;
-using Npgsql;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
 using Serilog;
-using Serilog.Events;
 
 // Section 4.1: validate everything once at startup and, if invalid, print *all* problems at once and
 // exit non-zero. This runs before the logging pipeline exists, so it writes to stderr directly.
@@ -49,194 +31,15 @@ foreach (var warning in parsed.Warnings)
 
 try
 {
-    var builder = WebApplication.CreateBuilder(args);
+    // Composition lives in Charter.Hosting.CharterHost so that a test can build the same service
+    // graph and the same middleware pipeline this process runs. A suite that assembles its own
+    // container proves nothing about the one that gets deployed.
+    var app = CharterHost.CreateBuilder(args, config, options).Build();
 
-    // Section 4.1: no appsettings.json, and no Section__Nested__Key convention. Clearing the default
-    // providers makes that structural rather than a rule someone has to remember.
-    builder.Configuration.Sources.Clear();
-    builder.Configuration.AddEnvironmentVariables();
-    builder.Configuration.AddCommandLine(args);
+    await CharterHost.MigrateAsync(app);
 
-    // Section 2.3: one HTTP port.
-    builder.WebHost.UseUrls($"http://0.0.0.0:{options.Port}");
-
-    // Section 31: graceful shutdown - drain in-flight work before the process goes away.
-    builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = TimeSpan.FromSeconds(30));
-
-    builder.Services.AddSerilog();
-    builder.Services.AddSingleton(options);
-    builder.Services.AddProblemDetails();
-
-    // Each subsystem owns its own registrations, so this stays a list of decisions rather than a
-    // wiring dump. Order matters: credentials need both the key config and the DbContext.
-    builder.Services.AddCharterConfig(config);
-    builder.Services.AddCharterPreflight();
-    builder.Services.AddCharterData(config.Database.ConnectionString.Reveal());
-    builder.Services.AddCharterAuth();
-    builder.Services.AddCharterGitHub();
-    builder.Services.AddCharterDeployments();
-    builder.Services.AddCharterOnboarding();
-    builder.Services.AddCharterApi();
-    builder.Services.AddCharterModels();
-    builder.Services.AddCharterRefinement();
-    builder.Services.AddCharterRecap();
-    builder.Services.AddCharterTeaching();
-    builder.Services.AddCharterCredentials();
-    builder.Services.AddCharterAdapters();
-    builder.Services.AddCharterRunners(config);
-    builder.Services.AddCharterOrchestration();
-
-    builder.Services
-        .AddOpenTelemetry()
-        .ConfigureResource(resource => resource
-            .AddService(options.ServiceName, serviceVersion: BuildInfo.Version)
-            .AddAttributes([new KeyValuePair<string, object>("charter.commit_sha", BuildInfo.CommitSha)]))
-        .WithTracing(tracing =>
-        {
-            tracing
-                .AddSource(CharterTelemetry.ActivitySourceName)
-                .AddAspNetCoreInstrumentation(instrumentation =>
-                    instrumentation.Filter = context => !IsProbe(context.Request.Path))
-                .AddHttpClientInstrumentation()
-                .AddNpgsql();
-
-            if (options.OtlpEnabled)
-            {
-                tracing.AddOtlpExporter();
-            }
-        })
-        .WithMetrics(metrics =>
-        {
-            metrics
-                .AddMeter(CharterTelemetry.MeterName)
-                .AddAspNetCoreInstrumentation()
-                .AddHttpClientInstrumentation()
-                .AddRuntimeInstrumentation();
-
-            if (options.OtlpEnabled)
-            {
-                metrics.AddOtlpExporter();
-            }
-        });
-
-    var app = builder.Build();
-
-    // Section 2.3: migrations run on boot. A PaaS offers no pre-deploy hook, so this is the only
-    // place they can run, and serving against a stale schema is worse than failing to start.
-    await using (var scope = app.Services.CreateAsyncScope())
-    {
-        var database = scope.ServiceProvider.GetRequiredService<CharterDbContext>();
-        var pending = (await database.Database.GetPendingMigrationsAsync()).ToArray();
-
-        if (pending.Length > 0)
-        {
-            Log.Information("Applying {Count} pending migration(s): {Migrations}", pending.Length, pending);
-            await database.Database.MigrateAsync();
-            Log.Information("Migrations applied");
-        }
-    }
-
-    app.UseSerilogRequestLogging(logging =>
-    {
-        // Probes fire every few seconds on every PaaS. Logging them at Information drowns everything.
-        logging.GetLevel = (context, _, exception) => exception is not null
-            ? LogEventLevel.Error
-            : IsProbe(context.Request.Path)
-                ? LogEventLevel.Verbose
-                : LogEventLevel.Information;
-    });
-
-    // Section 30.1: an unclaimed instance serves only the setup route, so a self-hosted Charter
-    // cannot be claimed by whoever finds it first. This must run before anything else routes.
-    // Section 33.1: the agent dials out over a WebSocket. Without this the upgrade never
-    // becomes a socket and /api/agent/connect answers 400.
-    app.UseWebSockets();
-
-    app.UseCharterSetupMode();
-    app.UseAuthentication();
-    app.UseAuthorization();
-
-    // Section 3.1: the SPA is served from the same origin as the API. In Development,
-    // Microsoft.AspNetCore.SpaProxy starts Vite and proxies unmatched requests to it, so HMR works
-    // from `dotnet run` alone. In production these are the files Vite emitted into wwwroot.
-    app.UseDefaultFiles();
-    app.UseStaticFiles();
-
-    // Section 31: /health and /ready. Liveness never touches a dependency - a database blip must not
-    // make the platform kill an otherwise healthy container.
-    app.MapGet("/health", () => Results.Json(new HealthResponse(
-        Status: "ok",
-        Version: BuildInfo.Version,
-        Commit: BuildInfo.CommitSha)));
-
-    app.MapGet("/ready", async (
-        StartupOptions startup,
-        ILogger<Program> logger,
-        CancellationToken cancellationToken) =>
-    {
-        if (startup.DatabaseConnectionString is null)
-        {
-            CharterTelemetry.ReadinessChecks.Add(1, new KeyValuePair<string, object?>("result", "unconfigured"));
-            return Results.Json(
-                new ReadinessResponse("not_ready", "DATABASE_URL is not configured"),
-                statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(5));
-
-        try
-        {
-            await using var connection = new NpgsqlConnection(startup.DatabaseConnectionString);
-            await connection.OpenAsync(timeout.Token);
-            await using var command = new NpgsqlCommand("SELECT 1", connection);
-            _ = await command.ExecuteScalarAsync(timeout.Token);
-
-            CharterTelemetry.ReadinessChecks.Add(1, new KeyValuePair<string, object?>("result", "ready"));
-            return Results.Json(new ReadinessResponse("ready", null));
-        }
-        catch (Exception ex) when (ex is NpgsqlException or OperationCanceledException or TimeoutException)
-        {
-            CharterTelemetry.ReadinessChecks.Add(1, new KeyValuePair<string, object?>("result", "unreachable"));
-            logger.LogWarning(ex, "Readiness check failed: Postgres is not reachable");
-            return Results.Json(
-                new ReadinessResponse("not_ready", "the database is not reachable"),
-                statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-    });
-
-    // Section 24: AGPL section 13 compliance. The UI footer renders a persistent Source link from
-    // this, pointing at the exact commit this instance is running.
-    app.MapGet("/api/instance", (StartupOptions startup) => Results.Json(new InstanceResponse(
-        Version: BuildInfo.Version,
-        Commit: BuildInfo.CommitSha,
-        BuildDate: BuildInfo.BuildDate,
-        SourceUrl: BuildInfo.SourceLink,
-        License: "AGPL-3.0-only",
-        ServiceName: startup.ServiceName)));
-
-    app.MapCharterApi();
-    app.MapCharterGitHub();
-    app.MapCharterRunnerCallbacks();
-    app.MapCharterAgentPlane();
-    app.MapCharterHubs();
-
-    // Client-side routing: anything not matched above is the SPA's problem.
-    app.MapFallbackToFile("index.html");
-
-    Log.Information(
-        "Charter {Version} ({Commit}) listening on port {Port}; logging mode {LoggingMode}, Seq {SeqEnabled}, OTLP {OtlpEnabled}",
-        BuildInfo.Version,
-        BuildInfo.CommitSha,
-        options.Port,
-        options.LoggingMode,
-        options.SeqEnabled,
-        options.OtlpEnabled);
-
-    if (options.DatabaseConnectionString is null)
-    {
-        Log.Warning("DATABASE_URL is not set. /ready will report not_ready until it is configured.");
-    }
+    CharterHost.ConfigurePipeline(app);
+    CharterHost.LogStartupSummary(options);
 
     await app.RunAsync();
     return 0;
@@ -250,19 +53,3 @@ finally
 {
     await Log.CloseAndFlushAsync();
 }
-
-static bool IsProbe(PathString path)
-    => path.StartsWithSegments("/health", StringComparison.OrdinalIgnoreCase)
-       || path.StartsWithSegments("/ready", StringComparison.OrdinalIgnoreCase);
-
-internal sealed record HealthResponse(string Status, string Version, string Commit);
-
-internal sealed record ReadinessResponse(string Status, string? Reason);
-
-internal sealed record InstanceResponse(
-    string Version,
-    string Commit,
-    string BuildDate,
-    string SourceUrl,
-    string License,
-    string ServiceName);

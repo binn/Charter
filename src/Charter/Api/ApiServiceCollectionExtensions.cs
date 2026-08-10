@@ -1,7 +1,12 @@
+using Charter.Api.Changes;
 using Charter.Api.Endpoints;
 using Charter.Api.Requests;
+using Charter.Api.Runners;
+using Charter.Api.Settings;
+using Charter.Api.Setup;
 using Charter.Api.Viewer;
 using Charter.Hubs;
+using Charter.Notifications;
 using Charter.VersionControl;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
@@ -46,9 +51,24 @@ public static class ApiServiceCollectionExtensions
         // that already called AddCharterVersionControl() keeps its registrations.
         services.AddCharterVersionControl();
 
+        // Change spec 001 part C.3's settings screen reads the send path, the delivery log and the
+        // tester. TryAdd throughout in there too, so a host that already called it keeps what it has.
+        services.AddCharterNotifications();
+
         services.AddScoped<RequestQueryService>();
         services.AddScoped<RequestCommandService>();
+        services.AddScoped<TranscriptQueryService>();
+        services.AddScoped<FileDiffService>();
+        services.AddScoped<RunnersQueryService>();
+        services.AddScoped<RunnersCommandService>();
+        services.AddScoped<SetupChecklistService>();
+        services.AddScoped<EmailSettingsService>();
         services.AddScoped<ViewerService>();
+
+        // Pane 3 reads repository content, which `IVersionControlProvider` does not expose. TryAdd so
+        // a host with a better source registered first keeps it; the default degrades to a plain 503
+        // when no GitHub client is wired rather than failing to resolve. See the report.
+        services.TryAddScoped<IRepositoryFileText, GitHubRepositoryFileText>();
 
         // Every preference is a column on `users`, so this default writes all of them. TryAdd so a
         // richer store registered before this call — the onboarding work has one in view — wins

@@ -63,4 +63,37 @@ public sealed record RequestAggregate
 
     /// <summary>True when there are older events than the ones carried here (section 12 cursoring).</summary>
     public bool HasEarlierEvents { get; init; }
+
+    /// <summary>
+    /// Every event in the session, so pane 2 can say <em>"of 12,480"</em>.
+    /// </summary>
+    /// <remarks>
+    /// A count rather than a length: <see cref="Events"/> is one page, and the two disagree on every
+    /// page but the first. Zero for a viewer who may not see pane 2 at all, because the rows are not
+    /// counted either.
+    /// </remarks>
+    public long TotalEvents { get; init; }
+
+    /// <summary>
+    /// Every repository path this session wrote to, risk-ordered by the caller.
+    /// </summary>
+    /// <remarks>
+    /// Loaded separately from <see cref="Events"/> because pane 3 lists the whole change while pane 2
+    /// shows one page of it. Deriving the file list from a page would quietly hide files whose only
+    /// write fell outside it.
+    /// </remarks>
+    public IReadOnlyList<string> ChangedPaths { get; init; } = [];
+
+    /// <summary>Section 14's recap row, when one has been generated and the viewer may see it.</summary>
+    public Recap? Recap { get; init; }
+
+    /// <summary>
+    /// Who took the session over (section 7.5), by display name.
+    /// </summary>
+    /// <remarks>
+    /// Read from the audit log rather than a column: taking over is an action attributable to a named
+    /// human, which is exactly what <see cref="AuditLog"/> is for, and the session row records that
+    /// it happened rather than who did it.
+    /// </remarks>
+    public string? HandedOffByName { get; init; }
 }

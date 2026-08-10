@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using Charter.Data;
 using Charter.Domain;
 using Charter.Runners;
+using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
 
 namespace Charter.Orchestration;
@@ -87,14 +88,19 @@ public sealed class SessionDispatchPlanner : ISessionDispatchPlanner
 {
     private readonly CharterDbContext _db;
     private readonly OrchestrationOptions _options;
+    private readonly IVersionControlProviderRegistry? _versionControl;
 
-    public SessionDispatchPlanner(CharterDbContext db, OrchestrationOptions options)
+    public SessionDispatchPlanner(
+        CharterDbContext db,
+        OrchestrationOptions options,
+        IVersionControlProviderRegistry? versionControl = null)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(options);
 
         _db = db;
         _options = options;
+        _versionControl = versionControl;
     }
 
     /// <inheritdoc />
@@ -124,11 +130,16 @@ public sealed class SessionDispatchPlanner : ISessionDispatchPlanner
                 + "row names a GitHub repository.");
         }
 
+        var baseBranch = payload.BaseBranch ?? repo?.BaseBranch ?? "main";
+
         return new RunnerDispatch(
             session.Id,
             repoFullName,
-            payload.BaseBranch ?? repo?.BaseBranch ?? "main",
-            payload.BaseCommitSha ?? session.BaseCommitSha ?? repo?.BaseBranch ?? "main",
+            baseBranch,
+            payload.BaseCommitSha
+                ?? session.BaseCommitSha
+                ?? await ResolveBaseCommitAsync(repo, baseBranch, cancellationToken)
+                ?? baseBranch,
             payload.AdapterId ?? "claude-code",
             session.AgentModel,
             payload.RunnerImage ?? ReadString(repo?.CharterConfigSnapshot, "runner_image"),
@@ -149,6 +160,45 @@ public sealed class SessionDispatchPlanner : ISessionDispatchPlanner
     /// refused by Postgres rather than by a flag somebody remembered to check (section 2.3).
     /// </remarks>
     public static string DispatchKeyFor(Guid sessionId) => $"dispatch:{sessionId:D}";
+
+    /// <summary>
+    /// The commit the base branch is at, so the session records a revision rather than a branch name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Section 17 detects a stale change request by comparing the commit a session branched from with
+    /// where the base branch has since moved to. That comparison needs a revision on both sides, and a
+    /// session whose <c>base_commit_sha</c> holds the word <c>main</c> can never be found stale — the
+    /// branch name always equals itself.
+    /// </para>
+    /// <para>
+    /// Best-effort, and deliberately so. A provider that is unreachable at dispatch time must not stop
+    /// the dispatch; the caller falls back to the branch name, which is what the runner would have
+    /// resolved for itself anyway.
+    /// </para>
+    /// </remarks>
+    private async Task<string?> ResolveBaseCommitAsync(
+        Repo? repo,
+        string baseBranch,
+        CancellationToken cancellationToken)
+    {
+        if (repo is null || _versionControl is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var provider = _versionControl.For(repo);
+            var reference = _versionControl.ReferenceFor(repo);
+
+            return await provider.GetBranchHeadAsync(reference, baseBranch, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
+    }
 
     private async Task<Repo?> ResolveRepoAsync(Session session, CancellationToken cancellationToken)
         => await (from spec in _db.Specs.AsNoTracking()
