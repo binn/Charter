@@ -79,7 +79,7 @@ jobs:
       # stay scoped to the only job that actually needs them. The site's base path is
       # hardcoded in docs/.vitepress/config.ts, so the build needs no output from here.
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Deploy to GitHub Pages
         id: deployment
