@@ -21,6 +21,11 @@ internal sealed class ChangeRequestConfiguration : IEntityTypeConfiguration<Chan
         // provider with no branches (change spec 001 part A.7) has none to report.
         builder.Property(changeRequest => changeRequest.HeadBranch).HasMaxLength(255);
 
+        // Section 18: the name a preview provider needs when it has to tell an operator who to invite
+        // to the workspace. 255 covers any provider's login; optional because not every provider
+        // reports one, and "the author" is what the warning falls back to when nothing was recorded.
+        builder.Property(changeRequest => changeRequest.AuthorLogin).HasMaxLength(255);
+
         builder.Property(changeRequest => changeRequest.State).HasEnumConversion();
         builder.Property(changeRequest => changeRequest.IsStale).IsRequired();
         builder.Property(changeRequest => changeRequest.CreatedAt).IsRequired();

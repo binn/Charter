@@ -593,6 +593,7 @@ public partial class InitialCreate : Migration
                 url = table.Column<string>(type: "character varying(500)", maxLength: 500, nullable: false),
                 head_sha = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: false),
                 head_branch = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
+                author_login = table.Column<string>(type: "character varying(255)", maxLength: 255, nullable: true),
                 state = table.Column<string>(type: "text", nullable: false),
                 is_stale = table.Column<bool>(type: "boolean", nullable: false),
                 created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),

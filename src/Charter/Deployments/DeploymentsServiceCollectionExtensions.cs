@@ -73,6 +73,11 @@ public static class DeploymentsServiceCollectionExtensions
         }
 
         services.AddScoped<IGitHubWebhookListener, DeploymentChangeRequestListener>();
+
+        // Section 18's comment fallback. Registered unconditionally rather than only when a provider
+        // that parses comments is configured: the ingestor already refuses when there is none, and
+        // one refusal path beats a listener whose presence depends on configuration read at startup.
+        services.AddScoped<IGitHubWebhookListener, DeploymentCommentListener>();
         services.AddHostedService<PreviewLifecycleService>();
         services.AddHostedService<DeploymentStartupWarnings>();
 

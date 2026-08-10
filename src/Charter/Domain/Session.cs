@@ -33,6 +33,12 @@ public enum SessionStatus
 
     Merged,
 
+    /// <summary>
+    /// The run finished correctly and produced no changes (section 6). Terminal, and not a failure —
+    /// there is simply nothing to review.
+    /// </summary>
+    NoChangesNeeded,
+
     Failed,
 
     Cancelled,
@@ -116,6 +122,7 @@ public sealed class Session : IVersionedEntity
     public int Version { get; private set; }
 
     public bool IsTerminal => Status is SessionStatus.Merged
+        or SessionStatus.NoChangesNeeded
         or SessionStatus.Failed
         or SessionStatus.Cancelled
         or SessionStatus.Stale
@@ -154,7 +161,11 @@ public sealed class Session : IVersionedEntity
     public void TransitionTo(SessionStatus status, DateTimeOffset? now = null)
     {
         Status = status;
-        if (status is SessionStatus.Merged or SessionStatus.Failed or SessionStatus.Cancelled or SessionStatus.Stale)
+        if (status is SessionStatus.Merged
+            or SessionStatus.NoChangesNeeded
+            or SessionStatus.Failed
+            or SessionStatus.Cancelled
+            or SessionStatus.Stale)
         {
             EndedAt = DomainTime.Resolve(now);
         }

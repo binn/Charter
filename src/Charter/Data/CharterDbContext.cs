@@ -70,7 +70,9 @@ public sealed class CharterDbContext : DbContext
 
     public DbSet<Walkthrough> Walkthroughs => Set<Walkthrough>();
 
-    public DbSet<Recap> Recaps => Set<Recap>();
+    // Fully qualified: `Charter.Recap` is a namespace as well as `Charter.Domain.Recap` being a type,
+    // and the namespace wins name resolution here.
+    public DbSet<Charter.Domain.Recap> Recaps => Set<Charter.Domain.Recap>();
 
     public DbSet<ConceptLedger> ConceptLedger => Set<ConceptLedger>();
 

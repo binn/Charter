@@ -142,6 +142,7 @@ public static class SessionRecovery
     };
 
     private static bool IsTerminal(SessionStatus status) => status is SessionStatus.Merged
+        or SessionStatus.NoChangesNeeded
         or SessionStatus.Failed
         or SessionStatus.Cancelled
         or SessionStatus.Stale

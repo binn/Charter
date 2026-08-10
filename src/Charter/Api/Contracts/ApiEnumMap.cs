@@ -26,6 +26,7 @@ public static class ApiEnumMap
         RequestStatus.PreviewReady => ApiRequestStatus.PreviewReady,
         RequestStatus.InReview => ApiRequestStatus.InReview,
         RequestStatus.Merged => ApiRequestStatus.Merged,
+        RequestStatus.NoChangesNeeded => ApiRequestStatus.NoChangesNeeded,
         RequestStatus.Failed => ApiRequestStatus.Failed,
         RequestStatus.Cancelled => ApiRequestStatus.Cancelled,
         RequestStatus.Stale => ApiRequestStatus.Stale,

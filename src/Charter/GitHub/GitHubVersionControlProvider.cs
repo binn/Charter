@@ -194,6 +194,7 @@ public sealed class GitHubVersionControlProvider : IVersionControlProvider
             HeadRevision = opened.HeadSha,
             SourceBranch = opened.HeadBranch,
             TargetBranch = command.Target,
+            AuthorLogin = opened.AuthorLogin,
             Labels = labels,
         };
     }
@@ -237,6 +238,7 @@ public sealed class GitHubVersionControlProvider : IVersionControlProvider
                 HeadRevision = detail.HeadSha,
                 SourceBranch = detail.HeadBranch,
                 TargetBranch = detail.BaseBranch,
+                AuthorLogin = detail.AuthorLogin,
                 Labels = detail.Labels,
             };
     }

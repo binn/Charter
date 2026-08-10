@@ -177,7 +177,13 @@ The shim is a separate project precisely because all three backends need it: Git
 | `CHARTER_OAUTH_DISCORD_ID` / `_SECRET` | no | — | |
 | `CHARTER_OAUTH_SLACK_ID` / `_SECRET` | no | — | |
 | `CHARTER_SAML_METADATA_URL` | no | — | Org mode only |
-| `CHARTER_SMTP_URL` | no | — | `smtp://user:pass@host:port` |
+| `CHARTER_EMAIL_PROVIDER` | no | `smtp` when `CHARTER_SMTP_URL` is set, else `none` | `smtp` \| `none`. Change spec 001 part C also names `resend`; it is recognised and rejected with an actionable message until it exists. `none` is first-class — see C.1 |
+| `CHARTER_SMTP_URL` | when `smtp` | — | `smtp://user:pass@host:port`. `smtps://` selects implicit TLS. Port defaults per scheme: 587 / 465 |
+| `CHARTER_SMTP_TLS` | no | `starttls`, or `implicit` for `smtps://` | `none` \| `starttls` \| `implicit`. A requested STARTTLS the server does not advertise is an error, never a silent downgrade to plaintext |
+| `CHARTER_EMAIL_FROM` | no | guessed from the SMTP endpoint, with a warning | The envelope sender. Most providers reject a sender they were not configured for |
+| `CHARTER_EMAIL_FROM_NAME` | no | `Charter` | |
+| `CHARTER_EMAIL_REPLY_TO` | no | — | |
+| `CHARTER_EMAIL_MAX_PER_HOUR` | no | `20` | Change spec 001 C.3 — messages per recipient per hour. Counted in two buckets, account mail and notifications, so a notification storm cannot starve an invitation |
 | `CHARTER_DEFAULT_SESSION_BUDGET_USD` | no | `5.00` | |
 | `CHARTER_DEFAULT_MONTHLY_BUDGET_USD` | no | `100.00` | |
 | `CHARTER_STORAGE_ENDPOINT` | no† | — | S3-compatible endpoint URL. MinIO, R2, B2, and Wasabi all work. |
@@ -321,6 +327,8 @@ Draft → Refining → SpecReady → Queued → Running ⇄ NeedsInput
                        └─── Rejected    PROpen → PreviewReady → InReview → Merged
                                             ↓
                                         Failed / Cancelled / Stale
+
+                                 Running → NoChangesNeeded
 ```
 
 Requester-facing labels:
@@ -335,9 +343,19 @@ Requester-facing labels:
 | PreviewReady | *Ready to try* | **yes** |
 | InReview | *An engineer is checking it* | no |
 | Merged | *This is live* | no |
+| NoChangesNeeded | *Nothing needed changing* — "Nothing needed changing here. Most often that means what you asked for already works the way you wanted. Nothing went wrong, and there is nothing for you to do." | no |
 | Failed | *This turned out to be bigger than expected — an engineer has been notified* | no |
 
 Only two states notify. Notifying on all of them gets Charter muted within a week.
+
+**`NoChangesNeeded` is a success, and its copy must read like one.** The agent ran, ran correctly, and
+found nothing to change. That is not the same event as `Failed`, and reusing `Failed`'s wording tells
+the requester their request "turned out to be bigger than expected" when in fact it turned out to be
+nothing at all — the single most misleading sentence the state machine could produce. The most common
+cause is that the thing they asked for already works, which §10b calls out as the *cheapest possible
+outcome* when it surfaces in chat; discovering it one step later does not make it a failure. So the
+copy says what happened plainly, names the likely reason, and closes the thread without alarming
+anybody or paging an engineer.
 
 **Never show an ETA.** Elapsed time only. Agent runs are wildly variable; one blown estimate costs more trust than ten honest slow ones.
 
@@ -363,6 +381,31 @@ Roles are additive — a member may hold several.
 Same tables. Same authorization code path. Same checks. Only the seeded defaults differ.
 
 Do **not** write `if (personalMode) skipPermissionCheck`. That branch is how org mode becomes the untested special case, and it is the exact failure this design exists to avoid. Inviting a second user must be the only thing that changes, and it must require no migration.
+
+### 7.2a One instance, one organisation
+
+**Charter is not multi-tenant, and must not be built as though it were.**
+
+An instance serves exactly one `Organization`. `personal` and `organization` are two configurations
+of that single organisation (§7.2), not two tenancy models. Someone who needs two organisations runs
+two Charters — the app is small, its only dependency is Postgres, and a second instance is cheaper
+than the blast radius of getting isolation wrong once.
+
+What follows from this:
+
+- **`org_id` exists on the entities in §5 and is load-bearing for queries and audit**, but there is
+  only ever one value in a given database. Do not read a second organisation's rows into a code path
+  and rely on a filter to keep them apart.
+- **Seams do not need to carry an organisation.** `IAgentRunner`, `IRunnerRegistry`,
+  `IVersionControlProvider`, and `IDeploymentProvider` are instance-scoped by design. An earlier
+  review flagged the agent runner advertising every online agent on the instance as a cross-tenant
+  leak; under this rule it is correct behaviour, because every agent on the instance belongs to the
+  one organisation.
+- **A runner, credential, or repository registered on an instance belongs to that instance.** There
+  is no scenario where two organisations share one.
+
+If a future version genuinely needs multi-tenancy, it is a new major version with isolation designed
+in from the data model up — not a filter added to existing queries.
 
 ### 7.3 Guardrail primitives
 
@@ -1046,7 +1089,11 @@ Slack and Discord OAuth pull double duty: the identity link maps a Slack/Discord
 
 One outbound abstraction, per-user channel preference. Channels: **Email, Slack, Discord**.
 
-Only the two notify-worthy states fire (§6).
+Only the two notify-worthy states fire (§6). That set is closed and tested, not a convention — `NeedsInput` and `PreviewReady`, checked once in the dispatcher rather than at each call site.
+
+**Email is the only channel with an implementation** (change spec 001, implementation discipline). Slack and Discord are declared in the channel enum and in the per-user preference, so neither needs a migration when it arrives; each is one class implementing `INotificationChannel` plus a registration. The preference lookup and the §6 gate sit above the channel and do not move.
+
+Per-user preference has no per-state dimension, and should not grow one: there are two states, and somebody who wants neither wants no notifications. The default is email on, because both notifying states are ones where Charter is blocked on that person — a default of silence means a request sits in `NeedsInput` until somebody happens to open the app.
 
 **The bigger win is inbound.** Filing a request from Slack or Discord via slash command. The request that actually gets filed is the one someone can file without opening a new tab.
 

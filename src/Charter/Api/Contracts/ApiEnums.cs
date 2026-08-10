@@ -57,6 +57,9 @@ public enum ApiRequestStatus
     PreviewReady,
     InReview,
     Merged,
+
+    /// <summary>Section 6: the agent ran correctly and there was nothing to change. Not a failure.</summary>
+    NoChangesNeeded,
     Failed,
     Cancelled,
     Stale,

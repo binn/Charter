@@ -25,6 +25,13 @@ public enum GitHubWebhookEventType
 
     /// <summary>Checks finished for a commit — the "checks pass" leg of the smoke test (section 9).</summary>
     CheckSuite,
+
+    /// <summary>
+    /// Somebody commented on an issue or a pull request. Section 18's fallback preview path: the
+    /// hosting provider's bot announces the environment in a comment, and on most platforms that is
+    /// the only announcement there is.
+    /// </summary>
+    IssueComment,
 }
 
 /// <summary>
@@ -35,7 +42,15 @@ public enum GitHubWebhookEventType
 /// Parsing to a narrow record rather than passing the raw JSON onwards is deliberate. A webhook body
 /// is attacker-influenced input in the section 16 sense — anybody who can open a pull request can put
 /// text in one — so the surface that reaches Charter's own logic is kept to identifiers, states and
-/// SHAs. Nothing here carries a title, a body or a branch description.
+/// SHAs. Nothing here carries a title or a branch description.
+/// </para>
+/// <para>
+/// <see cref="CommentBody"/> is the one exception, and it is carried because section 18's fallback
+/// ingestion path cannot exist without it: the provider's bot announces the preview in a comment and
+/// nowhere else. It is treated as exactly what it is — untrusted text — and goes straight to
+/// <c>PreviewCommentParser</c>, which extracts a URL and a state word from it and reads nothing else.
+/// It is truncated on the way in so an unbounded attacker-supplied string never reaches a regular
+/// expression, and it is never logged, never rendered, and never shown to a requester.
 /// </para>
 /// <para>
 /// Every property is nullable because every one of them is absent from some event GitHub sends.
@@ -45,6 +60,12 @@ public enum GitHubWebhookEventType
 /// </remarks>
 public sealed record GitHubWebhookDelivery
 {
+    /// <summary>
+    /// The most comment text carried, in characters. <c>PreviewCommentParser</c> bounds what it
+    /// reads for the same reason; this bounds what is retained in the first place.
+    /// </summary>
+    public const int MaxCommentBodyLength = 16 * 1024;
+
     /// <summary>Which of the handled events this is.</summary>
     public required GitHubWebhookEventType Type { get; init; }
 
@@ -106,6 +127,27 @@ public sealed record GitHubWebhookDelivery
     /// <summary>Whether a closed pull request was merged rather than abandoned.</summary>
     public bool? PullRequestMerged { get; init; }
 
+    /// <summary>
+    /// The issue or pull request number an <c>issue_comment</c> event was written on.
+    /// </summary>
+    /// <remarks>
+    /// GitHub delivers pull request comments as <c>issue_comment</c> with the pull request in the
+    /// <c>issue</c> object, so this is the change request number for anything Charter cares about.
+    /// The comment path looks the number up against change requests this instance opened, and a
+    /// number that matches nothing is ignored.
+    /// </remarks>
+    public int? IssueNumber { get; init; }
+
+    /// <summary>Who wrote the comment — <c>railway[bot]</c>, <c>render[bot]</c>, a person.</summary>
+    /// <remarks>
+    /// The provider checks this before believing anything in the body, which is what stops a person
+    /// pasting a link into a comment from redirecting a requester's preview.
+    /// </remarks>
+    public string? CommentAuthorLogin { get; init; }
+
+    /// <summary>The comment text, truncated. Untrusted, and only ever read by the parser.</summary>
+    public string? CommentBody { get; init; }
+
     /// <summary>A check suite's <c>conclusion</c>: <c>success</c>, <c>failure</c>, and so on.</summary>
     public string? CheckSuiteConclusion { get; init; }
 
@@ -132,6 +174,7 @@ public sealed record GitHubWebhookDelivery
             "push" => GitHubWebhookEventType.Push,
             "pull_request" => GitHubWebhookEventType.PullRequest,
             "check_suite" => GitHubWebhookEventType.CheckSuite,
+            "issue_comment" => GitHubWebhookEventType.IssueComment,
             _ => GitHubWebhookEventType.Unknown,
         };
 
@@ -170,6 +213,13 @@ public sealed record GitHubWebhookDelivery
             var pullRequest = Object(root, "pull_request");
             var checkSuite = Object(root, "check_suite");
 
+            // GitHub delivers a comment on a pull request as `issue_comment`, with the pull request
+            // in the `issue` object and a `pull_request` marker inside it. Charter reads the number
+            // from either shape rather than insisting on one, because a provider bot that comments
+            // through a different route still names the same change request.
+            var issue = Object(root, "issue");
+            var comment = Object(root, "comment");
+
             return new GitHubWebhookDelivery
             {
                 Type = type,
@@ -187,6 +237,9 @@ public sealed record GitHubWebhookDelivery
                 PullRequestHeadBranch = Text(Object(pullRequest, "head"), "ref"),
                 PullRequestBaseBranch = Text(Object(pullRequest, "base"), "ref"),
                 PullRequestMerged = Bool(pullRequest, "merged"),
+                IssueNumber = Number(issue, "number") is { } issueNumber ? (int)issueNumber : null,
+                CommentAuthorLogin = Text(Object(comment, "user"), "login"),
+                CommentBody = Truncate(Text(comment, "body")),
                 CheckSuiteConclusion = Text(checkSuite, "conclusion"),
             };
         }
@@ -226,6 +279,9 @@ public sealed record GitHubWebhookDelivery
 
         return names;
     }
+
+    private static string? Truncate(string? value)
+        => value is { Length: > MaxCommentBodyLength } ? value[..MaxCommentBodyLength] : value;
 
     private static JsonElement? Object(JsonElement? parent, string name)
         => parent is { ValueKind: JsonValueKind.Object } element

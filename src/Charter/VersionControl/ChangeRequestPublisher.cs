@@ -52,8 +52,8 @@ public enum ChangeRequestPublication
     AlreadyOpen,
 
     /// <summary>
-    /// The agent produced no changes. Section 6 has no state for "it did nothing wrong and there is
-    /// nothing to review", so this is recorded as an outcome rather than dressed up as a failure.
+    /// The agent produced no changes. Section 6's <c>NoChangesNeeded</c>: an outcome in its own
+    /// right, never dressed up as a failure.
     /// </summary>
     NoChanges,
 
@@ -261,7 +261,12 @@ public sealed class ChangeRequestPublisher
                 string.IsNullOrWhiteSpace(snapshot.HeadRevision) ? revision : snapshot.HeadRevision,
                 snapshot.State,
                 _clock.GetUtcNow(),
-                headBranch: snapshot.SourceBranch ?? branch);
+                headBranch: snapshot.SourceBranch ?? branch,
+
+                // Section 18: recorded at open because this is the only moment the provider is asked
+                // about the change request it just created. A preview platform that refuses branches
+                // from outside its workspace has to be able to name the account.
+                authorLogin: snapshot.AuthorLogin);
 
             _database.ChangeRequests.Add(row);
             await _database.SaveChangesAsync(cancellationToken);
@@ -410,12 +415,18 @@ public sealed class ChangeRequestPublisher
             $$"""{"reason":"no_changes","message":{{JsonSerializer.Serialize(explanation)}}}""",
             cancellationToken);
 
-        // Section 6 has no terminal state for "it did nothing wrong and there is nothing to review",
-        // so the session ends as Failed and the `no_changes` event carries the real sentence. The UI
-        // reads the event rather than the generic Failed copy: telling a requester their request
-        // "turned out to be bigger than expected" when the agent simply found nothing to do would be
-        // a lie the state machine forced.
-        session.TransitionTo(SessionStatus.Failed, _clock.GetUtcNow());
+        // Section 6's terminal state for "it did nothing wrong and there is nothing to review". Not
+        // Failed: telling a requester their request "turned out to be bigger than expected" when the
+        // agent simply found nothing to do is the one sentence the state machine must never produce
+        // here. The request moves with the session, because the thread is what the requester reads.
+        var now = _clock.GetUtcNow();
+        session.TransitionTo(SessionStatus.NoChangesNeeded, now);
+
+        if (await LoadRequestAsync(session, cancellationToken) is { } request)
+        {
+            request.TransitionTo(RequestStatus.NoChangesNeeded, now);
+        }
+
         await _database.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
@@ -506,6 +517,14 @@ public sealed class ChangeRequestPublisher
 
         return state is not null && state is not ("failed" or "cancelled" or "stale");
     }
+
+    /// <summary>The request behind a session, tracked, so its status can move with the session's.</summary>
+    private async Task<Request?> LoadRequestAsync(Session session, CancellationToken cancellationToken)
+        => await (from spec in _database.Specs
+                  where spec.Id == session.SpecId
+                  join request in _database.Requests on spec.RequestId equals request.Id
+                  select request)
+            .FirstOrDefaultAsync(cancellationToken);
 
     private async Task<(Spec Spec, Repo Repo)?> LoadAsync(Session session, CancellationToken cancellationToken)
     {

@@ -42,6 +42,7 @@ public sealed class ChangeRequest
         string url,
         string headSha,
         string? headBranch,
+        string? authorLogin,
         ChangeRequestState state,
         DateTimeOffset createdAt)
     {
@@ -51,6 +52,7 @@ public sealed class ChangeRequest
         Url = url;
         HeadSha = headSha;
         HeadBranch = headBranch;
+        AuthorLogin = authorLogin;
         State = state;
         CreatedAt = createdAt;
         UpdatedAt = createdAt;
@@ -78,6 +80,28 @@ public sealed class ChangeRequest
     /// </remarks>
     public string? HeadBranch { get; private set; }
 
+    /// <summary>
+    /// Who the provider records as having opened it, in the provider's own namespace — a GitHub
+    /// login, usually Charter's own App installation identity.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists for one failure, and it is the one section 18 warns about: Railway will not deploy
+    /// a change request branch from an account outside the workspace unless it has been invited with
+    /// that account. Nothing reports that as an error. The preview simply never arrives, and Charter
+    /// can only detect it by absence — so the one thing that turns the warning into a sentence
+    /// somebody can act on is the account's name. Without this column the warning could only say
+    /// "the author", which tells an operator to go and invite somebody they now have to work out the
+    /// identity of.
+    /// </para>
+    /// <para>
+    /// Nullable because a provider need not report it and a row created before this column existed
+    /// has none. <c>null</c> means "not recorded", and the warning falls back to "the author" rather
+    /// than naming somebody it is guessing at.
+    /// </para>
+    /// </remarks>
+    public string? AuthorLogin { get; private set; }
+
     public ChangeRequestState State { get; private set; }
 
     /// <summary>
@@ -98,7 +122,8 @@ public sealed class ChangeRequest
         ChangeRequestState state = ChangeRequestState.Open,
         DateTimeOffset? now = null,
         Guid? id = null,
-        string? headBranch = null)
+        string? headBranch = null,
+        string? authorLogin = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(number);
         ArgumentException.ThrowIfNullOrWhiteSpace(url);
@@ -111,6 +136,7 @@ public sealed class ChangeRequest
             url.Trim(),
             headSha.Trim(),
             Clean(headBranch),
+            Clean(authorLogin),
             state,
             DomainTime.Resolve(now));
     }
@@ -119,7 +145,8 @@ public sealed class ChangeRequest
         ChangeRequestState state,
         string? headSha = null,
         DateTimeOffset? now = null,
-        string? headBranch = null)
+        string? headBranch = null,
+        string? authorLogin = null)
     {
         State = state;
         if (!string.IsNullOrWhiteSpace(headSha))
@@ -129,8 +156,10 @@ public sealed class ChangeRequest
         }
 
         // A ref that arrives later fills the gap; one that does not arrive leaves what was recorded
-        // before rather than blanking it.
+        // before rather than blanking it. The author is treated the same way, so a row opened before
+        // the provider reported one can still gain a name later.
         HeadBranch = Clean(headBranch) ?? HeadBranch;
+        AuthorLogin = Clean(authorLogin) ?? AuthorLogin;
 
         UpdatedAt = DomainTime.Resolve(now);
     }

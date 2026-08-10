@@ -520,7 +520,10 @@ public sealed class GitHubRepositoryClient : IGitHubRepositoryClient
             number,
             ReadString(root, "html_url") ?? $"https://github.com/{repository.FullName}/pull/{number}",
             headSha,
-            headBranch);
+            headBranch,
+            root.TryGetProperty("user", out var user) && user.ValueKind == JsonValueKind.Object
+                ? ReadString(user, "login")
+                : null);
     }
 
     /// <inheritdoc />
@@ -593,7 +596,10 @@ public sealed class GitHubRepositoryClient : IGitHubRepositoryClient
                 ReadString(head, "sha") ?? string.Empty,
                 ReadString(head, "ref"),
                 ReadString(@base, "ref"),
-                ReadLabels(root));
+                ReadLabels(root),
+                root.TryGetProperty("user", out var author) && author.ValueKind == JsonValueKind.Object
+                    ? ReadString(author, "login")
+                    : null);
         }
     }
 

@@ -33,6 +33,7 @@ public static class ConfigurationServiceCollectionExtensions
         services.AddSingleton(config.Auth);
         services.AddSingleton(config.Budgets);
         services.AddSingleton(config.UpdateCheck);
+        services.AddSingleton(config.Email);
 
         // Optional sections are registered only when configured, so an injected StorageConfig? is
         // the honest signal that object storage is off rather than a stub that fails on first use.

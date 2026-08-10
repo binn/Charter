@@ -108,16 +108,77 @@ both halves of its pair are set; setting only one is a startup error.
 | `CHARTER_OAUTH_DISCORD_ID` / `CHARTER_OAUTH_DISCORD_SECRET` | no | — | Also links a Discord user to a Charter requester, which is what makes inbound Discord requests work. |
 | `CHARTER_OAUTH_SLACK_ID` / `CHARTER_OAUTH_SLACK_SECRET` | no | — | Same double duty for Slack. |
 | `CHARTER_SAML_METADATA_URL` | no | — | Organisation mode only. |
-| `CHARTER_SMTP_URL` | no | — | `smtp://user:pass@host:port`. Required for email notifications and password reset. |
+
+Password reset needs email. See [Email](#email) below, including what happens when you have no mail
+server.
+
+## Email
+
+Charter uses email for four things: invitations, notifications, two-factor recovery, and password
+reset. One provider is supported — SMTP — which covers Amazon SES, Postmark, Mailgun, Resend's SMTP
+endpoint, Google Workspace, Fastmail, and a relay you run yourself.
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `CHARTER_EMAIL_PROVIDER` | no | `smtp` when `CHARTER_SMTP_URL` is set, otherwise `none` | `smtp` or `none`. `resend` is recognised and rejected — it is not implemented in this build. |
+| `CHARTER_SMTP_URL` | when `smtp` | — | `smtp://user:pass@host:port`. `smtps://` selects implicit TLS. Port defaults to 587 for `smtp` and 465 for `smtps`. |
+| `CHARTER_SMTP_TLS` | no | `starttls`, or `implicit` for an `smtps://` URL | `none` \| `starttls` \| `implicit`. |
+| `CHARTER_EMAIL_FROM` | no, but set it | guessed from the SMTP endpoint, with a startup warning | The address mail is sent as. Most providers reject a sender they were not configured for. |
+| `CHARTER_EMAIL_FROM_NAME` | no | `Charter` | The display name beside the address. |
+| `CHARTER_EMAIL_REPLY_TO` | no | — | Where replies go, if not to the sending address. |
+| `CHARTER_EMAIL_MAX_PER_HOUR` | no | `20` | Messages per recipient per hour, counted separately for account mail and notifications. |
 
 A working SMTP example:
 
 ```bash
+CHARTER_EMAIL_PROVIDER=smtp
 CHARTER_SMTP_URL=smtp://charter%40example.com:9jFq2XmT4bR@smtp.example.com:587
+CHARTER_EMAIL_FROM=charter@example.com
+CHARTER_EMAIL_FROM_NAME=Charter
 ```
 
 The username and password are URL-decoded the same way as `DATABASE_URL`, so an address used as a
 username needs its `@` percent-encoded as `%40`.
+
+Send a test email from the email settings page once it is configured. Email misconfiguration is
+otherwise discovered when an invitation silently fails and a new hire cannot log in.
+
+### Running with no mail server
+
+Charter runs without a mail server, and every feature that would have emailed you says so rather
+than failing quietly:
+
+- **Invitations** still work. An administrator creating an account is shown the one-time setup link
+  to pass on themselves.
+- **Password reset by email** is turned off, and the form says so. An administrator can generate a
+  reset link from the members page. The link is never shown to whoever typed an address into the
+  forgot-password form — anybody can type anybody's address into it.
+- **Notifications** fall back to in-app only.
+
+Every setting that depends on email is disabled with an explanation naming the variables to set.
+
+### What is rate-limited, and why
+
+Outbound mail is capped per recipient, in a sliding one-hour window, in two separate buckets:
+
+| Bucket | Contains | Why it is separate |
+|---|---|---|
+| Account | invitations, password resets, test sends | Somebody is waiting for it |
+| Notification | the two status emails Charter sends | Useful, but nobody is blocked on it |
+
+Counting them together would let a burst of status mail starve the invitation a new hire is waiting
+for. The counters are in memory, so a restart clears them — after a restart the correct behaviour is
+to allow mail again, because the storm that justified holding it back is over.
+
+### TLS is not downgraded silently
+
+If `CHARTER_SMTP_TLS` is `starttls` and the server does not advertise `STARTTLS`, Charter stops
+rather than continuing unencrypted. Use `implicit` for a TLS-only port, or `none` for a relay you
+reach over a private network — and note that `none` with credentials in the URL warns at startup,
+because the password crosses the wire in the clear.
+
+The SMTP password is never written to a log. Log lines name the endpoint as `host:port`, never the
+URL.
 
 ## Models and credentials
 

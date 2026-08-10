@@ -193,6 +193,9 @@ internal sealed class FakeVersionControlProvider : IVersionControlProvider
     /// <summary>The number the next opened change request gets.</summary>
     public int NextNumber { get; set; } = 142;
 
+    /// <summary>Who the provider says opened it. Section 18 records this at open.</summary>
+    public string? AuthorLogin { get; set; }
+
     public Task<VersionControlCredential> AuthenticateRepoAsync(
         RepoRef repo,
         VersionControlAccess access = VersionControlAccess.Read,
@@ -279,6 +282,7 @@ internal sealed class FakeVersionControlProvider : IVersionControlProvider
             HeadRevision = BranchHeads.TryGetValue(command.Source, out var head) ? head : "headsha",
             SourceBranch = command.Source,
             TargetBranch = command.Target,
+            AuthorLogin = AuthorLogin,
             Labels = labels,
         });
     }

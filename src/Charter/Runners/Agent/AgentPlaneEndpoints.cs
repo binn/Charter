@@ -64,6 +64,19 @@ public static class AgentPlaneEndpoints
     {
         ArgumentNullException.ThrowIfNull(endpoints);
 
+        // The plane is only registered when CHARTER_RUNNER includes `agent` (section 2.2), but the
+        // host maps routes unconditionally. Mapping a handler whose AgentPlaneService is absent does
+        // not fail at map time - it fails when the middleware pipeline is built, as "failure to infer
+        // one or more parameters", which names the parameter and not the cause. That took down every
+        // default install, because the default backend is not `agent`.
+        //
+        // Skipping the routes is also the honest behaviour: with the backend disabled there is
+        // nothing to pair with, so /api/agent/* should be absent rather than present and broken.
+        if (endpoints.ServiceProvider.GetService<AgentPlaneService>() is null)
+        {
+            return endpoints;
+        }
+
         // The two paths are the daemon's own constants, mirrored: AgentProtocol.PairPath and
         // AgentProtocol.ConnectPath. Building the routes from the constants rather than from string
         // literals is what keeps a rename on one side from silently orphaning the other.

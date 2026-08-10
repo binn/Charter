@@ -292,8 +292,11 @@ public class DomainEnumMappingTests
         Assert.Equal("preview_ready", EnumDbNames<RequestStatus>.ToDb(RequestStatus.PreviewReady));
         Assert.Equal("in_review", EnumDbNames<RequestStatus>.ToDb(RequestStatus.InReview));
 
+        Assert.Equal("no_changes_needed", EnumDbNames<RequestStatus>.ToDb(RequestStatus.NoChangesNeeded));
+
         Assert.Equal("handed_off", EnumDbNames<SessionStatus>.ToDb(SessionStatus.HandedOff));
         Assert.Equal("pr_open", EnumDbNames<SessionStatus>.ToDb(SessionStatus.PrOpen));
+        Assert.Equal("no_changes_needed", EnumDbNames<SessionStatus>.ToDb(SessionStatus.NoChangesNeeded));
     }
 
     [Fact]

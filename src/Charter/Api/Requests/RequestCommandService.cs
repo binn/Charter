@@ -513,6 +513,21 @@ public sealed class RequestCommandService
 
         var now = clock.GetUtcNow();
 
+        // Section 27.7: the row moves before the job is queued and before anything is broadcast. The
+        // aggregate above is untracked, so the artifact is re-read here to be written. Leaving it
+        // `expired` would contradict both the stream frame published below and the card the requester
+        // is looking at — and a reload would put the dead host straight back under a Rebuild button
+        // they have already pressed. `MarkPending` clears the URL and the expiry with it, which is
+        // the point: a skeleton above a link that does not work is worse than either alone.
+        var tracked = await database.VerificationArtifacts
+            .SingleOrDefaultAsync(row => row.Id == artifactId, cancellationToken);
+
+        if (tracked is not null)
+        {
+            tracked.MarkPending();
+            await database.SaveChangesAsync(cancellationToken);
+        }
+
         await jobs.EnqueueAsync(
             JobType.Build,
             JsonSerializer.Serialize(

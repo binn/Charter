@@ -93,9 +93,13 @@ public class DeploymentWiringTests
         using var provider = Build(DeploymentOptions.WebhookOnly);
         using var scope = provider.CreateScope();
 
-        Assert.Contains(
-            scope.ServiceProvider.GetServices<IGitHubWebhookListener>(),
-            listener => listener is DeploymentChangeRequestListener);
+        var listeners = scope.ServiceProvider.GetServices<IGitHubWebhookListener>().ToList();
+
+        Assert.Contains(listeners, listener => listener is DeploymentChangeRequestListener);
+
+        // Section 18's comment fallback rides the same fan-out, and is registered whether or not a
+        // provider that reads comments is configured — the ingestor is what refuses.
+        Assert.Contains(listeners, listener => listener is DeploymentCommentListener);
     }
 
     [Fact]

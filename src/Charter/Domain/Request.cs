@@ -33,6 +33,18 @@ public enum RequestStatus
 
     Merged,
 
+    /// <summary>
+    /// Terminal, and a success: the agent ran, ran correctly, and found nothing to change.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Failed"/> because it is a different event, and because
+    /// <see cref="Failed"/>'s copy — <em>this turned out to be bigger than expected</em> — would be
+    /// actively wrong here. Section 6: the usual cause is that what the requester asked for already
+    /// works, which section 10b treats as the cheapest possible outcome; finding that out one step
+    /// later does not turn it into a failure. Nothing is notified and no engineer is paged.
+    /// </remarks>
+    NoChangesNeeded,
+
     /// <summary>Shown as <em>This turned out to be bigger than expected</em>. Never a stack trace.</summary>
     Failed,
 

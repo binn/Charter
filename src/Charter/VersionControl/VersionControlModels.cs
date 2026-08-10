@@ -171,6 +171,16 @@ public sealed record ChangeRequestSnapshot
     /// <summary>The branch it is aimed at.</summary>
     public string? TargetBranch { get; init; }
 
+    /// <summary>
+    /// Who the provider records as the author, in its own namespace.
+    /// </summary>
+    /// <remarks>
+    /// Carried for section 18: a preview platform that will not deploy a branch from an account
+    /// outside its workspace can only report that as absence, and the account's name is the whole
+    /// difference between an actionable warning and "the preview is taking a while".
+    /// </remarks>
+    public string? AuthorLogin { get; init; }
+
     /// <summary>Labels the provider reports, where it has labels.</summary>
     public IReadOnlyList<string> Labels { get; init; } = [];
 }

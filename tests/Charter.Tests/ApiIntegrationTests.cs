@@ -271,6 +271,44 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task RebuildingAnExpiredPreviewLeavesTheCardPendingRatherThanExpired()
+    {
+        await using var fixture = await ApiFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var artifactId = await fixture.ExpirePreviewAsync();
+
+        var outcome = await fixture.Commands().RebuildArtifactAsync(
+            fixture.Requester,
+            fixture.RequestId,
+            artifactId,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(outcome.Succeeded);
+
+        // Section 27.7: `Rebuild` is the primary action on an expired card, and the row has to agree
+        // with the `pending` frame the command broadcasts. Leaving it expired would put the dead host
+        // straight back on the next page load, under a button the requester has already pressed.
+        var artifact = await fixture.ArtifactAsync(artifactId);
+
+        Assert.Equal(VerificationArtifactState.Pending, artifact.State);
+        Assert.Null(artifact.Url);
+        Assert.Null(artifact.ExpiresAt);
+
+        // And the work is queued, because a card that says "building" with nothing building is worse
+        // than one that says "expired".
+        var job = await fixture.Db.Jobs
+            .OrderByDescending(row => row.CreatedAt)
+            .FirstAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(JobType.Build, job.Type);
+        Assert.Contains(artifactId.ToString(), job.Payload, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task TheListShowsTheRequestersOwnWorkWithNoEngineerFields()
     {
         await using var fixture = await ApiFixture.CreateAsync();
@@ -620,6 +658,29 @@ public class ApiIntegrationTests
             session.TransitionTo(SessionStatus.Running);
             await Db.SaveChangesAsync(TestContext.Current.CancellationToken);
             Db.ChangeTracker.Clear();
+        }
+
+        /// <summary>Ages the preview out, the way a three-day-old notification finds it.</summary>
+        public async Task<Guid> ExpirePreviewAsync()
+        {
+            var artifact = await Db.VerificationArtifacts.SingleAsync(
+                row => row.SessionId == SessionId,
+                TestContext.Current.CancellationToken);
+
+            artifact.MarkExpired();
+            await Db.SaveChangesAsync(TestContext.Current.CancellationToken);
+            Db.ChangeTracker.Clear();
+
+            return artifact.Id;
+        }
+
+        public async Task<VerificationArtifact> ArtifactAsync(Guid artifactId)
+        {
+            Db.ChangeTracker.Clear();
+
+            return await Db.VerificationArtifacts
+                .AsNoTracking()
+                .SingleAsync(row => row.Id == artifactId, TestContext.Current.CancellationToken);
         }
 
         public async Task RemoveScopesAsync()

@@ -61,7 +61,7 @@ public class DataModelShapeTests : IDisposable
         (typeof(Deployment), "deployments"),
         (typeof(VerificationArtifact), "verification_artifacts"),
         (typeof(Walkthrough), "walkthroughs"),
-        (typeof(Recap), "recaps"),
+        (typeof(Charter.Domain.Recap), "recaps"),
         (typeof(ConceptLedger), "concept_ledger"),
         (typeof(CredentialGrant), "credential_grants"),
         (typeof(LedgerEntry), "ledger_entries"),
@@ -229,7 +229,7 @@ public class DataModelShapeTests : IDisposable
 
         // Section 27.7's kind-specific body: checksums, sizes, capture lists, device data.
         Assert.Equal("jsonb", ColumnType<VerificationArtifact>(nameof(VerificationArtifact.Payload)));
-        Assert.Equal("jsonb", ColumnType<Recap>(nameof(Recap.RiskItems)));
+        Assert.Equal("jsonb", ColumnType<Charter.Domain.Recap>(nameof(Charter.Domain.Recap.RiskItems)));
         Assert.Equal("jsonb", ColumnType<AuditLog>(nameof(AuditLog.Metadata)));
     }
 
@@ -317,7 +317,7 @@ public class DataModelShapeTests : IDisposable
         AssertUniqueIndex<Spec>("ux_specs_request_id_version");
         AssertUniqueIndex<Event>("ux_events_session_id_seq");
         AssertUniqueIndex<ChangeRequest>("ux_change_requests_session_id_number");
-        AssertUniqueIndex<Recap>("ux_recaps_session_id");
+        AssertUniqueIndex<Charter.Domain.Recap>("ux_recaps_session_id");
         AssertUniqueIndex<Walkthrough>("ux_walkthroughs_session_id_level");
         AssertUniqueIndex<ConceptLedger>("ux_concept_ledger_user_id_concept");
         AssertUniqueIndex<ConversationTurnRecord>("ux_conversation_turns_conversation_id_seq");

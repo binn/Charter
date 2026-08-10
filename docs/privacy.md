@@ -61,6 +61,20 @@ outbound request a day — but it is your call, and it is a single flag.
 Everything else Charter talks to, you configured: your Postgres, your GitHub App, your model provider,
 your SMTP server, your log sinks, your runners.
 
+## What goes into an email
+
+Charter sends five kinds of message: an invitation, a password reset, a question about a request,
+something ready to try, and the test message you send yourself from settings. Each one carries the
+recipient's name, what they asked for in their own words, and a link back to this instance.
+
+None of them carries a repository name, a branch, a commit, a diff, a stack trace, or a cost. The
+templates for the two status messages have no field for any of it — a requester never sees those in
+the app either, and email is the surface where that is easiest to leak. Free text those templates do
+carry is scrubbed of commit hashes, forge URLs, and stack frames before it is rendered.
+
+Mail goes to the server you configured and nowhere else. There is no third-party sending service and
+no tracking pixel — the templates load no images at all.
+
 ## Where observability data goes
 
 Only where you point it. All three log sinks are off unless you enable them, and none of them has a

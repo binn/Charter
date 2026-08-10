@@ -19,9 +19,10 @@ public sealed record PreviewContext(ChangeRequest ChangeRequest, Guid SessionId,
         ChangeRequest.HeadSha,
         ChangeRequest.HeadBranch,
 
-        // Nothing records who opened a change request on the provider's side yet, so a provider that
-        // wants to name them says "the author" instead of inventing a login.
-        AuthorLogin: null,
+        // Recorded when the change request was opened (section 18). Null on a row whose provider
+        // never reported one, and a provider that wants to name the author then says "the author"
+        // rather than inventing a login.
+        ChangeRequest.AuthorLogin,
         HeadSeenAt: ChangeRequest.UpdatedAt);
 }
 

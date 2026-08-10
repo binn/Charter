@@ -93,7 +93,7 @@ public static class CharterConfigParser
         var logging = LoggingConfig.Parse(reader);
         var telemetry = TelemetryConfig.Parse(reader);
         var auth = AuthConfig.Parse(reader, mode);
-        var smtp = SmtpConfig.Parse(reader);
+        var email = EmailConfig.Parse(reader);
         var budgets = BudgetConfig.Parse(reader);
         var storage = StorageConfig.Parse(reader);
         var updateCheck = UpdateCheckConfig.Parse(reader);
@@ -118,7 +118,7 @@ public static class CharterConfigParser
             Logging = logging,
             Telemetry = telemetry,
             Auth = auth,
-            Smtp = smtp,
+            Email = email,
             Budgets = budgets,
             Storage = storage,
             UpdateCheck = updateCheck,

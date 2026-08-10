@@ -570,6 +570,53 @@ public class DomainEntityTests
             now: Now));
 
     [Fact]
+    public void ASessionThatChangedNothingEndsWithoutBeingAFailure()
+    {
+        // Section 6: a run that was correct and produced nothing is terminal, and it is not Failed.
+        // The whole reason this state exists is that Failed's requester copy would be a lie here.
+        var session = Session.Queue(Guid.CreateVersion7(), RunnerKind.Agent, "anthropic/claude-opus-5", now: Now);
+        session.Start("a3f9c21", Now);
+
+        session.TransitionTo(SessionStatus.NoChangesNeeded, Now.AddMinutes(4));
+
+        Assert.True(session.IsTerminal);
+        Assert.NotEqual(SessionStatus.Failed, session.Status);
+        Assert.Equal(Now.AddMinutes(4), session.EndedAt);
+    }
+
+    [Fact]
+    public void AChangeRequestRemembersWhoOpenedItAndFillsTheGapLater()
+    {
+        // Section 18: Railway refuses a branch from an account outside the workspace and reports it
+        // as nothing at all, so the name is the difference between an actionable warning and silence.
+        var named = ChangeRequest.Open(
+            Guid.CreateVersion7(),
+            142,
+            "https://github.com/o/r/pull/142",
+            "a3f9c21",
+            now: Now,
+            authorLogin: "  charter-app[bot] ");
+
+        Assert.Equal("charter-app[bot]", named.AuthorLogin);
+
+        var anonymous = ChangeRequest.Open(
+            Guid.CreateVersion7(),
+            143,
+            "https://github.com/o/r/pull/143",
+            "b7e0d13",
+            now: Now);
+
+        Assert.Null(anonymous.AuthorLogin);
+
+        anonymous.UpdateState(ChangeRequestState.Open, now: Now.AddMinutes(1), authorLogin: "ayesha");
+        Assert.Equal("ayesha", anonymous.AuthorLogin);
+
+        // A later report that names nobody leaves what was recorded rather than blanking it.
+        anonymous.UpdateState(ChangeRequestState.Closed, now: Now.AddMinutes(2));
+        Assert.Equal("ayesha", anonymous.AuthorLogin);
+    }
+
+    [Fact]
     public void PushingANewCommitClearsStaleness()
     {
         var changeRequest = ChangeRequest.Open(Guid.CreateVersion7(), 142, "https://github.com/o/r/pull/142", "a3f9c21", now: Now);

@@ -17,7 +17,9 @@ You need:
 
 - PostgreSQL 16 or newer.
 - A GitHub App (App ID, private key, webhook secret). Charter uses it to read repositories, open pull
-  requests, and receive webhooks.
+  requests, and receive webhooks. Subscribe it to **Push**, **Pull request**, **Check suite**, and —
+  if your hosting platform announces preview environments by commenting on the pull request, as
+  Railway does — **Issue comment**. Anything else Charter receives is acknowledged and ignored.
 - At least one model credential — an Anthropic API key, an OpenRouter key, or an account linked in the
   app after first boot.
 - Two random secrets of at least 32 bytes each:

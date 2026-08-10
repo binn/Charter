@@ -58,8 +58,14 @@ public sealed record CharterConfig
     /// <summary>OAuth providers and SAML (section 21).</summary>
     public required AuthConfig Auth { get; init; }
 
-    /// <summary>Outbound email, or <c>null</c> when <c>CHARTER_SMTP_URL</c> is unset.</summary>
-    public SmtpConfig? Smtp { get; init; }
+    /// <summary>
+    /// Outbound email (section 22; change spec 001, part C). Always present: <c>none</c> is a
+    /// supported configuration, not an absent one.
+    /// </summary>
+    public required EmailConfig Email { get; init; }
+
+    /// <summary>The SMTP endpoint, or <c>null</c> when email is off or delivered another way.</summary>
+    public SmtpConfig? Smtp => Email.Smtp;
 
     /// <summary>Default spend limits (section 34.9).</summary>
     public required BudgetConfig Budgets { get; init; }
@@ -90,7 +96,7 @@ public sealed record CharterConfig
     public bool StorageEnabled => Storage is not null;
 
     /// <summary>True when email notifications can be delivered.</summary>
-    public bool SmtpEnabled => Smtp is not null;
+    public bool SmtpEnabled => Email.Enabled;
 
     /// <summary>False in demo mode, which disables every outbound call (section 30.6).</summary>
     public bool OutboundCallsAllowed => !DemoMode;

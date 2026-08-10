@@ -160,6 +160,15 @@ The primary mitigation is structural, described above. Layered on top:
 **Charter does not rely on telling the model to ignore injected instructions.** That is a layer, not a
 defence, and treating it as one is how these systems fail.
 
+**Pull request comments are untrusted too, and they reach one narrow path.** Charter reads comments on
+its own change requests to find preview environments, because most hosting platforms announce a preview
+by commenting and nowhere else. That text never reaches an agent and is never shown to a requester: it
+is truncated on arrival, read only for a URL and a state word, and the result binds to the head commit
+of a change request Charter itself opened. The configured deployment provider also checks the comment
+came from its own bot before anything is believed. The worst a convincing comment achieves is a wrong
+preview URL on a change request its author could already comment on — so if that matters to you, report
+previews through `POST /api/deployments/{prSha}` instead and do not subscribe the App to comment events.
+
 Repository-content injection is the harder half of the problem, and Charter does not claim to solve it.
 The answer is the same as everywhere else in this document: **the agent cannot merge.** A successful
 injection produces a pull request that a human reviews.
@@ -254,6 +263,13 @@ entitlements.
 **Charter never generates secrets.** When provisioning a new project, it emits a checklist of what a
 human must set. When promoting a repository between organisations, it emits the list of secret names
 and you set the values.
+
+**The SMTP password.** `CHARTER_SMTP_URL` carries a credential, so it is treated as one. It is
+wrapped in the same redacting type as every other configuration secret, log lines name the mail
+server as `host:port` rather than as a URL, and a rejected sign-in to the mail server is reported by
+status code rather than by echoing the server's response — some servers quote back what was
+submitted. If `CHARTER_SMTP_TLS` is `starttls` and the server does not offer it, Charter stops rather
+than sending the password over an unencrypted connection.
 
 ## Sign-in
 

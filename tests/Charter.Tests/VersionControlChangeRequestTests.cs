@@ -93,6 +93,10 @@ public class VersionControlChangeRequestTests
         var events = await world.EventsAsync(ChangeRequestEventTypes.NoChanges);
         var payload = Assert.Single(events);
         Assert.Contains("without changing anything", payload, StringComparison.Ordinal);
+
+        // Section 6: its own terminal state, not Failed. Failed's requester copy — "this turned out
+        // to be bigger than expected" — would be the opposite of what happened.
+        Assert.Equal(SessionStatus.NoChangesNeeded, await world.StatusAsync());
     }
 
     [Fact]

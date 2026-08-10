@@ -239,6 +239,66 @@ public class GitHubWebhookDeliveryTests
     }
 
     [Fact]
+    public void AnIssueCommentCarriesTheNumberTheAuthorAndTheBody()
+    {
+        // Section 18's fallback path. GitHub delivers a comment on a pull request as `issue_comment`
+        // with the pull request in the `issue` object, so this is the shape the provider bot's
+        // announcement actually arrives in.
+        var delivery = GitHubWebhookDelivery.Parse(
+            "issue_comment",
+            """
+            {
+              "action": "created",
+              "issue": { "number": 142, "pull_request": { "url": "https://api.github.com/x" } },
+              "comment": {
+                "user": { "login": "railway[bot]" },
+                "body": "Deploy successful: https://quote-tool-pr-142.up.railway.app"
+              },
+              "repository": { "full_name": "northbeam/quote-tool" }
+            }
+            """);
+
+        Assert.Equal(GitHubWebhookEventType.IssueComment, delivery.Type);
+        Assert.Equal(142, delivery.IssueNumber);
+        Assert.Equal("railway[bot]", delivery.CommentAuthorLogin);
+        Assert.Contains("up.railway.app", delivery.CommentBody!, StringComparison.Ordinal);
+        Assert.Equal("northbeam/quote-tool", delivery.RepositoryFullName);
+    }
+
+    [Fact]
+    public void AnEnormousCommentBodyIsTruncatedRatherThanCarriedWhole()
+    {
+        // The body is attacker-influenced input (section 16): anybody who can comment writes one.
+        // Bounding it here means an unbounded string never reaches the parser's regular expression.
+        var body = new string('a', GitHubWebhookDelivery.MaxCommentBodyLength + 5_000);
+
+        var delivery = GitHubWebhookDelivery.Parse(
+            "issue_comment",
+            $$"""
+              {
+                "action": "created",
+                "issue": { "number": 7 },
+                "comment": { "user": { "login": "someone" }, "body": "{{body}}" },
+                "repository": { "full_name": "acme/widgets" }
+              }
+              """);
+
+        Assert.Equal(GitHubWebhookDelivery.MaxCommentBodyLength, delivery.CommentBody!.Length);
+    }
+
+    [Fact]
+    public void ACommentOnSomethingElseParsesWithoutAnyCommentFields()
+    {
+        var delivery = GitHubWebhookDelivery.Parse(
+            "pull_request",
+            """{"action":"opened","pull_request":{"number":3},"repository":{"full_name":"acme/widgets"}}""");
+
+        Assert.Null(delivery.IssueNumber);
+        Assert.Null(delivery.CommentAuthorLogin);
+        Assert.Null(delivery.CommentBody);
+    }
+
+    [Fact]
     public void AnUnhandledEventIsAcknowledgedRatherThanRefused()
     {
         var delivery = GitHubWebhookDelivery.Parse("star", """{"action":"created"}""");

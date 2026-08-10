@@ -25,6 +25,20 @@ public static class RequestPresentation
         "This turned out to be bigger than expected. An engineer has been told and will pick it up — "
         + "you do not need to do anything.";
 
+    /// <summary>
+    /// Section 6, <c>NoChangesNeeded</c>. The other terminal outcome, and a success.
+    /// </summary>
+    /// <remarks>
+    /// The agent ran, ran correctly, and there was nothing to change. Section 10b calls a request
+    /// that dies because the answer is <em>it already does that</em> the cheapest possible outcome;
+    /// this is the same outcome, found one step later, so the wording states it plainly, names the
+    /// likely reason, and closes the thread. Nothing here apologises, and nothing here suggests
+    /// somebody has been paged — because nobody has.
+    /// </remarks>
+    public const string NoChangesSummary =
+        "Nothing needed changing here. Most often that means what you asked for already works the way "
+        + "you wanted. Nothing went wrong, and there is nothing for you to do.";
+
     /// <summary>Section 27.4: do not pretend parity.</summary>
     public const string NoVerificationExplanation =
         "This kind of change cannot be checked by clicking a link — there is nothing to open. An "
@@ -44,6 +58,7 @@ public static class RequestPresentation
         RequestStatus.PreviewReady => "Ready to try",
         RequestStatus.InReview => "An engineer is checking it",
         RequestStatus.Merged => "This is live",
+        RequestStatus.NoChangesNeeded => "Nothing needed changing",
         RequestStatus.Failed => "This turned out to be bigger than expected",
         RequestStatus.Cancelled => "You stopped this",
         RequestStatus.Stale => "This needs redoing against the latest code",

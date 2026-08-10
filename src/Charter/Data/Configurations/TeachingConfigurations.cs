@@ -30,9 +30,10 @@ internal sealed class WalkthroughConfiguration : IEntityTypeConfiguration<Walkth
     }
 }
 
-internal sealed class RecapConfiguration : IEntityTypeConfiguration<Recap>
+// Fully qualified: `Charter.Recap` is a namespace as well as `Charter.Domain.Recap` being a type.
+internal sealed class RecapConfiguration : IEntityTypeConfiguration<Charter.Domain.Recap>
 {
-    public void Configure(EntityTypeBuilder<Recap> builder)
+    public void Configure(EntityTypeBuilder<Charter.Domain.Recap> builder)
     {
         builder.ToTable("recaps");
         builder.HasKey(recap => recap.Id);

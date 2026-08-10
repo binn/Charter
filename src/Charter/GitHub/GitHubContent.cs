@@ -32,7 +32,17 @@ public sealed record GitHubCommitResult(string Sha, string Branch);
 /// <param name="Url">The <c>html_url</c>, for the engineer.</param>
 /// <param name="HeadSha">The head commit.</param>
 /// <param name="HeadBranch">The branch the PR is from.</param>
-public sealed record GitHubPullRequestResult(int Number, string Url, string HeadSha, string HeadBranch);
+/// <param name="AuthorLogin">
+/// The login GitHub records as having opened it — Charter's own App identity, in practice. Section
+/// 18 needs it: Railway refuses to deploy a branch from an account outside the workspace, and the
+/// only actionable form of that warning names the account.
+/// </param>
+public sealed record GitHubPullRequestResult(
+    int Number,
+    string Url,
+    string HeadSha,
+    string HeadBranch,
+    string? AuthorLogin = null);
 
 /// <summary>What GitHub currently says about a pull request.</summary>
 /// <param name="Number">The PR number.</param>
@@ -44,6 +54,7 @@ public sealed record GitHubPullRequestResult(int Number, string Url, string Head
 /// <param name="HeadBranch">The branch it is from.</param>
 /// <param name="BaseBranch">The branch it is aimed at.</param>
 /// <param name="Labels">Its labels, by name.</param>
+/// <param name="AuthorLogin">The login that opened it (section 18).</param>
 public sealed record GitHubPullRequestDetail(
     int Number,
     string Url,
@@ -53,7 +64,8 @@ public sealed record GitHubPullRequestDetail(
     string HeadSha,
     string? HeadBranch,
     string? BaseBranch,
-    IReadOnlyList<string> Labels);
+    IReadOnlyList<string> Labels,
+    string? AuthorLogin = null);
 
 /// <summary>Two revisions compared. Section 17 needs both halves of this.</summary>
 /// <param name="AheadBy">Commits the head has that the base does not.</param>

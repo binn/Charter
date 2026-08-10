@@ -311,6 +311,10 @@ public static class RequestProjection
             RequestStatus.PreviewReady => ("ready", ApiMilestoneKind.Outcome, ApiMilestoneState.Done),
             RequestStatus.InReview => ("review", ApiMilestoneKind.Status, ApiMilestoneState.Active),
             RequestStatus.Merged => ("live", ApiMilestoneKind.Outcome, ApiMilestoneState.Done),
+
+            // Section 6: done, not failed. `Done` rather than `Failed` is the whole point — the run
+            // was correct and there was simply nothing to change.
+            RequestStatus.NoChangesNeeded => ("no_changes", ApiMilestoneKind.Outcome, ApiMilestoneState.Done),
             RequestStatus.Failed => ("failed", ApiMilestoneKind.Outcome, ApiMilestoneState.Failed),
             RequestStatus.Cancelled => ("cancelled", ApiMilestoneKind.Outcome, ApiMilestoneState.Done),
             RequestStatus.Stale => ("stale", ApiMilestoneKind.Outcome, ApiMilestoneState.Done),
@@ -327,6 +331,13 @@ public static class RequestProjection
             Id = $"{request.Id:N}:{suffix}",
             Kind = kind,
             Label = RequestPresentation.StatusLabel(request.Status, aggregate.AwaitingApprovalFrom),
+
+            // The one outcome whose label is not the whole story. "Nothing needed changing" invites
+            // exactly one question, and section 6 says answer it here rather than leave the requester
+            // to guess whether something broke.
+            Detail = request.Status == RequestStatus.NoChangesNeeded
+                ? RequestPresentation.NoChangesSummary
+                : null,
             OccurredAt = at,
             State = state,
         };

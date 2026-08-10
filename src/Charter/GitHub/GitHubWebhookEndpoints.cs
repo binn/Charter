@@ -1,5 +1,6 @@
 using System.Text;
 using Charter.Configuration;
+using Charter.Deployments;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -94,10 +95,15 @@ public static class GitHubWebhookEndpoints
 
     private static void MapDeployments(WebApplication app)
     {
+        // The ingestor rather than the binder: both write the same deployment row through the same
+        // binder and answer with the same result type, but the ingestor also publishes the
+        // verification artifact in the same call. Reporting through the binder alone leaves the
+        // requester's card on a skeleton until the lifecycle sweep next runs — up to fifteen seconds
+        // of section 27.7's "pending" state for a preview that is already live (section 18).
         app.MapPost(DeploymentPath, async (
             string prSha,
             DeploymentWebhookRequest body,
-            DeploymentBinder binder,
+            DeploymentIngestor ingestor,
             CancellationToken cancellationToken) =>
         {
             if (body is null)
@@ -105,7 +111,7 @@ public static class GitHubWebhookEndpoints
                 return Results.BadRequest(new { error = "a body of { url, state, provider } is required" });
             }
 
-            var result = await binder.ReportAsync(prSha, body, cancellationToken);
+            var result = await ingestor.ReportAsync(prSha, body, cancellationToken);
 
             return result.Outcome switch
             {
