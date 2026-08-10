@@ -1,0 +1,134 @@
+name: Bug report
+description: Something in Charter behaves differently from how it is documented.
+title: "bug: "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this. Fill in as much as you can --
+        version, deployment method, and logs resolve most reports on their own.
+
+  - type: checkboxes
+    id: not_a_vulnerability
+    attributes:
+      label: This is not a security vulnerability
+      description: >
+        Security vulnerabilities must not be filed as public issues. Report them
+        privately through GitHub's private vulnerability reporting, as described
+        in SECURITY.md.
+      options:
+        - label: I confirm this is not a security vulnerability, and I have read SECURITY.md.
+          required: true
+
+  - type: checkboxes
+    id: prior_search
+    attributes:
+      label: Prior search
+      options:
+        - label: I searched existing issues and this has not already been reported.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Charter version
+      description: >
+        The version shown in Settings, or the container image tag you are
+        running. Include the commit SHA if you built from source.
+      placeholder: "v1.4.0 (or ghcr.io/binn/charter:1.4.0)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Docker Compose
+        - Railway
+        - Render
+        - Fly.io
+        - Kubernetes
+        - Built and run from source
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runner
+    attributes:
+      label: Runner backend
+      description: The value of CHARTER_RUNNER, or the backend the session used.
+      options:
+        - agent (Charter Agent)
+        - github-actions
+        - docker
+        - Not applicable / no session involved
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Agent adapter
+      options:
+        - claude-code
+        - codex
+        - gemini-cli
+        - opencode
+        - pi
+        - cursor-agent
+        - aider
+        - A local or custom adapter
+        - Not applicable / no session involved
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: Include the exact steps that led to it, in order.
+      placeholder: |
+        1. Connected a repository and completed the smoke test
+        2. Filed a request against src/Features
+        3. The session moved to Running and then stopped reporting events
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Relevant output from the Charter container, the runner, or the browser
+        console. Redact tokens, API keys, and anything from a private repository
+        before pasting -- transcripts can contain source code.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: database
+    attributes:
+      label: PostgreSQL version
+      placeholder: "16.4"
+    validations:
+      required: false
+
+  - type: textarea
+    id: anything_else
+    attributes:
+      label: Anything else
+      description: Screenshots, configuration snippets, or context that might matter.
+    validations:
+      required: false

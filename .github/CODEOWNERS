@@ -1,0 +1,64 @@
+# Charter code ownership.
+#
+# The maintainer owns everything. The explicit entries below are not
+# redundant: they exist so that a future change to the catch-all rule, or an
+# added team, cannot accidentally leave a sensitive path unreviewed. The last
+# matching pattern wins, so ordering matters -- broad first, sensitive last.
+#
+# Spec section 15 requires CODEOWNERS on migration directories, so engineer approval of
+# a schema change is structurally required rather than a Charter-side policy.
+# Spec section 7.4 and section 26.10 put the merge gate outside Charter entirely; these
+# entries plus branch protection are what enforce it.
+
+# Everything.
+*                                   @binn
+
+# Legal and licensing. Changing any of these changes the terms the project is
+# offered under (spec section 24).
+/LICENSE                            @binn
+/CLA.md                             @binn
+/TRADEMARK.md                       @binn
+/SECURITY.md                        @binn
+/CODE_OF_CONDUCT.md                 @binn
+
+# CI, release, and the agent-session workflow. A change here can exfiltrate
+# secrets or publish an image.
+/.github/                           @binn
+/.github/workflows/                 @binn
+/.github/CODEOWNERS                 @binn
+
+# Database migrations -- spec section 15. Destructive and ambiguous migrations must
+# never merge without the maintainer.
+**/Migrations/                      @binn
+**/Migrations/**                    @binn
+
+# Auth, identity, and authorisation. Spec section 7, section 21.
+/src/Charter/Auth/                  @binn
+/src/Charter/Authorization/         @binn
+/src/Charter/Identity/              @binn
+**/Auth/**                          @binn
+**/Authorization/**                 @binn
+
+# Credential storage and encryption. Spec section 20b.2.
+/src/Charter/Credentials/           @binn
+**/Credentials/**                   @binn
+
+# The runner boundary. Path scope and token scoping are enforced here, not in
+# the UI (spec section 7.3, section 7.4).
+/src/Charter/Runners/               @binn
+/src/Charter.Agent/                 @binn
+/src/Charter.DetachedRunner/        @binn
+/runners/                           @binn
+
+# Configuration parsing and startup validation. Spec section 4.
+/src/Charter/Configuration/         @binn
+/Directory.Build.props              @binn
+/Dockerfile                         @binn
+/docker-compose.yml                 @binn
+/.env.example                       @binn
+
+# Agent guidance and the specification.
+/AGENTS.md                          @binn
+/CLAUDE.md                          @binn
+/agent-docs/                        @binn
+/.claude/                           @binn

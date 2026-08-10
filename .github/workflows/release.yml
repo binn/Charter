@@ -1,0 +1,154 @@
+name: Release
+
+# Tag convention: `vMAJOR.MINOR.PATCH`, optionally with a prerelease suffix
+# (`v1.4.0`, `v1.5.0-rc.1`). This is the format the spec section 28 update checker
+# parses: it reads `tag_name` from the GitHub Releases API and compares it
+# against the version compiled into the running instance (spec section 24).
+# Changing this format breaks update notification for every deployed instance.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Read-only by default; each job widens only what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: binn/charter
+
+jobs:
+  image:
+    name: Build and publish container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # OIDC, for build provenance attestation only
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version metadata
+        id: meta_vars
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "source_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # QEMU is what makes the arm64 half of the manifest buildable on an
+      # amd64 hosted runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+          labels: |
+            org.opencontainers.image.title=Charter
+            org.opencontainers.image.source=${{ steps.meta_vars.outputs.source_url }}
+            org.opencontainers.image.version=${{ steps.meta_vars.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+
+      # VERSION, COMMIT_SHA, and SOURCE_URL are compiled into the binary. Spec
+      # section 24 requires the AGPL section 13 "Source" link in the UI footer to point at
+      # the exact revision the instance is running, and spec section 28 compares
+      # VERSION against the latest release tag.
+      - name: Build and push multi-arch image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.meta_vars.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            SOURCE_URL=${{ steps.meta_vars.outputs.source_url }}
+            BUILD_DATE=${{ steps.meta_vars.outputs.build_date }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: image
+    timeout-minutes: 10
+    permissions:
+      contents: write # required to create the release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # A tag carrying a prerelease suffix (v1.5.0-rc.1) publishes as a
+      # prerelease, which is what CHARTER_UPDATE_CHANNEL=prerelease selects
+      # against (spec section 28).
+      - name: Create release with generated notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          IMAGE_DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+
+          {
+            echo "## Container image"
+            echo
+            echo '```'
+            echo "docker pull ${IMAGE_REF}:${GITHUB_REF_NAME#v}"
+            echo '```'
+            echo
+            echo "Digest: \`${IMAGE_DIGEST}\`"
+            echo
+            echo "Platforms: linux/amd64, linux/arm64"
+          } > release-body.md
+
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes-file release-body.md \
+            $prerelease

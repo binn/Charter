@@ -1,0 +1,18 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/binn/Charter/security/advisories/new
+    about: >-
+      Never file a vulnerability as a public issue. Use GitHub's private
+      vulnerability reporting. See SECURITY.md for the disclosure process and
+      response expectations.
+  - name: Questions and ideas
+    url: https://github.com/binn/Charter/discussions
+    about: >-
+      Ask how something works, share what you built, or float an idea before it
+      becomes a feature request.
+  - name: Documentation
+    url: https://github.com/binn/Charter/tree/master/docs
+    about: >-
+      Configuration reference, self-hosting guides, runners, adapters, and the
+      security model.

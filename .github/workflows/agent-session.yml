@@ -1,0 +1,195 @@
+name: Agent session
+
+# Spec section 2.2: the GitHubActionsRunner backend dispatches a session by POSTing a
+# `repository_dispatch` event with type `charter-session`. Events stream back to
+# a Charter webhook over HTTP; the control plane is never dialled into.
+#
+# This workflow lives in the *target* repository, not in Charter's own. Charter
+# installs it as part of repo onboarding (spec section 9).
+on:
+  repository_dispatch:
+    types: [charter-session]
+
+# Minimum viable scope. The workflow deliberately does NOT rely on GITHUB_TOKEN
+# for repository writes: pushing the session branch uses the short-TTL,
+# single-repo GitHub App installation token minted by the control plane
+# (spec section 7.4). `contents: read` is only what actions/checkout needs to fetch the
+# base commit before that token is available.
+permissions:
+  contents: read
+
+# One live session per Charter session id. Never cancel in progress: a killed
+# session leaves the control plane waiting on events it will never receive, and
+# cancellation must go through Charter's cancel path so cost is settled (spec section 11).
+concurrency:
+  group: charter-session-${{ github.event.client_payload.session_id }}
+  cancel-in-progress: false
+
+jobs:
+  session:
+    name: Charter session ${{ github.event.client_payload.session_id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(github.event.client_payload.timeout_minutes || '60') }}
+
+    # Spec section 32.1 and section 32.5: a session NEVER installs a language runtime. The
+    # toolchain, the agent CLIs, and the event-streaming shim all come from a
+    # prebuilt image. `runner_image` is declared in the target repo's
+    # `.charter/config.yml` (spec section 8) and forwarded in the dispatch payload; the
+    # fullstack image is the default for this stack.
+    container:
+      image: ${{ github.event.client_payload.runner_image || 'ghcr.io/binn/charter-runner-fullstack:1' }}
+      options: --user root
+
+    env:
+      CHARTER_SESSION_ID: ${{ github.event.client_payload.session_id }}
+      CHARTER_CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
+      CHARTER_TARGET_REPO: ${{ github.event.client_payload.repo }}
+      CHARTER_BASE_BRANCH: ${{ github.event.client_payload.base_branch }}
+      CHARTER_BASE_COMMIT_SHA: ${{ github.event.client_payload.base_commit_sha }}
+      CHARTER_ADAPTER: ${{ github.event.client_payload.adapter }}
+      CHARTER_MODEL: ${{ github.event.client_payload.model }}
+      CHARTER_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      # ---------------------------------------------------------------------
+      # Credential injection point (spec section 7.4, section 20b.2, section 33.5).
+      #
+      # The dispatch payload carries NO credentials -- `client_payload` is
+      # readable by anyone with repo read access and is retained in the events
+      # API. Instead the job authenticates to the control plane with a
+      # per-session bearer secret and exchanges it for:
+      #
+      #   - a short-TTL GitHub App installation token scoped to THIS repo only
+      #   - a scoped model credential (access token only, never a refresh token)
+      #
+      # A broad personal access token must never be used here. If this step is
+      # ever replaced with `secrets.SOME_PAT`, the trust boundary in spec section 7.4 is
+      # gone: the runner would hold write access to every repo the maintainer
+      # can reach.
+      # ---------------------------------------------------------------------
+      - name: Exchange session secret for scoped credentials
+        id: creds
+        env:
+          CHARTER_SESSION_SECRET: ${{ secrets.CHARTER_SESSION_SECRET }}
+        run: |
+          set -euo pipefail
+
+          response="$(curl --fail-with-body --silent --show-error \
+            --max-time 30 \
+            --request POST \
+            --header "Authorization: Bearer ${CHARTER_SESSION_SECRET}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -nc --arg id "$CHARTER_SESSION_ID" --arg run "$CHARTER_RUN_URL" \
+                        '{session_id: $id, run_url: $run}')" \
+            "${CHARTER_CALLBACK_URL}/credentials")"
+
+          github_token="$(printf '%s' "$response" | jq -r '.github_token')"
+          model_key="$(printf '%s' "$response" | jq -r '.model_api_key // empty')"
+          event_token="$(printf '%s' "$response" | jq -r '.event_token')"
+
+          # Mask before anything can echo them.
+          echo "::add-mask::${github_token}"
+          [ -n "$model_key" ] && echo "::add-mask::${model_key}"
+          echo "::add-mask::${event_token}"
+
+          echo "github_token=${github_token}" >> "$GITHUB_OUTPUT"
+          echo "model_api_key=${model_key}" >> "$GITHUB_OUTPUT"
+          echo "event_token=${event_token}" >> "$GITHUB_OUTPUT"
+
+      - name: Report session started
+        env:
+          EVENT_TOKEN: ${{ steps.creds.outputs.event_token }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            --request POST \
+            --header "Authorization: Bearer ${EVENT_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -nc --arg id "$CHARTER_SESSION_ID" --arg run "$CHARTER_RUN_URL" \
+                        '{session_id: $id, type: "session_started", payload: {run_url: $run}}')" \
+            "${CHARTER_CALLBACK_URL}/events"
+
+      # Checked out at the exact base commit the session was planned against
+      # (spec section 17 records base_commit_sha per session, and staleness is computed
+      # from it).
+      - name: Checkout target repository at base commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.client_payload.repo }}
+          ref: ${{ github.event.client_payload.base_commit_sha }}
+          token: ${{ steps.creds.outputs.github_token }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      # Spec section 32.5: GitHub Actions is the worst case for warm state -- a fresh VM
+      # every run. The container image removes runtime installs; these caches
+      # remove the dependency downloads. Keys derive from lockfile hashes so
+      # they invalidate naturally (spec section 32.7).
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: charter-nuget-${{ github.event.client_payload.repo }}-${{ hashFiles('**/packages.lock.json', '**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            charter-nuget-${{ github.event.client_payload.repo }}-
+
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: charter-npm-${{ github.event.client_payload.repo }}-${{ hashFiles('**/package-lock.json', '**/pnpm-lock.yaml') }}
+          restore-keys: |
+            charter-npm-${{ github.event.client_payload.repo }}-
+
+      # The shim is baked into the runner image (spec section 32.1). It resolves the
+      # adapter YAML (spec section 12b), invokes the agent CLI in headless mode, parses
+      # its streaming output, and POSTs each mapped event to
+      # ${CHARTER_CALLBACK_URL}/events as it happens -- a silent gap of five to
+      # twenty minutes reads as broken (spec section 11).
+      - name: Run agent session
+        id: agent
+        env:
+          CHARTER_EVENT_TOKEN: ${{ steps.creds.outputs.event_token }}
+          GITHUB_TOKEN: ${{ steps.creds.outputs.github_token }}
+          CHARTER_MODEL_API_KEY: ${{ steps.creds.outputs.model_api_key }}
+          CHARTER_SPEC_URL: ${{ github.event.client_payload.spec_url }}
+          CHARTER_PATH_SCOPE: ${{ toJSON(github.event.client_payload.path_scope) }}
+        run: |
+          set -euo pipefail
+          charter-runner-shim run \
+            --session-id "$CHARTER_SESSION_ID" \
+            --adapter "$CHARTER_ADAPTER" \
+            --model "$CHARTER_MODEL" \
+            --repo "$CHARTER_TARGET_REPO" \
+            --base-branch "$CHARTER_BASE_BRANCH" \
+            --base-commit "$CHARTER_BASE_COMMIT_SHA" \
+            --spec-url "$CHARTER_SPEC_URL" \
+            --callback-url "$CHARTER_CALLBACK_URL" \
+            --stream-events
+
+      # Always reports a terminal status. Without this the control plane can
+      # only infer failure from a lease timeout, and the requester sits on
+      # "Building this now" indefinitely.
+      - name: Report session result
+        if: always()
+        env:
+          EVENT_TOKEN: ${{ steps.creds.outputs.event_token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          case "$JOB_STATUS" in
+            success)   state="completed" ;;
+            cancelled) state="cancelled" ;;
+            *)         state="failed" ;;
+          esac
+
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            --request POST \
+            --header "Authorization: Bearer ${EVENT_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -nc \
+                        --arg id "$CHARTER_SESSION_ID" \
+                        --arg state "$state" \
+                        --arg run "$CHARTER_RUN_URL" \
+                        '{session_id: $id, state: $state, run_url: $run}')" \
+            "${CHARTER_CALLBACK_URL}/result"

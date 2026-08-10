@@ -1,0 +1,71 @@
+name: Feature request
+description: Propose a change or addition to Charter.
+title: "feat: "
+labels: ["enhancement", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Open an issue before starting work on anything large. Charter has a
+        deliberately narrow v1 scope, and a proposal discussed first is far more
+        likely to be merged than a surprise pull request. See CONTRIBUTING.md.
+
+  - type: checkboxes
+    id: prior_search
+    attributes:
+      label: Prior search
+      options:
+        - label: I searched existing issues and discussions, and this has not already been proposed.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        Describe the situation you are in, not the solution you have in mind.
+        What is currently hard, impossible, or surprising?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Spec refinement and planning
+        - Guardrails, scopes, and approval policy
+        - Runners and execution
+        - Agent adapters
+        - Verification artifacts and previews
+        - Teaching and engineer recap
+        - Budgets and cost governance
+        - Observability
+        - Self-hosting, configuration, deployment
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including doing nothing, or solving it outside Charter.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to open a pull request for this.
+          required: false

@@ -1,0 +1,67 @@
+name: CLA
+
+# Spec section 24: Charter is AGPL-3.0-only with a contributor CLA. The CLA is what
+# preserves the ability to dual-license or run a commercial hosted version --
+# accepting a single external pull request without one forecloses both
+# permanently. The agreement text lives in CLA.md at the repository root.
+#
+# Contributors sign by commenting on their first pull request; signatures are
+# recorded in signatures/version1/cla.json on the `master` branch.
+#
+# MAINTAINER SETUP REQUIRED
+#   Set a repository secret named PERSONAL_ACCESS_TOKEN, a classic PAT (or
+#   fine-grained token scoped to this repository) with `repo` scope. The action
+#   needs it to commit the signature file back to the repository -- the default
+#   GITHUB_TOKEN cannot be used for that here, because a pull_request_target run
+#   from a fork receives a read-only token for the storage write path.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cla-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  cla:
+    name: Check CLA signature
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only run on pull request activity, or on a comment that is the signature
+    # phrase on a pull request. Skips every unrelated issue comment.
+    if: >-
+      (github.event_name == 'pull_request_target') ||
+      (github.event.issue.pull_request != null &&
+       (github.event.comment.body == 'recheck' ||
+        contains(github.event.comment.body, 'I have read the CLA Document and I hereby sign the CLA')))
+    permissions:
+      actions: write # the action revokes stale runs after a signature
+      contents: read # signatures are written with PERSONAL_ACCESS_TOKEN, not GITHUB_TOKEN
+      pull-requests: write # to comment on the pull request
+      statuses: write # to set the CLA check status
+    steps:
+      - name: CLA Assistant
+        uses: contributor-assistant/github-action@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Stores the signature file. See the setup note above.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        with:
+          path-to-signatures: signatures/version1/cla.json
+          path-to-document: https://github.com/binn/Charter/blob/master/CLA.md
+          branch: master
+          allowlist: binn,dependabot[bot],dependabot-preview[bot]
+          custom-notsigned-prcomment: >-
+            Thanks for the contribution. Charter requires a Contributor License
+            Agreement before a pull request can be merged. Read
+            [CLA.md](https://github.com/binn/Charter/blob/master/CLA.md), then
+            reply to this pull request with the sentence below. You retain
+            copyright in your contribution, and you will only be asked once.
+          custom-pr-sign-comment: "I have read the CLA Document and I hereby sign the CLA"
+          custom-allsigned-prcomment: "All contributors have signed the CLA."
+          lock-pullrequest-aftermerge: false

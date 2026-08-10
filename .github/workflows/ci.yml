@@ -1,0 +1,146 @@
+name: CI
+
+# Charter's default branch is `master`.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: "true"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  # Spec section 3.1: the frontend is bundled with the application, so CI builds
+  # both halves in the same job. One artifact, one job, one source of truth.
+  build:
+    name: Build, test, lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Throwaway Postgres so EF Core migrations are proven to apply cleanly.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: charter
+          POSTGRES_PASSWORD: charter
+          POSTGRES_DB: charter_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U charter -d charter_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Spec section 32.7: cache keys derive from lockfile hashes, so a lockfile
+      # change invalidates naturally.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/packages.lock.json', '**/*.csproj', '**/Directory.Packages.props', 'Directory.Build.props') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('src/Charter/ClientApp/package-lock.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-
+
+      - name: Restore .NET dependencies
+        run: dotnet restore Charter.sln
+
+      - name: Verify formatting
+        run: dotnet format Charter.sln --verify-no-changes --severity warn --no-restore
+
+      - name: Build (warnings as errors)
+        run: dotnet build Charter.sln --configuration Release --no-restore -warnaserror
+
+      - name: Install SPA dependencies
+        working-directory: src/Charter/ClientApp
+        run: npm ci
+
+      - name: Typecheck SPA
+        working-directory: src/Charter/ClientApp
+        run: npm run typecheck
+
+      - name: Lint SPA
+        working-directory: src/Charter/ClientApp
+        run: npm run lint
+
+      - name: Build SPA
+        working-directory: src/Charter/ClientApp
+        run: npm run build
+
+      - name: Test
+        run: dotnet test Charter.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./TestResults
+
+      - name: Install dotnet-ef
+        run: dotnet tool install --global dotnet-ef
+
+      # Spec section 4.3: Charter parses DATABASE_URL in postgres:// URL form and
+      # converts it to an Npgsql connection string itself. Never hand EF an
+      # Npgsql connection string here -- that would not exercise the parser.
+      # The remaining variables are dummies that satisfy startup validation
+      # (spec section 4.1) so the design-time host can be constructed. None are secrets.
+      - name: Apply EF Core migrations against throwaway Postgres
+        env:
+          DATABASE_URL: postgres://charter:charter@localhost:5432/charter_ci?sslmode=disable
+          CHARTER_BASE_URL: http://localhost:8080
+          CHARTER_SECRET_KEY: ci-only-secret-key-not-a-real-secret-32b
+          CHARTER_CREDENTIAL_KEY: ci-only-credential-key-not-a-real-secret
+          ANTHROPIC_API_KEY: ci-placeholder
+          GITHUB_APP_ID: "1"
+          GITHUB_APP_PRIVATE_KEY: ci-placeholder
+          GITHUB_WEBHOOK_SECRET: ci-placeholder
+        run: dotnet ef database update --project src/Charter --no-build --configuration Release
+
+      - name: Verify migrations produce an idempotent script
+        env:
+          DATABASE_URL: postgres://charter:charter@localhost:5432/charter_ci?sslmode=disable
+          CHARTER_BASE_URL: http://localhost:8080
+          CHARTER_SECRET_KEY: ci-only-secret-key-not-a-real-secret-32b
+          CHARTER_CREDENTIAL_KEY: ci-only-credential-key-not-a-real-secret
+          ANTHROPIC_API_KEY: ci-placeholder
+          GITHUB_APP_ID: "1"
+          GITHUB_APP_PRIVATE_KEY: ci-placeholder
+          GITHUB_WEBHOOK_SECRET: ci-placeholder
+        run: dotnet ef migrations script --idempotent --project src/Charter --no-build --configuration Release --output ./TestResults/migrations.sql
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ./TestResults
+          if-no-files-found: ignore
+          retention-days: 7
