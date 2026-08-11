@@ -12,7 +12,7 @@
 # ------------------------------------------------------------------------------------------------
 # Stage 1: build the SPA. Kept separate because the .NET SDK image carries no Node runtime.
 # ------------------------------------------------------------------------------------------------
-FROM node:24-bookworm-slim AS client
+FROM node:26-bookworm-slim AS client
 
 WORKDIR /src/ClientApp
 
