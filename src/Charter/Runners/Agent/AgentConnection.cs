@@ -433,11 +433,24 @@ public sealed class AgentConnection : IAsyncDisposable
     /// The claim. Section 33.4: the agent asks, filtered by capability, under a lease.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The filter is applied by Postgres, not here — <c>required_capabilities &lt;@ @capabilities</c>
     /// inside the <c>SKIP LOCKED</c> claim — so a job this agent cannot run is never locked, never
     /// returned, and never has to be handed back. That is the difference between "an agent only ever
     /// sees jobs it can actually run" being a property of the queue and it being a check somebody has
     /// to remember to write.
+    /// </para>
+    /// <para>
+    /// Containment alone is not enough, because it is a test of capability and section 2.2 is a
+    /// boundary. The empty set is contained in every capability set, so <c>refine</c>, <c>recap</c>
+    /// and <c>update_check</c> — control plane work, enqueued requiring nothing — would be claimable
+    /// by any daemon that happened to be online, and then failed by it, because their payloads were
+    /// never written for the execution plane. Refinement is the front door of the product; a request
+    /// whose refine job was swallowed by a Mac mini stalls with nothing on screen to explain it. So
+    /// the claim also <em>requires</em> the routing marker: not "I have this capability" but "this row
+    /// asked for the execution plane". Control plane rows never name it, so they are invisible here
+    /// however capable the daemon is.
+    /// </para>
     /// </remarks>
     private async Task OnJobClaimAsync(Envelope envelope, CancellationToken cancellationToken)
     {
@@ -468,8 +481,9 @@ public sealed class AgentConnection : IAsyncDisposable
         var now = _clock.GetUtcNow();
 
         // What the agent says it has, expanded so matching is set containment, plus the marker that
-        // makes a row agent-claimable at all. Without the marker the control plane's own dispatcher
-        // would claim these rows back and dispatch them a second time.
+        // makes a row agent-claimable at all. Without the marker in the set the containment test would
+        // reject every agent row; without the marker demanded of the row, the same test would accept
+        // every control plane row.
         var capabilities = new List<string>(RunnerCapability.ExpandAll(claim.Capabilities))
         {
             AgentRunner.ClaimCapability,
@@ -484,6 +498,7 @@ public sealed class AgentConnection : IAsyncDisposable
             _options.Lease,
             maxJobs,
             capabilities,
+            AgentRunner.ClaimCapability,
             now,
             cancellationToken);
 
@@ -513,6 +528,21 @@ public sealed class AgentConnection : IAsyncDisposable
             try
             {
                 (secrets, eventToken) = await MintAsync(provider, payload, cancellationToken);
+            }
+            catch (SessionNotLiveException exception)
+            {
+                // The session this row belongs to is over, cancelled, or was never dispatched. There is
+                // nothing to run and nothing to credential, so the row is settled rather than handed
+                // back: returning it would re-offer the same dead work on the next claim, forever.
+                _logger.LogWarning(
+                    "Refusing to mint credentials for session {SessionId}: {Reason} The job is being "
+                    + "completed rather than granted to agent {AgentId}.",
+                    payload.SessionId,
+                    exception.Message,
+                    AgentId);
+
+                await queue.CompleteAsync(job.Id, WorkerId, now, cancellationToken);
+                continue;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -550,10 +580,20 @@ public sealed class AgentConnection : IAsyncDisposable
         await SendGrantAsync(assignments, envelope, cancellationToken);
     }
 
+    /// <summary>
+    /// One streamed line from a running job (section 11: the status thread is fed from here).
+    /// </summary>
+    /// <remarks>
+    /// Gated on the handshake and on the claim. The frame names its own job id, so without the second
+    /// check any authenticated daemon could append to the transcript of a session it was never given
+    /// — and a transcript is what a requester and an engineer both read as the account of what
+    /// happened. An event for a job this agent no longer holds is dropped rather than written: the
+    /// worker that does hold it is the one whose account counts.
+    /// </remarks>
     private async Task OnJobEventAsync(Envelope envelope, CancellationToken cancellationToken)
     {
         var payload = envelope.ReadPayload<JobEventPayload>();
-        if (payload is null || !Guid.TryParse(payload.JobId, out var jobId))
+        if (payload is null || !Ready || !Guid.TryParse(payload.JobId, out var jobId))
         {
             return;
         }
@@ -561,7 +601,7 @@ public sealed class AgentConnection : IAsyncDisposable
         await using var scope = _scopes.CreateAsyncScope();
         var provider = scope.ServiceProvider;
 
-        if (await ResolveSessionAsync(provider, jobId, cancellationToken) is not { } sessionId)
+        if (await ResolveHeldSessionAsync(provider, jobId, cancellationToken) is not { } sessionId)
         {
             return;
         }
@@ -665,11 +705,27 @@ public sealed class AgentConnection : IAsyncDisposable
     /// Mints the two credentials of section 33.5, at claim time and never before.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// This is the whole of what crosses to an agent host: a short-TTL token for the one repository
     /// in this job, and a model credential. Never a refresh token — the control plane owns OAuth
     /// refresh (section 20b.2) — never this process's environment, and never a token for a repository
-    /// other than the one named on the row.
+    /// other than the one the <em>session</em> belongs to.
+    /// </para>
+    /// <para>
+    /// Gated on the session being live, exactly as the HTTP exchange is. A job row outliving its
+    /// session is ordinary rather than exotic: cancelling a claimed session fails its job, and a
+    /// failed job with an attempt left goes back to <c>Pending</c> for the next agent to claim. Minting
+    /// there would hand a contribute-scoped GitHub token and a twelve-hour event token to a runner for
+    /// work that had already been called off — a credential outliving the thing that justified it
+    /// (sections 6, 16, 33.5).
+    /// </para>
+    /// <para>
+    /// The repository is read from the session rather than taken from the payload, so the token
+    /// follows the session's own aggregate and a row whose payload disagrees is refused instead of
+    /// being trusted.
+    /// </para>
     /// </remarks>
+    /// <exception cref="SessionNotLiveException">The session may not be given credentials.</exception>
     private async Task<(JobSecrets? Secrets, string? EventToken)> MintAsync(
         IServiceProvider provider,
         AgentJobPayload payload,
@@ -678,6 +734,25 @@ public sealed class AgentConnection : IAsyncDisposable
         if (payload.RepoFullName is not { Length: > 0 } repo)
         {
             return (null, null);
+        }
+
+        var decision = await SessionCredentialGuard.EvaluateAsync(
+            provider.GetRequiredService<CharterDbContext>(),
+            provider.GetRequiredService<SessionJournal>(),
+            payload.SessionId,
+            cancellationToken);
+
+        if (!decision.Allowed)
+        {
+            throw new SessionNotLiveException(decision);
+        }
+
+        if (!string.Equals(decision.RepoFullName, repo, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SessionNotLiveException(
+                new SessionCredentialDecision(SessionCredentialRefusal.UnknownSession, decision.RepoFullName),
+                "This job names a repository its session does not belong to, so no credentials will be "
+                + "issued for it.");
         }
 
         var broker = provider.GetRequiredService<IRunnerCredentialBroker>();
@@ -779,6 +854,17 @@ public sealed class AgentConnection : IAsyncDisposable
         await queue.CompleteAsync(job.Id, WorkerId, now, cancellationToken);
     }
 
+    /// <summary>
+    /// The same manoeuvre for a job named by a frame rather than held in hand.
+    /// </summary>
+    /// <remarks>
+    /// The claim is re-read and checked before anything is written. A <c>job.result</c> frame carries
+    /// a job id the agent chose, and the row is the only authority on who holds it — so re-enqueueing
+    /// on the frame's word alone would let a stale reconnect, or a daemon reporting on a lease that
+    /// lapsed under it, mint a second copy of work another worker is already running. The
+    /// <c>CompleteAsync</c> below is guarded by <c>claimed_by</c> and would no-op in that case, which
+    /// is precisely what leaves the duplicate behind with nothing to cancel it.
+    /// </remarks>
     private async Task ReturnToQueueAsync(
         JobQueue queue,
         Guid jobId,
@@ -792,6 +878,19 @@ public sealed class AgentConnection : IAsyncDisposable
         var row = await db.Jobs.AsNoTracking().FirstOrDefaultAsync(job => job.Id == jobId, cancellationToken);
         if (row is null)
         {
+            return;
+        }
+
+        if (row.Status != Domain.JobStatus.Claimed
+            || !string.Equals(row.ClaimedBy, WorkerId, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "Agent {AgentId} abandoned job {JobId}, but the claim is held by {ClaimedBy}; "
+                + "leaving the queue alone",
+                AgentId,
+                jobId,
+                row.ClaimedBy ?? "nobody");
+
             return;
         }
 
@@ -813,7 +912,17 @@ public sealed class AgentConnection : IAsyncDisposable
         await queue.CompleteAsync(jobId, WorkerId, now, cancellationToken);
     }
 
-    private static async Task<Guid?> ResolveSessionAsync(
+    /// <summary>
+    /// The session a job belongs to, but only while <em>this</em> agent holds the claim.
+    /// </summary>
+    /// <remarks>
+    /// The job id arrives in a frame the agent composed, so it is a request rather than a fact. The
+    /// row is the authority on who holds a claim (section 2.3), and restricting the lookup to this
+    /// worker's claims is what keeps one connected daemon from writing into the transcript of a
+    /// session belonging to somebody else's repository — a stream the requester and the engineer both
+    /// read as an account of what happened (sections 11, 16).
+    /// </remarks>
+    private async Task<Guid?> ResolveHeldSessionAsync(
         IServiceProvider provider,
         Guid jobId,
         CancellationToken cancellationToken)
@@ -822,7 +931,9 @@ public sealed class AgentConnection : IAsyncDisposable
 
         var payload = await db.Jobs
             .AsNoTracking()
-            .Where(job => job.Id == jobId)
+            .Where(job => job.Id == jobId
+                          && job.Status == Domain.JobStatus.Claimed
+                          && job.ClaimedBy == WorkerId)
             .Select(job => job.Payload)
             .FirstOrDefaultAsync(cancellationToken);
 

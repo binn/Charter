@@ -232,6 +232,7 @@ public sealed class ChangeRequestPublisher
             }
 
             var labels = await ResolveLabelsAsync(session, provider, cancellationToken);
+            var checks = await ReadChecksAsync(session.Id, cancellationToken);
 
             var snapshot = await provider.OpenChangeRequestAsync(
                 new OpenChangeRequestCommand(
@@ -239,7 +240,7 @@ public sealed class ChangeRequestPublisher
                     branch,
                     reference.BaseBranch,
                     Title(spec),
-                    Body(spec, session, labels, provider),
+                    Body(spec, session, labels, provider, checks),
                     labels),
                 cancellationToken);
 
@@ -568,6 +569,49 @@ public sealed class ChangeRequestPublisher
         return title.Length <= 72 ? title : title[..71].TrimEnd() + "…";
     }
 
+    /// <summary>One check the session ran, as the transcript recorded it (section 8).</summary>
+    /// <param name="Name">The check's name.</param>
+    /// <param name="Passed">Whether it passed.</param>
+    /// <param name="Summary">One line about how it went.</param>
+    private sealed record CheckReport(string Name, bool Passed, string Summary);
+
+    /// <summary>
+    /// What the repository's own checks made of this change (section 8).
+    /// </summary>
+    /// <remarks>
+    /// Read from the transcript rather than re-run: the checks ran in the sandbox, against the
+    /// workspace, at the moment the work existed. This is the reporting half of the decision that a
+    /// failing check does not block the push — it has to arrive in front of the reviewer, first, in
+    /// the place they actually read.
+    /// </remarks>
+    private async Task<IReadOnlyList<CheckReport>> ReadChecksAsync(
+        Guid sessionId,
+        CancellationToken cancellationToken)
+    {
+        var payloads = await _database.Events
+            .AsNoTracking()
+            .Where(@event => @event.SessionId == sessionId && @event.Type == EventTypes.CheckResult)
+            .OrderBy(@event => @event.Seq)
+            .Select(@event => @event.Payload)
+            .ToListAsync(cancellationToken);
+
+        var reports = new List<CheckReport>();
+
+        foreach (var payload in payloads)
+        {
+            // `passed` is what distinguishes a check the session ran from the migration
+            // classification, which uses the same event type and reports a class rather than a verdict.
+            if (ReadBool(payload, "passed") is not { } passed || Read(payload, "check") is not { Length: > 0 } name)
+            {
+                continue;
+            }
+
+            reports.Add(new CheckReport(name, passed, Read(payload, "summary") ?? string.Empty));
+        }
+
+        return reports;
+    }
+
     /// <summary>
     /// The change request body. It states facts and never editorialises on quality (section 14).
     /// </summary>
@@ -575,7 +619,8 @@ public sealed class ChangeRequestPublisher
         Spec spec,
         Session session,
         IReadOnlyList<string> labels,
-        IVersionControlProvider provider)
+        IVersionControlProvider provider,
+        IReadOnlyList<CheckReport> checks)
     {
         var body = new StringBuilder();
 
@@ -595,9 +640,61 @@ public sealed class ChangeRequestPublisher
             body.AppendLine();
         }
 
+        if (checks.Any(check => !check.Passed))
+        {
+            // Reported at the top, in words, because this is the one fact about the change that
+            // decides whether the diff is worth reading yet.
+            body.AppendLine("> **A check this repository declares did not pass.**");
+
+            foreach (var check in checks.Where(check => !check.Passed))
+            {
+                body.Append("> - ").AppendLine(check.Summary);
+            }
+
+            body.AppendLine(">");
+            body.AppendLine(
+                "> Charter opened this anyway. A failing check is reported rather than hidden, and it "
+                + "cannot ship on its own: merging is decided here, by branch protection and the people "
+                + "who own this repository (spec §7.4, §8).");
+            body.AppendLine();
+        }
+
         body.AppendLine("## Specification");
         body.AppendLine();
         body.AppendLine(spec.BodyMd.Trim());
+        body.AppendLine();
+
+        body.AppendLine("## Checks");
+        body.AppendLine();
+
+        if (checks.Count == 0)
+        {
+            // Said plainly rather than left blank. "Nothing ran" and "everything passed" are not the
+            // same claim, and a reviewer must never have to guess which one they are looking at.
+            body.AppendLine(
+                "This repository declares no checks in `.charter/config.yml`, so nothing was verified "
+                + "automatically (spec §8).");
+        }
+        else
+        {
+            foreach (var check in checks)
+            {
+                body
+                    .Append("- ")
+                    .Append(check.Passed ? "**passed**" : "**failed**")
+                    .Append(" — `")
+                    .Append(check.Name)
+                    .Append('`');
+
+                if (!check.Passed && check.Summary.Length > 0)
+                {
+                    body.Append(": ").Append(check.Summary);
+                }
+
+                body.AppendLine();
+            }
+        }
+
         body.AppendLine();
         body.AppendLine("---");
         body.AppendLine();
@@ -620,6 +717,24 @@ public sealed class ChangeRequestPublisher
                    && document.RootElement.TryGetProperty(property, out var value)
                    && value.ValueKind == JsonValueKind.String
                 ? value.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool? ReadBool(string payload, string property)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                   && document.RootElement.TryGetProperty(property, out var value)
+                   && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? value.GetBoolean()
                 : null;
         }
         catch (JsonException)

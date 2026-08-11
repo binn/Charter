@@ -114,7 +114,10 @@ dotnet ef migrations script --idempotent --project src/Charter
 # Local Postgres
 docker compose up -d postgres
 
-# Seed demo data (fake org, repo, and completed sessions; disables outbound calls)
+# Seed demo data (fake org, repo, and completed sessions; disables outbound calls).
+# Seeds two accounts and prints them at startup: priya@northwind.example (requester)
+# and ada@northwind.example (admin, engineer, approver), password charter-demo-password.
+# Only ever seeds into an empty database. The password is public — treat the instance as public.
 CHARTER_DEMO=true dotnet run --project src/Charter
 ```
 
@@ -212,6 +215,12 @@ elapsed time only (spec §6).
 
 `agent-docs/spec.md` is the source of truth. Read the relevant section before implementing — do not
 infer the design from surrounding code.
+
+`agent-docs/state.md` is the companion: the spec says what Charter *should* be, and `state.md` says
+what it currently *is* — what is verified green, what is unfinished, what is configured but not
+implemented, and which parts have never run against anything real. **Read it before starting work**,
+so you neither rebuild something that exists nor trust something that does not. Update it in the same
+commit when your change makes it wrong.
 
 | Topic | Section |
 |---|---|

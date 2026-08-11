@@ -82,7 +82,19 @@ public sealed class QueueDispatcher : BackgroundService
     /// <returns>How many jobs were claimed.</returns>
     public async Task<int> DispatchOnceAsync(CancellationToken cancellationToken = default)
     {
-        var capabilities = await _registry.AdvertisedCapabilitiesAsync(cancellationToken);
+        var advertised = await _registry.AdvertisedCapabilitiesAsync(cancellationToken);
+
+        // The other half of the section 2.2 boundary. A row carrying the execution plane's routing
+        // marker belongs to a Charter Agent, and dispatching it here would run the session a second
+        // time. AgentRunner.DescribeAsync already keeps the marker out of what it advertises, but the
+        // union is taken across every enabled backend and a runner's capabilities can come from
+        // operator configuration — so the claimant drops it rather than trusting every backend to.
+        var capabilities = advertised
+            .Where(capability => !string.Equals(
+                capability,
+                Runners.Agent.AgentRunner.ClaimCapability,
+                StringComparison.Ordinal))
+            .ToArray();
 
         await using var scope = _scopeFactory.CreateAsyncScope();
         var queue = scope.ServiceProvider.GetRequiredService<JobQueue>();

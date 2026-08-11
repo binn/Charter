@@ -1,7 +1,37 @@
+using Charter.Api;
+using Charter.Auth;
+using Charter.Auth.Providers;
+using Charter.Configuration;
 using Charter.Domain;
+using Charter.Onboarding;
 using Microsoft.EntityFrameworkCore;
 
 namespace Charter.Data.Demo;
+
+/// <summary>What a seeding attempt found and did.</summary>
+public enum DemoSeedOutcome
+{
+    /// <summary>The database was empty and now holds the demonstration data.</summary>
+    Seeded,
+
+    /// <summary>
+    /// The demonstration data is already here, from an earlier boot. Nothing was written, and the
+    /// seeded accounts still sign in.
+    /// </summary>
+    AlreadySeeded,
+
+    /// <summary>
+    /// The database holds something that is not the demonstration data, so nothing was written.
+    /// </summary>
+    Occupied,
+}
+
+/// <summary>One seeded sign-in, as the startup banner needs to describe it.</summary>
+/// <param name="Email">The address to sign in with.</param>
+/// <param name="DisplayName">The person's name, as the instance shows it.</param>
+/// <param name="Roles">The section 7.1 roles the member holds.</param>
+/// <param name="Sees">One line on what this account's view is for.</param>
+public sealed record DemoAccount(string Email, string DisplayName, string Roles, string Sees);
 
 /// <summary>
 /// The fake organisation, repository and completed sessions of section 30.6.
@@ -25,8 +55,17 @@ namespace Charter.Data.Demo;
 /// Nothing here needs schema that <c>InitialCreate</c> does not already have, which is deliberate. A
 /// demonstration feature is a poor reason to touch a migration.
 /// </para>
+/// <para>
+/// The two accounts are the point of the exercise, not a convenience. Charter's claim is that a
+/// requester and an engineer see genuinely different instances of the same request, and that the
+/// difference is server-side omission rather than a hidden div (section 7.4). One account cannot
+/// demonstrate that; two, signed into in turn, demonstrate it in about a minute. They authenticate
+/// through <see cref="PasswordIdentityProvider"/> like every other account - the seeder writes a
+/// PBKDF2 hash through <see cref="ICharterPasswordHasher"/> and nothing else, so there is no demo
+/// branch in sign-in, no magic address and no short-circuited permission check.
+/// </para>
 /// </remarks>
-public sealed class DemoSeeder(CharterDbContext database, TimeProvider time)
+public sealed class DemoSeeder(CharterDbContext database, TimeProvider time, ICharterPasswordHasher hasher)
 {
     /// <summary>The organisation the demo data hangs from.</summary>
     public const string OrganizationName = "Northwind Coffee";
@@ -34,30 +73,88 @@ public sealed class DemoSeeder(CharterDbContext database, TimeProvider time)
     /// <summary>The repository the demo requests are filed against.</summary>
     public const string RepositoryFullName = "northwind-coffee/storefront";
 
-    /// <summary>The admin and engineer account. Sign-in is not seeded; this is a populated instance.</summary>
+    /// <summary>The admin, engineer and approver account.</summary>
     public const string EngineerEmail = "ada@northwind.example";
 
     /// <summary>The requester account, whose view is the one section 30.4 cares about.</summary>
     public const string RequesterEmail = "priya@northwind.example";
 
     /// <summary>
-    /// Writes the demo data, unless this database already has an organisation.
+    /// The password both seeded accounts sign in with.
     /// </summary>
     /// <remarks>
-    /// The guard is "any organisation exists", not "the demo organisation exists". Section 7.2a gives
-    /// an instance exactly one organisation, so a database with one is either already seeded or
-    /// already in real use, and in both cases writing a second one would be wrong. This makes the
-    /// seeder safe to run on every boot, which is the only way it can be a hosted service.
+    /// <para>
+    /// Published, and deliberately so: it is printed at startup and written in the documentation,
+    /// because an evaluator who has to read source to get past the sign-in page has already been lost.
+    /// Anything unguessable would have to be generated, and a generated secret that changes on every
+    /// container restart cannot appear in a getting-started page at all.
+    /// </para>
+    /// <para>
+    /// What makes that safe is not the string, which is public, but where it can exist. These accounts
+    /// are only ever written into a database with nothing in it (see <see cref="SeedAsync"/>), so a
+    /// well-known password can never appear on an instance that holds real work. The residual risk is
+    /// an operator who evaluates on a reachable host and then keeps the database, which is what the
+    /// startup banner warns about in as many words.
+    /// </para>
     /// </remarks>
-    /// <returns>True when the data was written, false when the instance was already populated.</returns>
-    public async Task<bool> SeedAsync(CancellationToken cancellationToken = default)
+    public const string Password = "charter-demo-password";
+
+    /// <summary>The seeded sign-ins, in the order an evaluator should try them.</summary>
+    /// <remarks>
+    /// Requester first. Section 7.4's difference only reads as a difference if the narrower view is
+    /// the one seen first; starting as the admin makes the requester's view look like a broken page
+    /// rather than a deliberate one.
+    /// </remarks>
+    public static IReadOnlyList<DemoAccount> Accounts { get; } =
+    [
+        new DemoAccount(
+            RequesterEmail,
+            "Priya Raman",
+            "Requester",
+            "the plain-language view: status thread, previews, no repo name, branch, diff or token count"),
+        new DemoAccount(
+            EngineerEmail,
+            "Ada Okafor",
+            "Admin, Engineer, Approver",
+            "the three-pane view: transcripts, diffs, recaps, cost, members and the audit log"),
+    ];
+
+    /// <summary>
+    /// Writes the demo data, unless this database already holds something.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The guard is "any organisation or any user exists", not "the demo organisation exists".
+    /// Section 7.2a gives an instance exactly one organisation, so a database with one is either
+    /// already seeded or already in real use, and in both cases writing a second one would be wrong.
+    /// The user half of the condition is the security-relevant one: an instance that has been claimed
+    /// through section 30.1 but has not named its organisation yet must not acquire two accounts with
+    /// a published password. This makes the seeder safe to run on every boot, which is the only way
+    /// it can be a hosted service.
+    /// </para>
+    /// <para>
+    /// The distinction between <see cref="DemoSeedOutcome.AlreadySeeded"/> and
+    /// <see cref="DemoSeedOutcome.Occupied"/> exists so the caller knows whether the printed
+    /// credentials are true. On a restart they still are; over somebody's real data they are not, and
+    /// printing them would be an invitation to try them.
+    /// </para>
+    /// </remarks>
+    public async Task<DemoSeedOutcome> SeedAsync(CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(time);
+        ArgumentNullException.ThrowIfNull(hasher);
 
-        if (await database.Organizations.AnyAsync(cancellationToken).ConfigureAwait(false))
+        if (await database.Organizations.AnyAsync(cancellationToken).ConfigureAwait(false)
+            || await database.Users.AnyAsync(cancellationToken).ConfigureAwait(false))
         {
-            return false;
+            // "Is this our own data?" is asked of the users rather than the organisation name, because
+            // the organisation is renameable from the settings page and the account identities are not.
+            var mine = await database.Users
+                .CountAsync(user => user.Email == RequesterEmail || user.Email == EngineerEmail, cancellationToken)
+                .ConfigureAwait(false);
+
+            return mine == 2 ? DemoSeedOutcome.AlreadySeeded : DemoSeedOutcome.Occupied;
         }
 
         var now = time.GetUtcNow();
@@ -69,6 +166,12 @@ public sealed class DemoSeeder(CharterDbContext database, TimeProvider time)
         var requester = User.Create(RequesterEmail, "Priya Raman", TeachingLevel.ExplainEverything, now.AddDays(-31));
         requester.CompleteRequesterOnboarding(now.AddDays(-31));
         database.Users.AddRange(engineer, requester);
+
+        // Hashed once per account rather than once for both: the password is shared and public, but a
+        // shared salt would be a habit worth not forming in code somebody will copy.
+        database.Identities.AddRange(
+            PasswordIdentityProvider.NewPasswordIdentity(engineer.Id, HashDemoPassword(), now.AddDays(-38)),
+            PasswordIdentityProvider.NewPasswordIdentity(requester.Id, HashDemoPassword(), now.AddDays(-31)));
 
         var engineerMember = Member.Create(
             organization.Id,
@@ -88,15 +191,163 @@ public sealed class DemoSeeder(CharterDbContext database, TimeProvider time)
         var repo = SeedRepository(organization.Id, now);
 
         // Section 7.3, guardrail 1: deny by default, so a repository is requestable only because a
-        // grant says so. The demo instance shows the grant rather than implying repos are open.
-        database.RepoScopes.Add(RepoScope.ForRole(repo.Id, MemberRole.Requester, canRequest: true, now.AddDays(-34)));
+        // grant says so. The demo instance shows the grants rather than implying repos are open.
+        //
+        // Both roles are granted, and the engineer's grant is not a courtesy. Deny by default applies
+        // to everyone, so without it Ada holds three roles and can still file nothing: her project
+        // list is empty, `canFileRequests` is false, and an evaluator signed in as the administrator
+        // sees an instance that looks broken rather than one that looks locked down.
+        database.RepoScopes.AddRange(
+            RepoScope.ForRole(repo.Id, MemberRole.Requester, canRequest: true, now.AddDays(-34)),
+            RepoScope.ForRole(repo.Id, MemberRole.Engineer, canRequest: true, now.AddDays(-34)));
+
+        SeedBudgets(organization.Id, requester.Id, now);
 
         SeedExportSession(organization, repo, requester, engineer, now);
         SeedCheckoutSession(organization, repo, requester, engineer, now);
         SeedRefiningRequest(organization, repo, requester, now);
 
+        SeedAuditTrail(organization.Id, repo, engineer, requester, now);
+
         await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return true;
+        return DemoSeedOutcome.Seeded;
+    }
+
+    /// <summary>The budgets every seeded cost is booked against. Set before the sessions are written.</summary>
+    private Guid[] budgetIds = [];
+
+    /// <summary>
+    /// The stored verifier for <see cref="Password"/>, produced by the same hasher sign-in verifies
+    /// against.
+    /// </summary>
+    private string HashDemoPassword() => hasher.Hash(new Secret(Password));
+
+    /// <summary>
+    /// The section 34 spend gate, with something in it.
+    /// </summary>
+    /// <remarks>
+    /// An org cap and one per-person cap, which is the smallest pair that shows the two questions
+    /// budgets answer - "how much does this organisation spend" and "how much may this person spend
+    /// without asking". <see cref="BudgetBehaviour.RequireApproval"/> rather than
+    /// <see cref="BudgetBehaviour.Block"/>, for the section 7.5 reason: the merge gate is immovable,
+    /// so the worst case above a spend cap is a decision, not a refusal.
+    /// </remarks>
+    private void SeedBudgets(Guid organizationId, Guid requesterId, DateTimeOffset now)
+    {
+        var organizationBudget = Budget.Create(
+            organizationId,
+            "Engineering, monthly",
+            BudgetScopeType.Org,
+            LedgerUnit.Usd,
+            BudgetPeriod.Monthly,
+            amount: 400m,
+            BudgetBehaviour.RequireApproval,
+            approvalThreshold: 5m,
+            now: now.AddDays(-37));
+
+        var requesterBudget = Budget.Create(
+            organizationId,
+            "Priya Raman, monthly",
+            BudgetScopeType.User,
+            LedgerUnit.Usd,
+            BudgetPeriod.Monthly,
+            amount: 60m,
+            BudgetBehaviour.RequireApproval,
+            scopeId: requesterId.ToString(),
+            approvalThreshold: 3m,
+            now: now.AddDays(-31));
+
+        database.Budgets.AddRange(organizationBudget, requesterBudget);
+        budgetIds = [organizationBudget.Id, requesterBudget.Id];
+    }
+
+    /// <summary>
+    /// Books a settled cost against the budgets, so the ledger and the session agree.
+    /// </summary>
+    /// <remarks>
+    /// Reserved and then settled rather than written straight to settled, because that is the only
+    /// sequence section 34.4 allows and the only one the domain will accept. A demo whose ledger were
+    /// empty would show every budget at zero next to sessions that plainly cost money, which reads as
+    /// a bug in the accounting rather than as a gap in the fixture.
+    /// </remarks>
+    private void SeedLedgerEntry(
+        Guid organizationId,
+        Guid userId,
+        Guid sessionId,
+        LedgerCategory category,
+        decimal usd,
+        DateTimeOffset at)
+    {
+        var entry = LedgerEntry.ReserveUsd(
+            organizationId,
+            userId,
+            category,
+            usd,
+            budgetIds,
+            sessionId,
+            now: at);
+
+        entry.Settle(usd, quotaSessions: 0m, imputedUsd: 0m, at.AddMinutes(20));
+        database.LedgerEntries.Add(entry);
+    }
+
+    /// <summary>
+    /// The week's history as the audit log tells it (section 7.3, guardrail 5).
+    /// </summary>
+    /// <remarks>
+    /// Every entry is attributable to a named human, which is the guarantee the audit page exists to
+    /// make visible. Without these rows the page renders only the evaluator's own sign-in - true, and
+    /// the least informative possible answer to "what has this instance done".
+    /// </remarks>
+    private void SeedAuditTrail(
+        Guid organizationId,
+        Repo repo,
+        User engineer,
+        User requester,
+        DateTimeOffset now)
+    {
+        var repository = $$"""{"full_name":"{{RepositoryFullName}}"}""";
+        var repoId = repo.Id.ToString();
+
+        Record(AuditActions.SetupCompleted, "organization", engineer.Id, organizationId.ToString(), null, -38);
+        Record(OnboardingAuditActions.RepoConnected, "repo", engineer.Id, repoId, repository, -36);
+        Record(OnboardingAuditActions.ReconStarted, "repo", engineer.Id, repoId, repository, -36);
+        Record(OnboardingAuditActions.ScopeProposed, "repo", null, repoId, repository, -35);
+        Record(OnboardingAuditActions.ScopeConfirmed, "repo", engineer.Id, repoId, repository, -35);
+        Record(OnboardingAuditActions.RepoReady, "repo", null, repoId, repository, -34);
+        Record(OnboardingAuditActions.PrimerPublished, "repo", engineer.Id, repoId, repository, -34);
+
+        Record(
+            AuditActions.MemberInvited,
+            "user",
+            engineer.Id,
+            requester.Id.ToString(),
+            $$"""{"member_email":"{{RequesterEmail}}","role":"requester"}""",
+            -32);
+
+        Record(AuditActions.MemberInviteAccepted, "user", requester.Id, requester.Id.ToString(), null, -31);
+        Record(AuditActions.RepoScopeGranted, "repo", engineer.Id, repoId, repository, -34);
+
+        // The spend gate, twice, on the two requests that were built (section 7.5).
+        Record(AuditActions.SpecApproved, "session", engineer.Id, null, null, -9);
+        Record(ApiAuditActions.SessionApproved, "session", engineer.Id, null, null, -8);
+        Record(AuditActions.SpecApproved, "session", engineer.Id, null, null, -2);
+
+        void Record(
+            string action,
+            string targetType,
+            Guid? actor,
+            string? targetId,
+            string? metadata,
+            int daysAgo)
+            => database.AuditLogs.Add(AuditLog.Record(
+                organizationId,
+                action,
+                targetType,
+                actor,
+                targetId,
+                metadata,
+                now.AddDays(daysAgo)));
     }
 
     private Repo SeedRepository(Guid organizationId, DateTimeOffset now)
@@ -203,6 +454,11 @@ public sealed class DemoSeeder(CharterDbContext database, TimeProvider time)
         session.AddCost(1.86m);
         session.TransitionTo(SessionStatus.Merged, filed.AddDays(1).AddHours(3));
         database.Sessions.Add(session);
+
+        // Booked to the requester, not the engineer: section 34 governs whose budget a request
+        // spends, and it is the person who asked for it.
+        SeedLedgerEntry(organization.Id, requester.Id, session.Id, LedgerCategory.Build, 1.86m, filed.AddHours(5));
+        SeedLedgerEntry(organization.Id, requester.Id, session.Id, LedgerCategory.Recap, 0.09m, filed.AddDays(1));
 
         var events = AppendTranscript(session.Id, filed.AddHours(5).AddMinutes(1),
         [
@@ -355,6 +611,9 @@ public sealed class DemoSeeder(CharterDbContext database, TimeProvider time)
         session.AddCost(0.94m);
         session.TransitionTo(SessionStatus.PreviewReady, filed.AddHours(6));
         database.Sessions.Add(session);
+
+        SeedLedgerEntry(organization.Id, requester.Id, session.Id, LedgerCategory.Build, 0.94m, filed.AddHours(2));
+        SeedLedgerEntry(organization.Id, requester.Id, session.Id, LedgerCategory.Recap, 0.06m, filed.AddHours(6));
 
         var events = AppendTranscript(session.Id, filed.AddHours(2).AddMinutes(2),
         [

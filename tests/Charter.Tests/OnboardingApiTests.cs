@@ -409,6 +409,256 @@ public class OnboardingApiTests
     }
 
     [Fact]
+    public async Task ReconsProposalSurvivesTheRunThatProducedIt()
+    {
+        // Section 9 step 3: the proposed scope is what an engineer *edits* before the repository is
+        // requestable. A proposal that only ever existed inside the pull request would leave the
+        // confirmation screen with nothing to render.
+        await using var world = await OnboardingApiWorld.CreateAsync();
+        var repo = await world.ConnectAsync();
+
+        await world.Repos.StartReconAsync(world.Engineer, repo.Id, TestContext.Current.CancellationToken);
+
+        await world.Onboarding.CompleteReconAsync(
+            repo.Id,
+            new ReconReport
+            {
+                DetectedStack = ["dotnet:10", "node:22"],
+                ProposedAllow = ["src/Features/**", "src/Web/Components/**"],
+
+                // Recon reading a README that asks for infrastructure access. The floor refuses it,
+                // and the refusal is shown rather than dropped quietly (section 16).
+                ProposedDeny = ["docs/**"],
+                Checks = [new CharterCheck("build", "dotnet build"), new CharterCheck("test", "dotnet test")],
+                Seed = "dotnet run --project tools/Seed",
+                ExistingGuidance = new ExistingAgentGuidance(null, "# AGENTS.md"),
+            },
+            world.Engineer.UserId,
+            TestContext.Current.CancellationToken);
+
+        var (outcome, described) = await world.Repos.DescribeAsync(
+            world.Engineer,
+            repo.Id,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(outcome.Succeeded);
+        Assert.NotNull(described!.ProposedScope);
+
+        var proposal = described.ProposedScope;
+
+        Assert.Equal(["dotnet:10", "node:22"], proposal.DetectedStack);
+        Assert.Contains(proposal.Commands, command => command.Command == "dotnet test");
+        Assert.Contains(proposal.Commands, command => command.Label == "Seed");
+        Assert.Equal(["AGENTS.md"], proposal.ImportedFrom);
+
+        var allowed = proposal.Entries.Where(entry => entry.Allowed).Select(entry => entry.Path).ToList();
+        Assert.Contains("src/Features/**", allowed);
+        Assert.Contains("src/Web/Components/**", allowed);
+
+        // The deny-by-default floor renders as locked rows with a reason, never as a toggle the
+        // server would filter out anyway.
+        var locked = proposal.Entries.Where(entry => entry.Locked == true).ToList();
+        Assert.NotEmpty(locked);
+        Assert.All(locked, entry => Assert.False(entry.Allowed));
+        Assert.All(locked, entry => Assert.NotNull(entry.Reason));
+
+        // A directory glob is a directory, so the tree does not render globs as files.
+        Assert.Equal(
+            "directory",
+            Assert.Single(proposal.Entries, entry => entry.Path == "src/Features/**").Kind);
+    }
+
+    [Fact]
+    public async Task NoProposalIsSentBeforeReconHasRun()
+    {
+        await using var world = await OnboardingApiWorld.CreateAsync();
+        var repo = await world.ConnectAsync();
+
+        var (_, described) = await world.Repos.DescribeAsync(
+            world.Engineer,
+            repo.Id,
+            TestContext.Current.CancellationToken);
+
+        // Absent, so the wizard offers the recon step rather than rendering an empty file tree.
+        Assert.Null(described!.ProposedScope);
+
+        var body = await ApiPayloads.RenderAsync(described);
+        Assert.DoesNotContain("proposedScope", ApiPayloads.Keys(body));
+        Assert.DoesNotContain("primerDraftMd", ApiPayloads.Keys(body));
+    }
+
+    [Fact]
+    public async Task ThePrimerDraftIsScaffoldedFromReconAndThenBecomesThePublishedPage()
+    {
+        await using var world = await OnboardingApiWorld.CreateAsync();
+        var repo = await world.ConnectAsync();
+
+        await world.Repos.StartReconAsync(world.Engineer, repo.Id, TestContext.Current.CancellationToken);
+
+        await world.Onboarding.CompleteReconAsync(
+            repo.Id,
+            new ReconReport
+            {
+                DetectedStack = ["dotnet:10"],
+                ProposedAllow = ["src/Features/**"],
+                Checks = [new CharterCheck("test", "dotnet test")],
+                ProjectName = "Quote tool",
+            },
+            world.Engineer.UserId,
+            TestContext.Current.CancellationToken);
+
+        var (_, drafted) = await world.Repos.DescribeAsync(
+            world.Engineer,
+            repo.Id,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(drafted!.PrimerDraftMd);
+        Assert.Contains("# Quote tool", drafted.PrimerDraftMd, StringComparison.Ordinal);
+        Assert.Contains("dotnet test", drafted.PrimerDraftMd, StringComparison.Ordinal);
+
+        // Section 9 step 5: the engineer edits it. After publishing, the editor opens on the page
+        // that is live rather than on the draft it was written over.
+        await world.Repos.PublishPrimerAsync(
+            world.Engineer,
+            repo.Id,
+            new PublishPrimerBody { Markdown = "# Quote tool\n\nWhat the sales team sends customers." },
+            TestContext.Current.CancellationToken);
+
+        var (_, published) = await world.Repos.DescribeAsync(
+            world.Engineer,
+            repo.Id,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            "# Quote tool\n\nWhat the sales team sends customers.",
+            published!.PrimerDraftMd);
+        Assert.True(published.Repo.HasPrimer);
+    }
+
+    [Fact]
+    public async Task AFailedSmokeTestSaysWhichOfTheSixBrokeAndWhichNeverRan()
+    {
+        await using var world = await OnboardingApiWorld.CreateAsync();
+        var repo = await world.ReachSmokeTestAsync();
+
+        await world.Onboarding.CompleteSmokeTestAsync(
+            repo.Id,
+            new SmokeTestReport { RequestFiled = true, AgentRan = true },
+            world.Engineer.UserId,
+            TestContext.Current.CancellationToken);
+
+        var (_, outcome) = await world.Repos.SmokeTestAsync(
+            world.Engineer,
+            repo.Id,
+            TestContext.Current.CancellationToken);
+
+        Assert.NotNull(outcome!.Checkpoints);
+        Assert.Equal(6, outcome.Checkpoints.Count);
+
+        var byId = outcome.Checkpoints.ToDictionary(point => point.Id);
+
+        Assert.Equal(ApiSmokeTestCheckpointState.Passed, byId[ApiSmokeTestCheckpointId.RequestFiled].State);
+        Assert.Equal(ApiSmokeTestCheckpointState.Passed, byId[ApiSmokeTestCheckpointId.AgentRan].State);
+
+        // The first thing that did not happen is the failure; everything after it never ran, and
+        // saying it failed would send the engineer to the wrong subsystem.
+        Assert.Equal(ApiSmokeTestCheckpointState.Failed, byId[ApiSmokeTestCheckpointId.ChecksPassed].State);
+        Assert.Equal(ApiSmokeTestCheckpointState.Skipped, byId[ApiSmokeTestCheckpointId.PullRequest].State);
+        Assert.Equal(ApiSmokeTestCheckpointState.Skipped, byId[ApiSmokeTestCheckpointId.UrlBound].State);
+    }
+
+    [Fact]
+    public async Task AnEmptyPreviewWarnsOnAPassingRunRatherThanBlockingIt()
+    {
+        await using var world = await OnboardingApiWorld.CreateAsync();
+        var repo = await world.ReachSmokeTestAsync();
+
+        await world.Onboarding.CompleteSmokeTestAsync(
+            repo.Id,
+            SmokeTestReport.Passing with { PreviewHasData = false, PullRequestNumber = 12 },
+            world.Engineer.UserId,
+            TestContext.Current.CancellationToken);
+
+        var (_, outcome) = await world.Repos.SmokeTestAsync(
+            world.Engineer,
+            repo.Id,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(outcome!.Passed);
+        Assert.NotNull(outcome.Warnings);
+        Assert.Contains(outcome.Warnings, warning => warning.Contains("no data", StringComparison.Ordinal));
+
+        // All six still passed. Seed data is optional (section 9), so this is a caveat on a good run.
+        Assert.All(outcome.Checkpoints!, point => Assert.Equal(ApiSmokeTestCheckpointState.Passed, point.State));
+
+        Assert.Contains(
+            "#12",
+            Assert.Single(
+                outcome.Checkpoints!,
+                point => point.Id == ApiSmokeTestCheckpointId.PullRequest).Detail ?? string.Empty,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task APassingRunWithNothingOddToSayCarriesNoWarningsKeyAtAll()
+    {
+        await using var world = await OnboardingApiWorld.CreateAsync();
+        var repo = await world.ReachSmokeTestAsync();
+
+        await world.Onboarding.CompleteSmokeTestAsync(
+            repo.Id,
+            SmokeTestReport.Passing,
+            world.Engineer.UserId,
+            TestContext.Current.CancellationToken);
+
+        var (_, outcome) = await world.Repos.SmokeTestAsync(
+            world.Engineer,
+            repo.Id,
+            TestContext.Current.CancellationToken);
+
+        var body = await ApiPayloads.RenderAsync(outcome);
+
+        // Absent rather than `[]`: the client's test is presence, so an empty array would render an
+        // empty warning strip (section 7.4's mechanism, used here for tidiness rather than secrecy).
+        Assert.DoesNotContain("warnings", ApiPayloads.Keys(body));
+    }
+
+    [Fact]
+    public async Task TheAccessListNamesThePersonRatherThanJustTheirId()
+    {
+        await using var world = await OnboardingApiWorld.CreateAsync();
+        var repo = await world.ConnectAsync();
+        var requester = await world.RequesterMemberAsync();
+
+        var (outcome, access) = await world.Repos.SetAccessAsync(
+            world.Admin,
+            repo.Id,
+            new RepoAccessGrantBody { MemberId = requester.MemberId.ToString(), CanRequest = true },
+            TestContext.Current.CancellationToken);
+
+        Assert.True(outcome.Succeeded);
+        Assert.NotNull(access);
+
+        var granted = Assert.Single(access.Grants, grant => grant.MemberId == requester.MemberId.ToString());
+
+        // An access list rendered as a column of opaque ids is a list nobody audits.
+        Assert.Equal("Ayesha Rahman", granted.MemberName);
+        Assert.NotNull(granted.MemberEmail);
+
+        // A role grant names no person, and says so by absence rather than by an empty string.
+        var (_, withRole) = await world.Repos.SetAccessAsync(
+            world.Admin,
+            repo.Id,
+            new RepoAccessGrantBody { Role = ApiRole.Requester, CanRequest = true },
+            TestContext.Current.CancellationToken);
+
+        var roleGrant = Assert.Single(withRole!.Grants, grant => grant.Role == ApiRole.Requester);
+
+        Assert.Null(roleGrant.MemberName);
+        Assert.Null(roleGrant.MemberId);
+    }
+
+    [Fact]
     public async Task ConnectingWithoutAnInstallationSaysWhatToDoRatherThanFailing()
     {
         await using var world = await OnboardingApiWorld.CreateAsync();

@@ -61,11 +61,20 @@ public class ConfigServicesTests
 
         var checks = provider.GetServices<IPreflightCheck>().ToList();
 
-        // The five section 30.1 names it to ask for, plus the demo-mode kill switch: an operator
-        // reading the first-run report needs to know when the instance has been told to contact
-        // nobody.
+        // The five section 30.1 names it to ask for, plus two an operator reading the first-run
+        // report needs and section 30.1 does not enumerate: the demo-mode kill switch, because an
+        // instance told to contact nobody should say so, and the GitHub App, because section 4.2
+        // accepts the private key in two encodings and only the parser knew which one arrived.
         Assert.Equal(
-            ["secret keys", "outbound calls", "base URL", "database", "migrations", "model credential"],
+            [
+                "secret keys",
+                "outbound calls",
+                "GitHub App",
+                "base URL",
+                "database",
+                "migrations",
+                "model credential",
+            ],
             checks.Select(check => check.Name).ToArray());
         Assert.NotNull(provider.GetRequiredService<PreflightRunner>());
         Assert.IsType<SystemHostnameResolver>(provider.GetRequiredService<IHostnameResolver>());

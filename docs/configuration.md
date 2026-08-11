@@ -184,8 +184,8 @@ URL.
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | see below | — | Instance-level fallback credential. |
-| `OPENROUTER_API_KEY` | see below | — | Instance-level fallback credential. |
+| `ANTHROPIC_API_KEY` | see below | — | Instance-level fallback credential. Resolves as the organisation's metered API key — tier 4 of the chain in [credentials.md](credentials.md). |
+| `OPENROUTER_API_KEY` | see below | — | Instance-level fallback credential. Resolves as OpenRouter — tier 5. |
 | `CHARTER_CREDENTIAL_KEY` | yes | — | At least 32 bytes. Encrypts stored credentials at rest. Deliberately separate from `CHARTER_SECRET_KEY` so rotating the cookie key does not invalidate every linked account. |
 | `CHARTER_ALLOW_SHARED_POOL` | no | `false` | Permits users to pool subscription credentials for other people's requests. Read [credentials.md](credentials.md) before enabling. |
 | `CHARTER_MODEL_REFINE` | no | `openrouter/anthropic/claude-sonnet-5` | Model used for spec refinement, chat, and plan mode. |
@@ -195,6 +195,10 @@ URL.
 **At least one model credential must be resolvable at startup** — either `ANTHROPIC_API_KEY`,
 `OPENROUTER_API_KEY`, or a credential grant already linked in the database. If none exists, startup
 validation fails.
+
+Both variables are consulted at resolution time, not only at startup: an instance with one of them set
+and no credential grant at all is a working instance. Within its tier the environment key sorts after
+anything linked for the organisation, so it behaves as the fallback it is described as.
 
 The `CHARTER_MODEL_*` variables accept provider-qualified identifiers:
 
@@ -235,6 +239,19 @@ Charter refuses an impossible pairing when you assemble it, not when the session
 `OPENROUTER_API_KEY`. The defaults assume the OpenRouter key because one key covers every model,
 which is what makes it the cheaper starting point.
 
+This is not a preference. An `openrouter/`-qualified identifier can be served **only** by an OpenRouter
+key, so the pairing above resolves no credential at all and every request fails with a message naming
+the variable to set. The first-run report warns about it on the `model credential` line:
+
+```
+[PASS] model credential: ANTHROPIC_API_KEY is set as an instance-level credential; note that
+       CHARTER_MODEL_REFINE=openrouter/anthropic/claude-sonnet-5 cannot be served by the
+       instance-level key(s) set here, ...
+```
+
+It warns rather than blocking, because a credential grant linked in the database may serve it and the
+check cannot see which kinds are linked.
+
 **The engineer recap follows `CHARTER_MODEL_TEACH`.** Section 4.2 gives the recap no variable of its
 own. It is a control-plane summary of a finished session, which is what a walkthrough is, so it runs
 on the teaching model rather than on a name you cannot move.
@@ -253,6 +270,12 @@ To pass the private key as a single-line value:
 ```bash
 base64 -i charter-app.2026-08-10.private-key.pem | tr -d '\n'
 ```
+
+Charter accepts the key either way and tells you which it got. The first-run report includes a
+`GitHub App` line naming the App ID and whether the key arrived as PEM or as base64 that was decoded.
+If GitHub later rejects the signature on an instance whose report says *base64*, the usual cause is a
+key that was encoded twice. A value that is neither PEM nor base64 PEM fails startup with that hint
+rather than starting and failing every API call.
 
 ## Runners
 
@@ -360,19 +383,46 @@ find it.
 
 ### Transcript leak warning
 
-Agent transcripts contain repository content and the requester's business context. If they flow into
+Transcripts contain repository content and the requester's business context. If they flow into
 structured log properties, your source code has been exported into your log platform.
 
-By default Charter logs event **metadata** only — type, timing, file paths, cost. Setting
-`CHARTER_LOG_INCLUDE_TRANSCRIPTS=true` sends transcript bodies to every enabled sink, including Seq
-and OTLP. Turn it on for a specific debugging session, then turn it off.
+By default Charter logs event **metadata** only — type, timing, correlation id, token counts, cost.
+Setting `CHARTER_LOG_INCLUDE_TRANSCRIPTS=true` adds the bodies, on every enabled sink including Seq
+and OTLP, and Charter warns about it in the startup log so the setting is not something an instance
+does quietly. Turn it on for a specific debugging session, then turn it off.
+
+**What this currently covers.** The flag governs the control-plane model calls Charter makes itself —
+refinement, teaching, and the engineer recap. With it off you get one line per call naming the model,
+the outcome, the latency, the token counts and the cost; with it on, the same line carries the system
+prompt, the conversation, and the model's reply.
+
+It does **not** yet govern the agent's own transcript from a runner. Those events are stored in
+Postgres and rendered in pane 2; nothing writes them to a log sink at all, with the flag on or off.
+Setting it therefore cannot leak them, and turning it on will not help you debug a runner — read the
+session's transcript pane, or query the `events` table.
 
 ## Budgets
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `CHARTER_DEFAULT_SESSION_BUDGET_USD` | no | `5.00` | Per-session ceiling applied when no more specific budget exists. |
-| `CHARTER_DEFAULT_MONTHLY_BUDGET_USD` | no | `100.00` | |
+| `CHARTER_DEFAULT_SESSION_BUDGET_USD` | no | `5.00` | Per-session spend an organisation may run without an approver. |
+| `CHARTER_DEFAULT_MONTHLY_BUDGET_USD` | no | `100.00` | The organisation's monthly budget. |
+
+These are the two figures the **organisation's first budget** is created with when you complete setup:
+a monthly org-scoped budget of `CHARTER_DEFAULT_MONTHLY_BUDGET_USD`, behaving as `require_approval`
+above a per-session threshold of `CHARTER_DEFAULT_SESSION_BUDGET_USD`. Work above the threshold goes
+to the approval queue rather than failing.
+
+Two consequences worth knowing before you set them:
+
+- **They are read at setup, not on every boot.** Changing them afterwards does not edit the budget row
+  that already exists — edit that budget instead. They apply to the next instance you set up.
+- **A personal-mode instance gets no budget at all.** One person spending their own credentials has
+  nothing to govern, so these variables are parsed and validated and then govern nothing on a
+  `CHARTER_MODE=personal` instance. That is deliberate ([spec §34.9](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
+
+Setting a session cap above the monthly cap is accepted with a warning at startup, because one session
+could then exhaust the month.
 
 These are starting defaults, not the budget system. Nested budgets by team, repo, project, user, and
 role are configured in the admin UI and stored in the database ([spec §34](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
@@ -386,6 +436,108 @@ role are configured in the admin UI and stored in the database ([spec §34](http
 
 Set `CHARTER_UPDATE_CHECK=false` for air-gapped or privacy-strict deployments. Full disclosure of what
 is and is not sent is in [privacy.md](privacy.md).
+
+The check runs on Charter's own job queue rather than on a timer, so one replica performs it and the
+schedule survives a restart. A check that cannot reach GitHub keeps the previous answer and logs
+nothing above debug — an offline instance never produces a daily error.
+
+## Object storage
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `CHARTER_STORAGE_BACKEND` | no | `none` | `none`, `filesystem`, or `s3`. The switch. |
+| `CHARTER_STORAGE_PATH` | with `filesystem` | — | A directory on a **durable** volume. Must exist and be writable. |
+| `CHARTER_STORAGE_ENDPOINT` | with `s3` | — | S3-compatible endpoint. |
+| `CHARTER_STORAGE_BUCKET` | with `s3` | — | |
+| `CHARTER_STORAGE_ACCESS_KEY` | with `s3` | — | |
+| `CHARTER_STORAGE_SECRET_KEY` | with `s3` | — | |
+| `CHARTER_STORAGE_REGION` | no | `auto` | Some providers require a real region. |
+| `CHARTER_STORAGE_FORCE_PATH_STYLE` | no | `true` | MinIO and most self-hosted gateways need path-style addressing. |
+
+Object storage holds the bytes that do not belong in a database row. Today that is transcript
+offload: an agent's `Write` tool call carries the whole file it wrote, and a failing check carries a
+build log, and `events` is already the largest table Charter has. When a store is configured, an
+oversized string moves into it and the event keeps its tail plus a reference. Later it will also hold
+the verification artifacts that are not a URL — a downloadable build, a screen capture, a
+hardware-in-the-loop report — which arrive with the project types that produce them.
+
+**The backend is named, never guessed.** Charter does not infer it from which variables you set,
+because a typo in a variable name would then silently change what your instance does. Set
+`CHARTER_STORAGE_BACKEND` and Charter validates the rest of that backend at boot.
+
+### `none` — the default
+
+Everything stays in Postgres. This is the right answer on Railway, Fly, Render, Heroku, or anywhere
+else the container filesystem is wiped on every deploy, and it is the right answer for most instances
+today: a web project is verified by clicking a preview link, and a preview link is a URL.
+
+### `filesystem` — a durable volume
+
+```bash
+CHARTER_STORAGE_BACKEND=filesystem
+CHARTER_STORAGE_PATH=/var/lib/charter/objects
+```
+
+For a self-hoster on a VPS, a home server, or anywhere with a real mounted volume. Charter writes
+objects under that directory, keyed by session.
+
+The path must **already exist** and must be writable by the user Charter runs as. Charter does not
+create it, deliberately: a missing path at boot is usually a volume that failed to mount, and quietly
+creating a directory on the container's own disk would hide that until the day you went looking for
+the files.
+
+If the path is missing or read-only, the boot stops:
+
+```
+[FAIL] object storage: CHARTER_STORAGE_PATH is '/var/lib/charter/objects', and no such directory
+exists -> create the directory and mount the volume it lives on, or point CHARTER_STORAGE_PATH at one
+that is already mounted. Charter does not create it: ...
+```
+
+Do not point this at a container filesystem you expect to survive a deploy. It will not, and Charter
+cannot tell the difference between a mounted volume and a directory that happens to exist.
+
+### `s3` — any S3-compatible bucket
+
+```bash
+CHARTER_STORAGE_BACKEND=s3
+CHARTER_STORAGE_ENDPOINT=https://s3.us-east-1.amazonaws.com
+CHARTER_STORAGE_BUCKET=charter-artifacts
+CHARTER_STORAGE_ACCESS_KEY=...
+CHARTER_STORAGE_SECRET_KEY=...
+```
+
+AWS S3, Cloudflare R2, MinIO, Backblaze B2, and Wasabi all work. Two settings cover the differences
+between them:
+
+- `CHARTER_STORAGE_FORCE_PATH_STYLE` defaults to `true`, which is what MinIO and most self-hosted
+  gateways need. AWS accepts it too. Set it to `false` only if your provider requires virtual-hosted
+  addressing.
+- `CHARTER_STORAGE_REGION` defaults to `auto`, which is what R2 wants. AWS and Wasabi need a real
+  region.
+
+AWS needs an endpoint here as well as everywhere else — use the regional one,
+`https://s3.<region>.amazonaws.com`. The four variables are one block: if any is missing, the boot
+stops naming all of them. Neither key is ever printed, to a log or anywhere else.
+
+### Reading objects back
+
+Stored bytes come back through Charter, at `GET /api/requests/{id}/blobs/{key}`, behind the same
+permission that governs the transcript pane. Charter does not hand out public bucket URLs or
+presigned links, and there is no setting to make it. A link that authorises whoever holds it would
+turn an engineer-only artifact into a public one the moment somebody pasted it into a chat, and no
+request would reach Charter to refuse.
+
+Your bucket does not need to be public. It should not be.
+
+### Retention
+
+Objects are capped at **8 MiB** each; a producer with more than that truncates and records that it
+did. Each object is keyed under the session that produced it.
+
+**Charter never deletes stored objects on a schedule.** There is no sweeper and no expiry setting.
+Retention is yours to configure — a bucket lifecycle rule for `s3`, a cron over the directory for
+`filesystem`. See [privacy.md](privacy.md).
 
 ## Naming convention
 
@@ -405,6 +557,9 @@ pass, then exits non-zero. Among the checks:
 - All three GitHub App variables are present and the private key parses as PEM.
 - `LOGGING_MODE`, `CHARTER_MODE`, `CHARTER_RUNNER`, and `CHARTER_UPDATE_CHANNEL` hold recognised values.
 - OAuth provider pairs are complete — an ID without a secret is an error, not a silently disabled provider.
+- `CHARTER_STORAGE_BACKEND` names a backend that exists, and the backend it names is usable — the
+  directory exists and is writable, or the bucket block is complete. A storage variable set while the
+  backend is still `none` is an error, not a silent no-op.
 
 ## Preflight checks
 
@@ -450,9 +605,29 @@ Two things change, both decided once at startup:
 
 **Seed data.** On first boot against an empty database Charter writes a demonstration organisation, a
 connected repository that finished onboarding, two completed sessions with their transcripts,
-milestones, verification artifacts and engineer recaps, and one request still in refinement. Seeding
-is skipped — with a log line saying so — if the database already holds an organisation, so it is safe
-to leave the variable set across restarts and it will never touch a real instance.
+milestones, verification artifacts and engineer recaps, one request still in refinement, two budgets
+with the sessions' costs booked against them, and an audit trail for the whole week. Seeding is
+skipped — with a log line saying so — if the database already holds an organisation *or* a user, so
+it is safe to leave the variable set across restarts and it will never touch a real instance.
+
+**Two accounts, and a published password.** Charter prints them at startup, in the place the setup
+token would otherwise be:
+
+| Email | Roles | Sees |
+|---|---|---|
+| `priya@northwind.example` | Requester | The plain-language view: status thread, previews, no repo name, branch, diff or token count. |
+| `ada@northwind.example` | Admin, Engineer, Approver | The three-pane view: transcripts, diffs, recaps, cost, members and the audit log. |
+
+Both use the password `charter-demo-password`. Sign in at `/sign-in`.
+
+Sign in as each in turn — the difference between the two views is the product, and it is enforced by
+the API rather than by the page. The requester's request body has no `transcript`, `changes`, `recap`
+or `sessionActions` key at all, and the transcript, diff, members, audit and runner endpoints answer
+`403` to her.
+
+These accounts authenticate through the ordinary password provider: the same PBKDF2 verification, the
+same throttle, the same session cookie, the same role checks. Demo mode is seeded data, not a second
+sign-in path, so nothing about it can be a permission bypass.
 
 **No outbound calls.** Every HTTP request through Charter's client factory is refused before it opens
 a socket: model providers, the OpenRouter price catalog, the GitHub App, OAuth token exchange, the
@@ -465,6 +640,24 @@ token and needs no GitHub App, not that the container may not reach your log ser
 
 Because the demo data includes users, the instance is not in setup mode and no setup token is printed.
 Do not point `CHARTER_DEMO=true` at a database you care about.
+
+### Treat a demo instance as public
+
+The password above is documented, which means it is public. Two consequences, and neither is
+theoretical:
+
+- **Do not expose a demo instance on an address you would not hand out.** Anyone who reaches it can
+  sign in as its administrator. There is nothing valuable inside — every request, session and preview
+  is invented, and the instance can reach no model provider, code host or mail server — but it is
+  still an account with a known password on a URL.
+- **Do not keep the database once you start real work.** Charter will not seed over a database that
+  already holds an organisation or a user, so these accounts can only ever appear in one that was
+  empty. That protection does not run backwards: if you evaluate on a database and then turn
+  `CHARTER_DEMO` off and keep using it, the demo administrator is still there with its published
+  password. Start a fresh database and claim it with a setup token instead.
+
+If you want to keep a demo instance up anyway, change both passwords from the account settings page
+first. That is the ordinary password-change path and it applies to these accounts like any other.
 
 ## Related
 

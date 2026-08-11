@@ -203,11 +203,12 @@ Phase 1 is a vertical slice, not a layer: request → refinement → spec → ap
 
 Honest caveats on Phase 1, because pre-1.0 is pre-1.0:
 
-- **No sign-in route and no route that redeems the first-run setup token.** The identity and setup services are built, registered and tested; nothing maps an HTTP endpoint to them, so an instance can boot but cannot yet be claimed or logged into.
-- **No HTTP surface for connecting a repository.** Onboarding — recon, scope confirmation, smoke test, primer, merge-gate check — is implemented as a service with an audit trail and nothing routes to it.
-- **Nothing pushes the session branch.** No component runs a commit or push, so every clean session is recorded as *Nothing needed changing*, no PR opens, and no preview binds.
-- **The bundled web app ships against an in-memory mock.** It shows the interface; it isn't calling the API.
-- Several settings still parse and reach nothing: `CHARTER_ALLOW_SHARED_POOL`, `CHARTER_ALLOW_REPO_CREATION`, `CHARTER_LOG_INCLUDE_TRANSCRIPTS`, `CHARTER_DEFAULT_*_BUDGET_USD`, `CHARTER_UPDATE_CHECK`/`_CHANNEL` (§28 has no implementation), and the whole `CHARTER_STORAGE_*` block. `ConfigReachabilityTests` names each one with the reason and fails if a new one appears.
+- **None of it has run against a real repository with a real model.** The loop is verified end to end against a local database, stubbed providers, and a real `git` pushing to a local remote. That proves the wiring is connected; it proves nothing about your codebase. This is the caveat to weigh above every other one here.
+- **Only password sign-in works.** The OAuth exchange is built and registered, but its callback route is not mapped, so external identity providers are unreachable.
+- **Recon and the smoke test need a registered runner.** They are dispatched as jobs, so on an instance with no runner they stay pending and onboarding waits.
+- **Charter only tracks pull requests it opened.** One a human opens carrying the same work is invisible to it, so it never reaches *In review* or *Merged*.
+- **Object storage holds transcript output and nothing else yet.** `CHARTER_STORAGE_BACKEND` selects a durable directory or an S3-compatible bucket, and oversized transcript payloads go there instead of into a Postgres row. The verification artifacts that need a bucket — a downloadable build, a screen capture, a hardware-in-the-loop report — arrive with the project types that produce them. The default is `none`, which is correct on any platform whose filesystem is wiped on deploy.
+- **Every setting Charter accepts now reaches something that reads it**, and `ConfigReachabilityTests` fails both when a new one stops doing so and when a documented gap is quietly closed without being removed from the list.
 
 [`docs/the-loop.md`](docs/the-loop.md) has the full picture, and [`docs/getting-started.md`](docs/getting-started.md) tells you what you can actually drive today.
 

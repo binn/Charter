@@ -59,12 +59,14 @@ features:
 Charter is **pre-1.0 and under active development**. Expect breaking changes between releases, read
 the release notes before upgrading, and take a backup before any upgrade that touches the database.
 
-Phase 1 — the whole loop from a typed request to a preview link — is largely built and is exercised end
-to end by an integration test. It is **not yet drivable from a browser**: there is no sign-in route, no
-route that redeems the first-run setup token, and no HTTP surface for connecting a repository. The
-session branch is also never pushed, so no pull request opens and no preview binds on a real instance.
-[Getting started](/getting-started) lists exactly what works today, and [the loop](/the-loop) explains
-where it stops and why.
+Phase 1 — the whole loop from a typed request to a preview link — is built and is drivable from a
+browser: you can claim an instance with the setup token, sign in, connect a repository, file a
+request, and watch the session push a branch and open a change request.
+
+The caveat that matters most: **the loop has never been run against a real repository with a real
+model.** Everything is verified against a local database, stubbed providers, and a real git binary
+pushing to a local remote. [Getting started](/getting-started) lists exactly what works today, and
+[the loop](/the-loop) explains where it stops and why.
 
 Documentation describes the design as specified, and some of it runs ahead of what is implemented
 today. Where a capability degrades or does not work at all, the relevant page says so rather than

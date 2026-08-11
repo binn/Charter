@@ -29,6 +29,11 @@ import {
   SIGN_IN_THROTTLED,
 } from '@/api/mock/fixtures-auth';
 import {
+  makeAccessGrants,
+  makeAuditLog,
+  makeMembers,
+} from '@/api/mock/fixtures-admin';
+import {
   makeAdvisoryMergeGate,
   makeEnforcedMergeGate,
   makePrimerDraft,
@@ -42,24 +47,30 @@ import { fileDiffFor, transcriptFor } from '@/api/mock/fixtures-session';
 import { makeSetupChecklist } from '@/api/mock/fixtures-setup';
 import type {
   AcceptInvitationBody,
+  AuditEntry,
   CompleteSetupBody,
   ConfirmScopeBody,
   ConnectRepoBody,
   CreateRequestBody,
   Id,
+  Member,
   MergeGate,
   Milestone,
   PublishPrimerBody,
   RefinementMessage,
   Repo,
+  RepoAccessGrant,
+  RepoAccessGrantBody,
   RepoOnboarding,
   RequestDetail,
   RequestStreamEvent,
   RequestSummary,
   ResetPasswordBody,
   RunnersView,
+  Role,
   ScopeProposal,
   SendRefinementMessageBody,
+  SetMemberRoleBody,
   SetupChecklist,
   SignInBody,
   SmokeTestOutcome,
@@ -92,6 +103,8 @@ const clone = <T>(value: T): T => structuredClone(value);
  */
 interface MockRepoState {
   repo: Repo;
+  /** §7.3: deny by default, so the absence of a row is the refusal. */
+  grants: RepoAccessGrant[];
   proposedScope?: ScopeProposal;
   primerDraftMd?: string;
   mergeGate?: MergeGate;
@@ -114,6 +127,8 @@ interface MockState {
   /** Consecutive failures, for the throttle. Reset by a success, as the real one is. */
   failedSignIns: number;
   repos: MockRepoState[];
+  members: Member[];
+  audit: AuditEntry[];
 }
 
 /**
@@ -160,8 +175,13 @@ function createState(): MockState {
     setupRequired: instance === 'setup',
     signedIn: instance === 'ready',
     failedSignIns: 0,
+    members: makeMembers(now),
+    audit: makeAuditLog(now),
     repos: makeRepos(now).map((repo) => ({
       repo,
+      // §9: a repository that has not finished onboarding is requestable by nobody, and showing it
+      // with grants already on it would teach the wrong thing about the default.
+      grants: repo.status === 'ready' ? makeAccessGrants() : [],
       proposedScope: makeScopeProposal(),
       primerDraftMd: makePrimerDraft(repo.fullName),
       mergeGate:
@@ -400,6 +420,59 @@ function scriptCharterReply(body: string): ScriptStep[] {
 /* -------------------------------------------------------------------------- */
 /* Repositories (§9)                                                          */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The two refusals the real endpoints make, in the same place the server makes them: before any
+ * data is assembled. §7.4's rule is that a viewer who may not see something receives nothing, not a
+ * payload the client is trusted to hide.
+ */
+function requireAdmin(): void {
+  if (!mockState().viewer.capabilities.canAdminister) {
+    throw new ApiError(403, 'Members and roles belong to administrators.');
+  }
+}
+
+function requireRepoReader(): void {
+  if (!mockState().viewer.capabilities.canReadRepos) {
+    throw new ApiError(403, 'Repository onboarding belongs to engineers and administrators.');
+  }
+}
+
+/** Grammar for "made them an engineer" / "made them an administrator". */
+const ARTICLE: Record<Role, string> = {
+  requester: 'a requester',
+  approver: 'an approver',
+  engineer: 'an engineer',
+  admin: 'an administrator',
+};
+
+/**
+ * Appends to the audit log, exactly where the server appends to it: as a side effect of the thing
+ * happening. A mock that only ever read a fixed log would let the audit screen look right while the
+ * write path did nothing, which is the bug this whole surface exists to close.
+ */
+function record(
+  action: string,
+  summary: string,
+  targetType: string,
+  targetId?: Id,
+  details?: Record<string, string>,
+): void {
+  mockState().audit = [
+    {
+      id: `audit-${Math.random().toString(36).slice(2, 8)}`,
+      at: new Date().toISOString(),
+      action,
+      summary,
+      actorName: mockState().viewer.displayName,
+      actorEmail: mockState().viewer.email,
+      targetType,
+      ...(targetId === undefined ? {} : { targetId }),
+      ...(details === undefined ? {} : { details }),
+    },
+    ...mockState().audit,
+  ];
+}
 
 function findRepo(id: Id): MockRepoState {
   const found = mockState().repos.find((candidate) => candidate.repo.id === id);
@@ -969,7 +1042,19 @@ export const mockApi: CharterApi = {
       updatedAt: new Date(now).toISOString(),
     };
 
-    mockState().repos = [{ repo }, ...mockState().repos];
+    // The one grant a newly connected repository gets is the person who connected it — which is
+    // exactly what the server writes, and is why this is not an empty list.
+    const grants: RepoAccessGrant[] = [
+      {
+        memberId: mockState().members.find((member) => member.isYou)?.id ?? 'member-you',
+        memberName: mockState().viewer.displayName,
+        memberEmail: mockState().viewer.email,
+        canRequest: true,
+      },
+    ];
+
+    mockState().repos = [{ repo, grants }, ...mockState().repos];
+    record('repo.connected', `${mockState().viewer.displayName} connected ${repo.fullName}. It was requestable by nobody.`, 'Repo', repo.id);
     return clone(repo);
   },
 
@@ -1043,6 +1128,126 @@ export const mockApi: CharterApi = {
       explanation: 'The primer is published. New requesters will read it once, before their first request.',
       warnings: [],
     };
+  },
+
+  async getRepoAccess(id) {
+    await latency(120);
+    requireRepoReader();
+    const entry = findRepo(id);
+
+    return { grants: clone(entry.grants), requesterVisible: entry.repo.requesterVisible };
+  },
+
+  async setRepoAccess(id, body: RepoAccessGrantBody) {
+    await latency(220);
+    requireRepoReader();
+    const entry = findRepo(id);
+
+    const named = body.memberId !== undefined && body.memberId !== '';
+    if (named === (body.role !== undefined)) {
+      throw new ApiError(400, 'Name either one person or one role, and not both.');
+    }
+
+    const existing = entry.grants.find((grant) =>
+      named ? grant.memberId === body.memberId : grant.role === body.role,
+    );
+
+    if (existing) {
+      existing.canRequest = body.canRequest;
+    } else if (named) {
+      const person = mockState().members.find((member) => member.id === body.memberId);
+      if (!person) {
+        throw new ApiError(404, 'We could not find that. It may have been removed.');
+      }
+      entry.grants.push({
+        memberId: person.id,
+        memberName: person.displayName,
+        memberEmail: person.email,
+        canRequest: body.canRequest,
+      });
+    } else {
+      entry.grants.push({ role: body.role as Role, canRequest: body.canRequest });
+    }
+
+    const who = named
+      ? (mockState().members.find((member) => member.id === body.memberId)?.displayName ?? 'somebody')
+      : `everybody with the ${body.role} role`;
+
+    record(
+      body.canRequest ? 'repo.scope.granted' : 'repo.scope.revoked',
+      body.canRequest
+        ? `${mockState().viewer.displayName} let ${who} file requests against ${entry.repo.fullName}.`
+        : `${mockState().viewer.displayName} withdrew ${who}'s access to ${entry.repo.fullName}.`,
+      'repo',
+      entry.repo.id,
+    );
+
+    return { grants: clone(entry.grants), requesterVisible: entry.repo.requesterVisible };
+  },
+
+  /* ---- Members, roles and the audit log (§7.1) ---------------------------- */
+
+  async listMembers() {
+    await latency(140);
+    requireAdmin();
+    return clone(mockState().members);
+  },
+
+  async setMemberRole(id, body: SetMemberRoleBody) {
+    await latency(220);
+    requireAdmin();
+
+    const target = mockState().members.find((member) => member.id === id);
+    if (!target) {
+      throw new ApiError(404, 'We could not find that. It may have been removed.');
+    }
+
+    const held = target.roles.includes(body.role);
+    if (held === body.granted) {
+      return clone(target);
+    }
+
+    if (!body.granted) {
+      if (target.roles.length === 1) {
+        throw new ApiError(
+          409,
+          `${target.displayName} would be left with no role at all, which is not a state Charter can represent. Give them another role first, or remove them from the organisation.`,
+        );
+      }
+
+      const otherAdmins = mockState().members.filter(
+        (member) => member.id !== target.id && member.roles.includes('admin'),
+      );
+
+      if (body.role === 'admin' && otherAdmins.length === 0) {
+        throw new ApiError(
+          409,
+          'That is the last administrator on this instance. Make somebody else an administrator first — otherwise nobody could connect a repository, change a budget or read this log again.',
+        );
+      }
+    }
+
+    target.roles = body.granted
+      ? [...target.roles, body.role]
+      : target.roles.filter((role) => role !== body.role);
+
+    record(
+      body.granted ? 'member.role.granted' : 'member.role.revoked',
+      body.granted
+        ? `${mockState().viewer.displayName} made ${target.email} ${ARTICLE[body.role]}.`
+        : `${mockState().viewer.displayName} removed the ${body.role} role from ${target.email}.`,
+      'Member',
+      target.id,
+      { role: body.role, member_email: target.email },
+    );
+
+    return clone(target);
+  },
+
+  async getAuditLog() {
+    await latency(160);
+    requireAdmin();
+    return { entries: clone(mockState().audit), hasMore: false };
   },
 
   /* ---- Admin setup checklist (§30.2) -------------------------------------- */

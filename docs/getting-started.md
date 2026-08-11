@@ -18,10 +18,11 @@ Budget about half an hour, most of it spent creating a GitHub App.
   requests against. A scratch repository is a better first choice than your main product.
 - **A GitHub App.** Not optional — Charter refuses to start without an App ID, a private key, and a
   webhook secret. Creating one takes five minutes and is covered below.
-- **An Anthropic API key.** Refinement calls a model on the very first request, so there is no way to
-  see the loop without one. It has to be Anthropic today: `CHARTER_MODEL_REFINE` is parsed and then not
-  used, and refinement runs on a hard-coded model that resolves to the Anthropic provider. An
-  OpenRouter-only instance passes credential resolution and then gets a 401 from Anthropic.
+- **A model key.** Refinement calls a model on the very first request, so there is no way to see the
+  loop without one. An `OPENROUTER_API_KEY` on its own is enough and is what the defaults assume — one
+  key reaches every model. An `ANTHROPIC_API_KEY` on its own also works, but then you must set
+  `CHARTER_MODEL_REFINE` and `CHARTER_MODEL_TEACH` to `anthropic/` identifiers, because the defaults
+  name an OpenRouter model and only an OpenRouter key can serve one.
 - **A publicly reachable HTTPS URL**, if you want GitHub to deliver webhooks. On a laptop that means a
   tunnel. You can get most of the way without one; the parts that need it are called out as you reach
   them.
@@ -34,28 +35,27 @@ half an hour, because it is the difference between "this is broken" and "this is
 | Step | State |
 |---|---|
 | Container boots, validates configuration, applies migrations | Works |
-| Setup mode, one-time token printed to stdout | Works |
-| Redeeming that token over HTTP | **No route yet.** The service exists and is registered; nothing is mapped to it. |
-| Signing in | **No route yet.** Cookie scheme, password hashing and OAuth exchange are all built; no endpoint issues a cookie. |
-| Connecting a repository, recon, scope confirmation, smoke test | Implemented as services with an audit trail. **No HTTP surface yet.** |
-| Request, refinement, spec, approval, dispatch, session | Implemented, and driven by the real services. |
-| Pull request, preview, feedback | Implemented, and covered end to end by an integration test — but see the gap below. |
-| **Pushing the agent's work to a branch** | **Missing.** Nothing in the control plane, the shim, the agent, or the shipped workflow runs `git push`. |
-| The bundled web app | Ships wired to an in-memory mock. It shows you the interface; it is not talking to the API. |
+| Setup mode, one-time token printed to stdout, redeeming it over HTTP | Works |
+| Signing in | Works, with a password. OAuth is built but its callback route is not mapped, so an external identity provider is not usable. |
+| Connecting a repository, recon, scope confirmation, smoke test | Routes exist and the wizard reads back what each run recorded. The runs themselves need a registered runner to claim them. |
+| Granting somebody access to a repository, members and roles, the audit log | Works, over HTTP, and every change is audited. |
+| Request, refinement, spec, approval, dispatch, session | Works, driven by the real services. |
+| Committing the agent's work and pushing the branch | Works. The session runs your repository's `checks:` first and reports each result. |
+| Pull request, review and merge tracking, preview, feedback | Implemented. A review moves the request to *In review* and a merge to *Merged*, so the requester is told their change shipped. |
+| The bundled web app | Talks to the real API. The in-memory mock is compiled out of the production bundle. |
 
-The last two rows are the ones that matter. Charter opens a pull request from a branch the session
-pushed, and it recognises that branch from a `branch_pushed` event. **No code path writes that event**,
-and neither the GitHub Actions workflow nor the Charter Agent contains a commit or push step. So on a
-real instance every session that completes cleanly is recorded as *Nothing needed changing* — which is
-a legitimate outcome the state machine has, reached here for an illegitimate reason. No pull request
-opens, so no head commit exists, so no deployment report can bind, so no preview link appears.
+**The caveat that matters more than any row above: none of this has been run against a real
+repository with a real model.** Every part of it is verified against a local database, stubbed
+providers, and a real `git` pushing to a local remote — which proves the wiring is connected and the
+events line up, and proves nothing about the day you point it at your own code. You are, realistically,
+the first person to do that. Expect to find things, and please report them.
 
-So: you can stand a real instance up, you can watch it boot and validate, and you can take a request
-through refinement, approval and a session — but the last third of the loop stops at the point where
-the work would leave the runner. Where a step below is not yet reachable, it says so at the point you
-would hit it.
+Two narrower limits worth knowing before you start. Recon and the smoke test are dispatched as jobs, so
+on an instance with no runner registered they stay pending and the onboarding wizard waits. And Charter
+only tracks pull requests it opened itself — one a human opens carrying the same work is invisible to
+it.
 
-If you want to skip to the part that demonstrably works, jump to
+If you would rather drive the loop from a terminal than a browser, jump to
 [Driving the loop without a browser](#driving-the-loop-without-a-browser).
 
 ## 1. Bring it up
@@ -105,12 +105,20 @@ github.com, or the same path under your organisation.
 base64 -i ~/Downloads/your-app.private-key.pem | tr -d '\n'
 ```
 
-**A model key.** Uncomment `ANTHROPIC_API_KEY` and paste yours. `CHARTER_MODEL_REFINE` defaults to an
-OpenRouter-qualified model and is documented as configurable, but nothing reads it yet — refinement
-runs on a hard-coded Anthropic model regardless of what you set. Setting `OPENROUTER_API_KEY` alone
-therefore does not work today, and the failure is indirect: the key resolves, gets sent to Anthropic,
-and comes back `401`, at which point Charter marks that credential invalid. See
-[credentials.md](credentials.md).
+**A model key.** Uncomment `OPENROUTER_API_KEY` and paste yours. That is all this needs: the key is
+consulted every time a credential is resolved, and `CHARTER_MODEL_REFINE` and `CHARTER_MODEL_TEACH`
+both default to an OpenRouter model it can serve. You do not have to link anything in the database.
+
+If you would rather use `ANTHROPIC_API_KEY`, set the two model variables to match — otherwise the
+default OpenRouter identifiers name a model your key cannot serve, and the first-run report says so:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-api03-...
+CHARTER_MODEL_REFINE=claude-sonnet-5
+CHARTER_MODEL_TEACH=claude-sonnet-5
+```
+
+See [credentials.md](credentials.md).
 
 Finally, set `CHARTER_BASE_URL` to the URL GitHub will reach. Not `localhost` — webhook delivery and
 OAuth callbacks both depend on it being correct and publicly resolvable.
@@ -168,10 +176,10 @@ telling you to read the token from the logs.
 curl -s http://localhost:8080/api/me
 ```
 
-**Not yet clickable.** There is no route that redeems the token, and no sign-in route to use afterwards.
-The service that redeems it exists, is registered, and is tested; nothing maps an endpoint to it. Until
-that lands, setup mode is something you can observe rather than complete. This is the single biggest
-gap between the interface and the instance.
+Redeem the token to claim the instance, then sign in with the account you just created. Both routes
+are mapped: `/api/setup` redeems, and `/api/auth/sign-in` issues the cookie. Only password sign-in
+works — the OAuth callback is built but not mapped, so an external identity provider is not yet
+usable.
 
 ## 3. Connect a repository
 
@@ -179,9 +187,14 @@ Install the GitHub App you created onto the repository you picked, and pick a ba
 repository is deliberately not the end of anything: **a newly connected repository is requestable by
 nobody**. Deny by default is a guardrail primitive, not a default setting, and readiness is earned.
 
-**Not yet clickable.** The onboarding flow is implemented — connect, recon, scope confirmation, smoke
-test, primer, merge-gate check, each step persisted and audited — but no HTTP route reaches it. It runs
-as a service today.
+Connecting is `POST /api/repos`, and it is an administrator action. The one scope grant it writes is
+for the person who connected it — enough to drive the rest of onboarding, and nothing more.
+
+**Who can file against it is a separate decision from whether it is ready**, and both have to be true
+before anybody sees it. Settings → Repositories → *(the repository)* has the access list: grant a whole
+role, or one person at a time. Withholding somebody writes a refusal rather than deleting their grant,
+and a refusal beats a grant at the same level — so "why can this person not file?" always has an
+answer you can point at.
 
 ## 4. Onboarding ends in proof
 
@@ -214,6 +227,17 @@ seed path probably is not ready for non-engineer requests anyway.
 Repositories drift, so re-recon is offered on demand. Re-running it on a ready repository does not
 un-ready it — that would make every requester's project vanish from their list mid-afternoon.
 
+**Recon and the smoke test both need a runner.** They are queued as jobs, and a job with nothing to
+claim it stays queued: the wizard will sit on step two, the proposed scope and the primer draft will
+stay absent, and the repository will stay requestable by nobody. That is the guardrail working rather
+than a bug, but it is the wall you hit first on a single-container instance. See
+[runners.md](runners.md).
+
+**The primer draft is a scaffold, not finished prose.** Charter fills in what recon verified — the
+stack, the commands, what is in scope — and leaves headings where the paragraphs only your team can
+write belong, above all the domain vocabulary. A draft that read as finished would get published
+unedited, and the primer is the one page every requester reads before their first request.
+
 ## 5. File a request
 
 Someone types what they want in plain English against a project. No repository name, no branch, no
@@ -245,9 +269,11 @@ It also proves the sanitisation boundary: what reaches the agent is a model-auth
 document. A request that would touch a denied path is refused in plain English and routed to an
 engineer rather than being quietly narrowed.
 
-If a request sits in *Let's figure out what you need* and nothing ever happens, the usual cause is a
-model credential that does not resolve. The refine job defers rather than failing, which means it
-retries forever and writes nothing to the thread explaining the wait. Check the container logs.
+If a credential cannot be resolved, the request does not sit there. It ends as *This turned out to be
+bigger than expected*, with a sentence in the thread saying Charter could not reach a model — and the
+container log and the job's recorded error name the exact variable to set for the exact model that
+could not be served. The one case that legitimately waits is a rate limit with a reset time from the
+provider, which resumes on its own.
 
 ## 7. Approve it
 
@@ -278,10 +304,11 @@ When the session reports a clean completion, the reconciliation pass publishes t
 pull request. It runs from reconciliation rather than from the result callback, so a control plane that
 died between the two still opens it, and a second pass is a no-op rather than a second pull request.
 
-**This is where the loop stops today.** Nothing writes the `branch_pushed` event the publisher looks
-for, and neither the workflow nor the agent commits or pushes, so the publisher concludes the session
-changed nothing and records `NoChangesNeeded`. The requester reads *Nothing needed changing* — a real
-state, reached for the wrong reason. [the-loop.md](the-loop.md) has the detail.
+Before it publishes, the session runs whatever your repository declares under `checks:` in
+`.charter/config.yml` and records each result. A failing check does not stop the push — Charter has no
+merge button, so a red pull request cannot ship anyway, and discarding the work would leave your
+engineer nothing to read or take over. The failure is reported at the top of the pull request and on
+the transcript instead. [the-loop.md](the-loop.md) has the detail.
 
 ## 9. Get a preview
 
@@ -328,11 +355,11 @@ preview, will file real requests. One who has only read about it will not.
 | Postgres | yes | yes |
 | `CHARTER_SECRET_KEY`, `CHARTER_CREDENTIAL_KEY` | yes | yes |
 | GitHub App ID, private key, webhook secret | **yes** | yes |
-| An Anthropic API key | no | **yes** — refinement calls a model on the first request, and only Anthropic works today |
+| A model key (`OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY`) | no | **yes** — refinement calls a model on the first request. The environment key is enough; nothing needs linking in the database. |
 | A public HTTPS URL | no | yes, for webhook delivery and preview binding |
 | Railway, Render, Fly, or any preview platform | no | no — the deployment webhook accepts a report from anything, including `curl` |
 | A Charter Agent, or any runner of your own | no | no — `CHARTER_RUNNER` defaults to `github-actions`, which needs no infrastructure from you |
-| S3-compatible storage | no | no, for a web project. Needed for downloadable build artifacts. |
+| Object storage — a durable directory or an S3-compatible bucket | no | no — `CHARTER_STORAGE_BACKEND` defaults to `none` and everything stays in Postgres. Set it only if you want oversized transcript output kept outside the database. See [configuration.md](configuration.md). |
 | SMTP | no | no. With no mail server, notifications are simply not sent and every email-dependent setting says why it is off. |
 | OAuth provider credentials | no | no |
 
@@ -343,8 +370,22 @@ boot, and blocks every outbound call, so you can look around without a GitHub Ap
 CHARTER_DEMO=true docker compose up
 ```
 
+It seeds two accounts and prints them at startup, so read the container log. Both use the password
+`charter-demo-password`:
+
+| Email | Roles |
+|---|---|
+| `priya@northwind.example` | Requester |
+| `ada@northwind.example` | Admin, Engineer, Approver |
+
+Sign in at `/sign-in` as each in turn. That is the fastest way to understand what Charter is: the
+same request looks completely different to the two of them, and the difference is enforced by the
+API, not by hiding fields in the page.
+
 It is a demonstration, not a sandbox for real work — nothing in that instance can reach a model
-provider or a code host. See [configuration.md](configuration.md#demo-mode).
+provider or a code host. Because the password is documented it is public, so do not expose a demo
+instance on an address you would not hand out, and start a fresh database when you move on to real
+work. See [configuration.md](configuration.md#demo-mode).
 
 ## Driving the loop without a browser
 

@@ -203,70 +203,70 @@ public sealed class PreviewArtifactPublisher
         switch (deployment.State)
         {
             case DeploymentState.Ready when !string.IsNullOrWhiteSpace(deployment.Url):
-            {
-                var isNewPreview = artifact.State != VerificationArtifactState.Ready
-                                   || !string.Equals(artifact.Url, deployment.Url, StringComparison.Ordinal);
-
-                var reachability = await _probe.ProbeAsync(deployment.Url, cancellationToken);
-                var payload = Payload(deployment.Url, reachability);
-
-                // The expiry is stamped when a preview becomes ready and never afterwards. Extending
-                // it on every reconcile would make section 27.7's countdown a clock that never runs
-                // down, and the countdown is the mitigation for the confusion expiry causes.
-                var expiresAt = isNewPreview ? _options.ExpiryFor(now) : artifact.ExpiresAt;
-
-                if (isNewPreview || !SamePayload(artifact.Payload, payload))
                 {
-                    artifact.MarkReady(
-                        url: deployment.Url,
-                        instructionsMd: artifact.InstructionsMd ?? Instructions,
-                        expiresAt: expiresAt,
-                        payload: payload);
+                    var isNewPreview = artifact.State != VerificationArtifactState.Ready
+                                       || !string.Equals(artifact.Url, deployment.Url, StringComparison.Ordinal);
 
-                    changed = true;
+                    var reachability = await _probe.ProbeAsync(deployment.Url, cancellationToken);
+                    var payload = Payload(deployment.Url, reachability);
+
+                    // The expiry is stamped when a preview becomes ready and never afterwards. Extending
+                    // it on every reconcile would make section 27.7's countdown a clock that never runs
+                    // down, and the countdown is the mitigation for the confusion expiry causes.
+                    var expiresAt = isNewPreview ? _options.ExpiryFor(now) : artifact.ExpiresAt;
+
+                    if (isNewPreview || !SamePayload(artifact.Payload, payload))
+                    {
+                        artifact.MarkReady(
+                            url: deployment.Url,
+                            instructionsMd: artifact.InstructionsMd ?? Instructions,
+                            expiresAt: expiresAt,
+                            payload: payload);
+
+                        changed = true;
+                    }
+
+                    break;
                 }
-
-                break;
-            }
 
             case DeploymentState.Ready:
             case DeploymentState.Pending:
             case DeploymentState.Building:
-            {
-                // A rebuild, or a redeploy of the same change request. Section 27.7's pending state is
-                // a skeleton with an elapsed timer — never an ETA — and it must not sit above the URL
-                // of the build being replaced.
-                if (artifact.State != VerificationArtifactState.Pending)
                 {
-                    artifact.MarkPending();
-                    changed = true;
-                }
+                    // A rebuild, or a redeploy of the same change request. Section 27.7's pending state is
+                    // a skeleton with an elapsed timer — never an ETA — and it must not sit above the URL
+                    // of the build being replaced.
+                    if (artifact.State != VerificationArtifactState.Pending)
+                    {
+                        artifact.MarkPending();
+                        changed = true;
+                    }
 
-                break;
-            }
+                    break;
+                }
 
             case DeploymentState.Failed:
             case DeploymentState.Cancelled:
-            {
-                if (artifact.State != VerificationArtifactState.Failed)
                 {
-                    artifact.MarkFailed();
-                    changed = true;
-                }
+                    if (artifact.State != VerificationArtifactState.Failed)
+                    {
+                        artifact.MarkFailed();
+                        changed = true;
+                    }
 
-                break;
-            }
+                    break;
+                }
 
             case DeploymentState.Expired:
-            {
-                if (artifact.State != VerificationArtifactState.Expired)
                 {
-                    artifact.MarkExpired();
-                    changed = true;
-                }
+                    if (artifact.State != VerificationArtifactState.Expired)
+                    {
+                        artifact.MarkExpired();
+                        changed = true;
+                    }
 
-                break;
-            }
+                    break;
+                }
 
             default:
                 break;

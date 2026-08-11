@@ -130,10 +130,15 @@ public static class OrchestrationServiceCollectionExtensions
 
         if (config.SupportsRunner(RunnerBackend.GitHubActions))
         {
+            // The tokens are resolved lazily rather than required, as for DockerRunner below:
+            // AddCharterRunners is called before AddCharterOrchestration registers them. A dispatch
+            // without them refuses with the variable to set rather than sending a payload the
+            // credential exchange would then reject.
             services.AddSingleton<IAgentRunner>(provider => new GitHubActionsRunner(
                 provider.GetRequiredService<IGitHubRepositoryDispatcher>(),
                 provider.GetRequiredService<GitHubActionsRunnerOptions>(),
-                provider.GetRequiredService<ILogger<GitHubActionsRunner>>()));
+                provider.GetRequiredService<ILogger<GitHubActionsRunner>>(),
+                provider.GetService<RunnerSessionTokens>()));
         }
 
         // The primary backend (section 2.2). It registers its own pairing service, connection

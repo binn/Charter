@@ -819,10 +819,13 @@ public class CredentialStoreIntegrationTests
             scope: CredentialScope.SharedPool,
             priority: 9);
 
+        // Section 20b.7: pooling is an instance opt-in, so a test about pool ordering has to say the
+        // instance opted in. Without it the pool is not consulted at all, which is its own test.
         var resolver = new CredentialResolver(
             fixture.Store,
             TimeProvider.System,
-            NullLogger<CredentialResolver>.Instance);
+            NullLogger<CredentialResolver>.Instance,
+            CredentialPolicy.Pooled);
 
         var resolution = await resolver.ResolveAsync(fixture.Query(), TestContext.Current.CancellationToken);
 

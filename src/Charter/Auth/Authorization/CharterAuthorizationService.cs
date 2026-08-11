@@ -1,6 +1,8 @@
 using Charter.Auth.Audit;
+using Charter.Configuration;
 using Charter.Data;
 using Charter.Domain;
+using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
 
 namespace Charter.Auth.Authorization;
@@ -33,6 +35,21 @@ public interface ICharterAuthorizationService
     Task<AuthorizationDecision> CanFileRequestAsync(
         MemberSnapshot member,
         Guid repoId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// May this member create a repository? (section 26.10)
+    /// </summary>
+    /// <param name="member">The acting member.</param>
+    /// <param name="provider">
+    /// What the code host can do. Gate 2 of section 26.10 is the provider's own scope, which Charter
+    /// reports rather than assumes, so the caller passes the capabilities of the provider it is about
+    /// to ask.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    Task<AuthorizationDecision> CanCreateRepoAsync(
+        MemberSnapshot member,
+        VersionControlCapabilities provider,
         CancellationToken cancellationToken = default);
 
     /// <summary>May this member approve this specification? (section 7.5, spend gate only)</summary>
@@ -71,14 +88,28 @@ public sealed class CharterAuthorizationService : ICharterAuthorizationService
 {
     private readonly CharterDbContext database;
     private readonly IAuditWriter audit;
+    private readonly bool allowRepoCreation;
 
-    public CharterAuthorizationService(CharterDbContext database, IAuditWriter audit)
+    /// <summary>Creates the service.</summary>
+    /// <param name="database">The rows every question below is answered from.</param>
+    /// <param name="audit">Where notable grants are written.</param>
+    /// <param name="config">
+    /// The instance switches authorisation depends on - currently only
+    /// <c>CHARTER_ALLOW_REPO_CREATION</c> (section 26.10). Omitted means <em>off</em>, which is
+    /// section 4.2's default and the refusing answer, so a service graph that forgot to supply it
+    /// denies an escalation rather than granting one.
+    /// </param>
+    public CharterAuthorizationService(
+        CharterDbContext database,
+        IAuditWriter audit,
+        CharterConfig? config = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(audit);
 
         this.database = database;
         this.audit = audit;
+        allowRepoCreation = config?.AllowRepoCreation ?? false;
     }
 
     /// <inheritdoc />
@@ -123,6 +154,22 @@ public sealed class CharterAuthorizationService : ICharterAuthorizationService
         return repo is null
             ? AuthorizationDecision.Deny("no repository by that id is open to you")
             : RepoAccessPolicy.CanFileRequest(member, repo);
+    }
+
+    /// <inheritdoc />
+    public Task<AuthorizationDecision> CanCreateRepoAsync(
+        MemberSnapshot member,
+        VersionControlCapabilities provider,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(member);
+        ArgumentNullException.ThrowIfNull(provider);
+
+        // No database read: all three of section 26.10's gates are already in hand. The instance
+        // switch is CHARTER_ALLOW_REPO_CREATION, the provider scope came from the provider itself,
+        // and the capability travels on the member snapshot. Asynchronous anyway, so that adding a
+        // per-organisation rule later is not a breaking change to every caller.
+        return Task.FromResult(RepoCreationPolicy.CanCreateRepo(member, allowRepoCreation, provider));
     }
 
     /// <inheritdoc />

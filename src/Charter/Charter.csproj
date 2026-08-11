@@ -46,6 +46,16 @@
     -->
     <PackageReference Include="Anthropic" Version="12.40.0" />
 
+    <!--
+      S3-compatible object storage (section 4.2), used only when CHARTER_STORAGE_BACKEND=s3. The AWS
+      SDK rather than a hand-rolled SigV4 signer: signing is the part that is easy to get subtly
+      wrong, and this client is the one every S3-compatible vendor tests against, so a custom
+      ServiceURL plus path-style addressing reaches R2, MinIO, B2 and Wasabi unchanged. Section 16
+      counts a new dependency as supply chain - this one is Amazon's own, and it is not loaded at all
+      on the default backend.
+    -->
+    <PackageReference Include="AWSSDK.S3" Version="4.0.102" />
+
     <!-- Postgres is the only external dependency (section 3). -->
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />

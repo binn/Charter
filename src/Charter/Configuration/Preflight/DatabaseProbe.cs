@@ -150,14 +150,40 @@ public sealed class NpgsqlDatabaseProbe : IDatabaseProbe
         return result is true;
     }
 
+    private static async Task<bool> HasStatusColumnAsync(
+        NpgsqlConnection connection,
+        string qualifiedName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT EXISTS (SELECT 1 FROM pg_attribute "
+            + "WHERE attrelid = to_regclass(@name) AND attname = 'status' AND attnum > 0 "
+            + "AND NOT attisdropped)",
+            connection);
+        command.Parameters.AddWithValue("name", qualifiedName);
+        var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return result is true;
+    }
+
     private static async Task<int> CountAsync(
         NpgsqlConnection connection,
         string qualifiedName,
         CancellationToken cancellationToken)
     {
+        // Revoked grants do not count. The check exists to answer "can this instance reach a model",
+        // and a revoked credential answers no - counting it let an instance whose only credential had
+        // been revoked report healthy and then fail every refinement.
+        //
+        // Guarded on the column rather than assumed, because this probe runs before migrations and has
+        // to tolerate a schema older than itself; without the column it degrades to the old count.
+        var filter = await HasStatusColumnAsync(connection, qualifiedName, cancellationToken)
+            .ConfigureAwait(false)
+            ? " WHERE lower(status::text) <> 'revoked'"
+            : string.Empty;
+
         // The name comes from the fixed list above, never from user input, and has already been
         // resolved by to_regclass. Identifiers cannot be parameterised in Postgres.
-        await using var command = new NpgsqlCommand($"SELECT count(*) FROM {qualifiedName}", connection);
+        await using var command = new NpgsqlCommand($"SELECT count(*) FROM {qualifiedName}{filter}", connection);
         var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         return result is null or DBNull
             ? 0

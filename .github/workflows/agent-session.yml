@@ -70,6 +70,15 @@ jobs:
       #   - a short-TTL GitHub App installation token scoped to THIS repo only
       #   - a scoped model credential (access token only, never a refresh token)
       #
+      # TWO factors, and both are required. `secrets.CHARTER_SESSION_SECRET` is
+      # per repository: every run in this repository reads the same value, so it
+      # proves the caller is a workflow run here and says nothing about WHICH
+      # session is asking. `client_payload.session_token` is minted per session
+      # and dispatched only to the run for that session, so it is what stops one
+      # run minting credentials -- and a 12-hour event token -- for every other
+      # live session in this repository. It is not a credential: on its own it
+      # grants nothing, which is why it is safe in a payload the secret is not.
+      #
       # A broad personal access token must never be used here. If this step is
       # ever replaced with `secrets.SOME_PAT`, the trust boundary in spec section 7.4 is
       # gone: the runner would hold write access to every repo the maintainer
@@ -79,6 +88,7 @@ jobs:
         id: creds
         env:
           CHARTER_SESSION_SECRET: ${{ secrets.CHARTER_SESSION_SECRET }}
+          CHARTER_SESSION_TOKEN: ${{ github.event.client_payload.session_token }}
         run: |
           set -euo pipefail
 
@@ -88,7 +98,8 @@ jobs:
             --header "Authorization: Bearer ${CHARTER_SESSION_SECRET}" \
             --header "Content-Type: application/json" \
             --data "$(jq -nc --arg id "$CHARTER_SESSION_ID" --arg run "$CHARTER_RUN_URL" \
-                        '{session_id: $id, run_url: $run}')" \
+                        --arg token "$CHARTER_SESSION_TOKEN" \
+                        '{session_id: $id, run_url: $run, session_token: $token}')" \
             "${CHARTER_CALLBACK_URL}/credentials")"
 
           github_token="$(printf '%s' "$response" | jq -r '.github_token')"

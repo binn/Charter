@@ -399,6 +399,40 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
             .Select(row => row.Status)
             .FirstAsync(TestContext.Current.CancellationToken);
 
+    /// <summary>What the requester's thread says, which is the half of section 6 they can see.</summary>
+    public async Task<RequestStatus> RequestStatusAsync()
+        => await (from spec in Db.Specs.AsNoTracking()
+                  where spec.Id == Session.SpecId
+                  join request in Db.Requests.AsNoTracking() on spec.RequestId equals request.Id
+                  select request.Status)
+            .FirstAsync(TestContext.Current.CancellationToken);
+
+    /// <summary>Puts the request somewhere along section 6 before a webhook arrives.</summary>
+    public async Task SetRequestStatusAsync(RequestStatus status)
+    {
+        var request = await (from spec in Db.Specs
+                             where spec.Id == Session.SpecId
+                             join row in Db.Requests on spec.RequestId equals row.Id
+                             select row)
+            .FirstAsync(TestContext.Current.CancellationToken);
+
+        request.TransitionTo(status);
+        await Db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        Db.ChangeTracker.Clear();
+    }
+
+    /// <summary>Moves the session on, the way the publisher does when it opens a change request.</summary>
+    public async Task SetSessionStatusAsync(SessionStatus status)
+    {
+        var session = await Db.Sessions.FirstAsync(
+            row => row.Id == Session.Id,
+            TestContext.Current.CancellationToken);
+
+        session.TransitionTo(status);
+        await Db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        Db.ChangeTracker.Clear();
+    }
+
     public async Task<IReadOnlyList<string>> EventsAsync(string type)
         => await Db.Events
             .AsNoTracking()

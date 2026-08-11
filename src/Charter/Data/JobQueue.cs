@@ -53,6 +53,27 @@ public sealed class JobQueue
     /// lets N workers poll the same queue without contending, and <c>RETURNING</c> means a claim is
     /// one round trip rather than a select followed by an update.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There are two capability tests here and they run in opposite directions, because they answer
+    /// two different questions.
+    /// </para>
+    /// <para>
+    /// <c>required_capabilities &lt;@ @capabilities</c> asks <em>can this worker run the job</em>
+    /// (section 27.3). Containment is the right shape for that, and it is why a job requiring macOS
+    /// is never handed to a Linux host. But the empty set is contained in everything, so this test
+    /// alone says yes to every worker for every job that requires nothing — which is every control
+    /// plane job Charter enqueues.
+    /// </para>
+    /// <para>
+    /// <c>@requires = ANY(required_capabilities)</c> asks <em>was this job meant for this worker</em>
+    /// (section 2.2). It is a positive requirement rather than a subset relation, so it cannot be
+    /// satisfied by silence: a row that does not name the marker is invisible to a claimant that
+    /// demands it, however capable that claimant is. The execution plane claims with the marker and
+    /// therefore sees only rows written for it; the control plane claims without one and its own
+    /// filter is unchanged.
+    /// </para>
+    /// </remarks>
     internal const string ClaimSql = """
         WITH claimable AS (
             SELECT id
@@ -60,6 +81,7 @@ public sealed class JobQueue
             WHERE status = 'pending'
               AND available_at <= @now
               AND (@capabilities IS NULL OR required_capabilities <@ @capabilities)
+              AND (@requires IS NULL OR @requires = ANY(required_capabilities))
             ORDER BY priority DESC, available_at, created_at
             FOR UPDATE SKIP LOCKED
             LIMIT @batch_size
@@ -208,6 +230,13 @@ public sealed class JobQueue
     /// What this worker can do (section 27.3). <see langword="null"/> disables capability filtering
     /// for an in-process dispatcher; an empty set claims only jobs that require nothing.
     /// </param>
+    /// <param name="requires">
+    /// A capability a row must <em>name</em> before this worker will take it (section 2.2). Unlike
+    /// <paramref name="capabilities"/>, which is a containment test a job requiring nothing always
+    /// passes, this is a positive requirement: pass <c>charter_agent</c> and only rows enqueued for
+    /// the execution plane are claimed. <see langword="null"/> leaves the claim unrestricted, which
+    /// is what the control plane's own dispatcher wants.
+    /// </param>
     /// <param name="now">The instant to evaluate against. Defaults to now, in UTC.</param>
     /// <param name="cancellationToken">Cancels the claim.</param>
     public async Task<IReadOnlyList<ClaimedJob>> ClaimAsync(
@@ -215,6 +244,7 @@ public sealed class JobQueue
         TimeSpan? lease = null,
         int batchSize = 1,
         IEnumerable<string>? capabilities = null,
+        string? requires = null,
         DateTimeOffset? now = null,
         CancellationToken cancellationToken = default)
     {
@@ -233,6 +263,11 @@ public sealed class JobQueue
         AddParameter(command, "lease", NpgsqlDbType.Interval, ttl);
         AddParameter(command, "batch_size", NpgsqlDbType.Integer, batchSize);
         AddParameter(command, "capabilities", NpgsqlDbType.Array | NpgsqlDbType.Text, advertised);
+        AddParameter(
+            command,
+            "requires",
+            NpgsqlDbType.Text,
+            string.IsNullOrWhiteSpace(requires) ? null : requires.Trim());
 
         var claimed = new List<ClaimedJob>(batchSize);
 

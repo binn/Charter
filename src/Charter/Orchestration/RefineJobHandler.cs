@@ -244,11 +244,20 @@ public sealed class RefineJobHandler : IQueuedJobHandler
 
         if (credential.Credential is not { } resolved)
         {
-            // Section 20b.3: exhausted means wait, not fail. The requester's thread says so and the
-            // turn happens when capacity comes back.
-            return JobHandlingResult.Deferred(
-                "Every model credential is currently exhausted, so this refinement is waiting for capacity.",
-                Delay(credential.WaitingForCapacityUntil));
+            // Section 20b.3: exhausted means wait, not fail — but only where waiting produces a
+            // credential. A provider that named a reset instant will come back on its own.
+            if (credential.RecoversOnItsOwn)
+            {
+                return JobHandlingResult.Deferred(
+                    "Every model credential is currently exhausted, so this refinement is waiting for capacity.",
+                    Delay(credential.WaitingForCapacityUntil));
+            }
+
+            // Nothing configured, or nothing usable. Deferring here is what left a filed request in
+            // Refining forever with nothing anywhere saying why — the worst outcome available, because
+            // it tells the requester nothing and the operator nothing. Section 4.1's fail loudly, one
+            // step later than startup.
+            return await FailForCredentialAsync(request, record, credential, cancellationToken);
         }
 
         var conversation = ConversationRehydration.ToConversation(record);
@@ -300,6 +309,51 @@ public sealed class RefineJobHandler : IQueuedJobHandler
         return handled;
     }
 
+    /// <summary>What a requester reads when this instance cannot reach a model at all.</summary>
+    /// <remarks>
+    /// Section 11: one sentence, no stack trace, and nothing that reads as their mistake — a missing
+    /// environment variable is the operator's problem and naming it here would put configuration in
+    /// front of somebody who has no way to act on it (section 7.4). The actionable half goes to the
+    /// log and to the job's recorded error, where the person who can fix it is looking.
+    /// </remarks>
+    internal const string CredentialFailureMessage =
+        "Charter could not reach a model to work on this, so it has stopped rather than leaving you "
+        + "waiting. Nothing you did caused it — this instance needs a model credential set up, and an "
+        + "engineer has been told.";
+
+    /// <summary>
+    /// Ends the request loudly when no credential can be resolved and waiting will not produce one.
+    /// </summary>
+    /// <remarks>
+    /// Section 6 puts this in <see cref="RequestStatus.Failed"/>: it is terminal, it is not the
+    /// requester's fault, and its label — <em>this turned out to be bigger than expected, an engineer
+    /// has been told</em> — is the accurate one. <see cref="RequestStatus.Rejected"/> would be wrong,
+    /// because refinement never judged the request at all.
+    /// </remarks>
+    private async Task<JobHandlingResult> FailForCredentialAsync(
+        Request request,
+        ConversationRecord record,
+        ModelCredentialResolution resolution,
+        CancellationToken cancellationToken)
+    {
+        var now = _clock.GetUtcNow();
+
+        _logger.LogError(
+            "Request {RequestId} cannot be refined: {Explanation}",
+            request.Id,
+            resolution.Explanation);
+
+        record.AppendCharterTurn(ConversationTurnKind.Refusal, CredentialFailureMessage, now);
+        request.TransitionTo(RequestStatus.Failed, now);
+
+        await _db.SaveChangesAsync(cancellationToken);
+
+        // Failed rather than Completed so the operator-facing sentence lands on the job row as its
+        // recorded error. The retry it earns is harmless: the request is terminal now, so the next
+        // attempt returns at the status guard above without spending anything.
+        return JobHandlingResult.Failed(resolution.Explanation);
+    }
+
     /// <summary>Writes what the turn produced, and moves the request to where section 6 puts it.</summary>
     private async Task<JobHandlingResult> ApplyAsync(
         Request request,
@@ -311,56 +365,56 @@ public sealed class RefineJobHandler : IQueuedJobHandler
         switch (result.Outcome)
         {
             case RefinementOutcome.SpecProposed proposed:
-            {
-                record.RecordSpec(ConversationRehydration.WriteSpec(proposed.Spec), now);
-
-                if (proposed.RequiresEngineerReview)
                 {
-                    // Section 16: instruction-shaped language in the submitted text. An engineer must
-                    // read the flags before anything is dispatched, so this never auto-dispatches.
-                    record.RecordFlags(
-                        ConversationRehydration.WriteFlags(proposed.Flags),
-                        proposed.Flags.Count,
-                        now);
+                    record.RecordSpec(ConversationRehydration.WriteSpec(proposed.Spec), now);
+
+                    if (proposed.RequiresEngineerReview)
+                    {
+                        // Section 16: instruction-shaped language in the submitted text. An engineer must
+                        // read the flags before anything is dispatched, so this never auto-dispatches.
+                        record.RecordFlags(
+                            ConversationRehydration.WriteFlags(proposed.Flags),
+                            proposed.Flags.Count,
+                            now);
+                    }
+
+                    var version = await NextSpecVersionAsync(request.Id, cancellationToken);
+                    var spec = SpecDocumentMapper.ToDraft(proposed.Spec, request.Id, version, now);
+
+                    _db.Specs.Add(spec);
+                    request.TransitionTo(RequestStatus.SpecReady, now);
+
+                    await _db.SaveChangesAsync(cancellationToken);
+
+                    // Section 7.5: SpecReady → Queued can be automatic, and where it is, the spend gate
+                    // is skipped entirely rather than shown and auto-pressed.
+                    await MaybeAutoDispatchAsync(request, spec, proposed, now, cancellationToken);
+
+                    return JobHandlingResult.Completed;
                 }
 
-                var version = await NextSpecVersionAsync(request.Id, cancellationToken);
-                var spec = SpecDocumentMapper.ToDraft(proposed.Spec, request.Id, version, now);
-
-                _db.Specs.Add(spec);
-                request.TransitionTo(RequestStatus.SpecReady, now);
-
-                await _db.SaveChangesAsync(cancellationToken);
-
-                // Section 7.5: SpecReady → Queued can be automatic, and where it is, the spend gate
-                // is skipped entirely rather than shown and auto-pressed.
-                await MaybeAutoDispatchAsync(request, spec, proposed, now, cancellationToken);
-
-                return JobHandlingResult.Completed;
-            }
-
             case RefinementOutcome.Refused refused:
-            {
-                _logger.LogInformation(
-                    "Refinement refused request {RequestId}: {Detail}",
-                    request.Id,
-                    refused.EngineerDetail);
+                {
+                    _logger.LogInformation(
+                        "Refinement refused request {RequestId}: {Detail}",
+                        request.Id,
+                        refused.EngineerDetail);
 
-                request.TransitionTo(RequestStatus.Rejected, now);
-                await _db.SaveChangesAsync(cancellationToken);
+                    request.TransitionTo(RequestStatus.Rejected, now);
+                    await _db.SaveChangesAsync(cancellationToken);
 
-                return JobHandlingResult.Completed;
-            }
+                    return JobHandlingResult.Completed;
+                }
 
             default:
-            {
-                // A question, or an answer in chat. Either way the thread stays open and the next
-                // thing that happens is the requester saying something.
-                request.TransitionTo(RequestStatus.Refining, now);
-                await _db.SaveChangesAsync(cancellationToken);
+                {
+                    // A question, or an answer in chat. Either way the thread stays open and the next
+                    // thing that happens is the requester saying something.
+                    request.TransitionTo(RequestStatus.Refining, now);
+                    await _db.SaveChangesAsync(cancellationToken);
 
-                return JobHandlingResult.Completed;
-            }
+                    return JobHandlingResult.Completed;
+                }
         }
     }
 

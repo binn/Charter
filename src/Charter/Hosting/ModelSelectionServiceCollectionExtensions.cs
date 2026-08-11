@@ -75,6 +75,11 @@ public static class ModelSelectionServiceCollectionExtensions
 
         services.AddSingleton(new TeachingOptions { Model = teach });
 
+        // Section 20b.7: the operator's terms-of-service decision, projected onto the one place that
+        // can act on it. CredentialResolver used to decide pool membership purely per grant, which
+        // made CHARTER_ALLOW_SHARED_POOL inert in both positions.
+        services.AddSingleton(new CredentialPolicy(config.Models.AllowSharedPool));
+
         return services;
     }
 

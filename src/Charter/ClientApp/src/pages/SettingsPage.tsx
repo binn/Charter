@@ -38,6 +38,22 @@ export function SettingsNav() {
       end: false,
       visible: viewer.capabilities.canAdminister,
     },
+    {
+      to: '/settings/members',
+      label: 'Members',
+      icon: 'user' as const,
+      end: false,
+      // §7.1 puts members, roles and the audit log in the administrator's column. `GET /api/members`
+      // and `GET /api/audit` refuse everybody else, so these two links are affordances, not controls.
+      visible: viewer.capabilities.canAdminister,
+    },
+    {
+      to: '/settings/audit',
+      label: 'Audit log',
+      icon: 'list' as const,
+      end: false,
+      visible: viewer.capabilities.canAdminister,
+    },
   ].filter((item) => item.visible);
 
   if (items.length < 2) {

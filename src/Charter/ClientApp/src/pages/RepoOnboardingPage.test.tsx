@@ -43,6 +43,19 @@ function onboarding(overrides: Partial<RepoOnboarding> = {}): RepoOnboarding {
   };
 }
 
+/**
+ * The access card sits on this page and calls two endpoints of its own. Stubbed here rather than
+ * left to the harness's throwing default, so every other endpoint the page reaches for still fails
+ * loudly — see `RepoAccessCard.test.tsx` for the access behaviour itself.
+ */
+function withAccess(api: Partial<CharterApi>): Partial<CharterApi> {
+  return {
+    getRepoAccess: () => Promise.resolve({ grants: [], requesterVisible: false }),
+    listMembers: () => Promise.resolve([]),
+    ...api,
+  };
+}
+
 function renderPage(api: CharterApi) {
   return render(
     <ApiProvider api={api}>
@@ -59,7 +72,9 @@ function renderPage(api: CharterApi) {
 
 describe('repo onboarding (§9)', () => {
   it('says readiness is earned by the smoke test, not set by hand', async () => {
-    renderPage(createTestApi({ getRepoOnboarding: () => Promise.resolve(onboarding()) }));
+    renderPage(
+      createTestApi(withAccess({ getRepoOnboarding: () => Promise.resolve(onboarding()) })),
+    );
 
     expect(await screen.findByRole('heading', { name: 'northbeam/quote-tool' })).toBeInTheDocument();
     expect(screen.getByText(/until its smoke test passes/)).toBeInTheDocument();
@@ -74,7 +89,9 @@ describe('repo onboarding (§9)', () => {
     });
 
     renderPage(
-      createTestApi({ getRepoOnboarding: () => Promise.resolve(onboarding()), startRecon }),
+      createTestApi(
+        withAccess({ getRepoOnboarding: () => Promise.resolve(onboarding()), startRecon }),
+      ),
     );
 
     expect(await screen.findByText(/It writes nothing/)).toBeInTheDocument();
@@ -94,32 +111,34 @@ describe('repo onboarding (§9)', () => {
     });
 
     renderPage(
-      createTestApi({
-        confirmScope,
-        getRepoOnboarding: () =>
-          Promise.resolve(
-            onboarding({
-              repo: {
-                id: 'repo-1',
-                fullName: 'northbeam/quote-tool',
-                baseBranch: 'main',
-                status: 'configuring',
-                requesterVisible: false,
-                hasPrimer: false,
-                connectedAt: AT,
-                updatedAt: AT,
-              },
-              proposedScope: {
-                detectedStack: ['React 19'],
-                commands: [],
-                entries: [
-                  { path: 'src/app/', kind: 'directory', allowed: true },
-                  { path: 'db/migrations/', kind: 'directory', allowed: false, locked: true },
-                ],
-              },
-            }),
-          ),
-      }),
+      createTestApi(
+        withAccess({
+          confirmScope,
+          getRepoOnboarding: () =>
+            Promise.resolve(
+              onboarding({
+                repo: {
+                  id: 'repo-1',
+                  fullName: 'northbeam/quote-tool',
+                  baseBranch: 'main',
+                  status: 'configuring',
+                  requesterVisible: false,
+                  hasPrimer: false,
+                  connectedAt: AT,
+                  updatedAt: AT,
+                },
+                proposedScope: {
+                  detectedStack: ['React 19'],
+                  commands: [],
+                  entries: [
+                    { path: 'src/app/', kind: 'directory', allowed: true },
+                    { path: 'db/migrations/', kind: 'directory', allowed: false, locked: true },
+                  ],
+                },
+              }),
+            ),
+        }),
+      ),
     );
 
     await userEvent.setup().click(await screen.findByRole('button', { name: /Confirm this scope/ }));
@@ -134,36 +153,38 @@ describe('repo onboarding (§9)', () => {
 
   it('shows the smoke test running rather than reporting a boolean', async () => {
     renderPage(
-      createTestApi({
-        getRepoOnboarding: () =>
-          Promise.resolve(
-            onboarding({
-              repo: {
-                id: 'repo-1',
-                fullName: 'northbeam/quote-tool',
-                baseBranch: 'main',
-                status: 'smoke_test',
-                requesterVisible: false,
-                hasPrimer: false,
-                connectedAt: AT,
-                updatedAt: AT,
-              },
-              lastSmokeTest: {
-                passed: false,
-                at: AT,
-                previewBound: false,
-                checkpoints: [
-                  { id: 'request_filed', label: 'Filed a trivial request', state: 'passed' },
-                  { id: 'agent_ran', label: 'The agent ran', state: 'running' },
-                  { id: 'checks_passed', label: 'Your checks passed', state: 'pending' },
-                  { id: 'pull_request', label: 'A pull request opened', state: 'pending' },
-                  { id: 'preview_deployed', label: 'A preview deployed', state: 'pending' },
-                  { id: 'url_bound', label: 'The preview URL bound back', state: 'pending' },
-                ],
-              },
-            }),
-          ),
-      }),
+      createTestApi(
+        withAccess({
+          getRepoOnboarding: () =>
+            Promise.resolve(
+              onboarding({
+                repo: {
+                  id: 'repo-1',
+                  fullName: 'northbeam/quote-tool',
+                  baseBranch: 'main',
+                  status: 'smoke_test',
+                  requesterVisible: false,
+                  hasPrimer: false,
+                  connectedAt: AT,
+                  updatedAt: AT,
+                },
+                lastSmokeTest: {
+                  passed: false,
+                  at: AT,
+                  previewBound: false,
+                  checkpoints: [
+                    { id: 'request_filed', label: 'Filed a trivial request', state: 'passed' },
+                    { id: 'agent_ran', label: 'The agent ran', state: 'running' },
+                    { id: 'checks_passed', label: 'Your checks passed', state: 'pending' },
+                    { id: 'pull_request', label: 'A pull request opened', state: 'pending' },
+                    { id: 'preview_deployed', label: 'A preview deployed', state: 'pending' },
+                    { id: 'url_bound', label: 'The preview URL bound back', state: 'pending' },
+                  ],
+                },
+              }),
+            ),
+        }),
+      ),
     );
 
     expect(await screen.findByText('Running now')).toBeInTheDocument();
@@ -173,9 +194,11 @@ describe('repo onboarding (§9)', () => {
 
   it('will not publish an empty primer, and says why the button is off', async () => {
     renderPage(
-      createTestApi({
-        getRepoOnboarding: () => Promise.resolve(onboarding()),
-      }),
+      createTestApi(
+        withAccess({
+          getRepoOnboarding: () => Promise.resolve(onboarding()),
+        }),
+      ),
     );
 
     expect(await screen.findByRole('button', { name: /Publish the primer/ })).toBeDisabled();

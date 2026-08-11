@@ -6,10 +6,13 @@ using System.Text.Json.Serialization;
 using Charter.Data;
 using Charter.Domain;
 using Charter.Orchestration;
+using Charter.Storage;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Charter.Runners;
 
@@ -21,6 +24,17 @@ public sealed record CredentialExchangeRequest
 
     [JsonPropertyName("run_url")]
     public string? RunUrl { get; init; }
+
+    /// <summary>
+    /// The per-session half of the exchange, forwarded from the dispatch payload.
+    /// </summary>
+    /// <remarks>
+    /// Required. The repository secret in the <c>Authorization</c> header proves the caller is a
+    /// workflow run in the repository and nothing more — every run in that repository holds the same
+    /// value — so it is this field that says <em>which</em> session is asking (sections 7.4, 16).
+    /// </remarks>
+    [JsonPropertyName("session_token")]
+    public string? SessionToken { get; init; }
 }
 
 /// <summary>What it gets back. Field names are read by <c>jq</c> in the shipped workflow.</summary>
@@ -107,14 +121,38 @@ public static class RunnerCallbackEndpoints
     }
 
     /// <summary>
-    /// Exchanges the repository's session secret for scoped, short-TTL credentials.
+    /// Exchanges the repository's session secret, plus this session's dispatch token, for scoped
+    /// short-TTL credentials.
     /// </summary>
     /// <remarks>
-    /// The exchange is gated on the session actually being dispatched and not terminal. A leaked
-    /// repository secret therefore cannot mint an installation token whenever its holder likes — only
-    /// while a session Charter itself started is genuinely in flight.
+    /// <para>
+    /// <strong>Two factors, and both are load-bearing.</strong> The bearer secret is per repository —
+    /// Charter writes one value into <c>secrets.CHARTER_SESSION_SECRET</c> and every workflow run in
+    /// that repository reads the same one — so on its own it authenticates a repository, not a
+    /// session. The dispatch token is minted per session and travels in the <c>client_payload</c> of
+    /// the dispatch for that session alone. Without it, a run started for one session could name any
+    /// other live session in the repository and be handed its contribute-scoped GitHub token and a
+    /// twelve-hour event token, which is transcript and result forgery for work somebody else asked
+    /// for (sections 7.4, 16).
+    /// </para>
+    /// <para>
+    /// Neither factor substitutes for the other. The secret never appears in a payload — anyone with
+    /// repository read access can see a <c>client_payload</c>, and the events API retains it — and the
+    /// dispatch token grants nothing without the secret.
+    /// </para>
+    /// <para>
+    /// The exchange is then gated on the session genuinely running (<see cref="SessionCredentialGuard"/>).
+    /// A leaked repository secret therefore cannot mint an installation token whenever its holder
+    /// likes, and not even for the session it was dispatched with once that session is over.
+    /// </para>
+    /// <para>
+    /// The <c>run_url</c> the caller volunteers is checked against the session's own repository before
+    /// it is written down (<see cref="RunnerRunReference"/>). It is the one field here the execution
+    /// plane authors, the control plane later reads a <em>repository</em> back out of it, and a caller
+    /// that lies about which repository it is running in is not one to hand a contribute-scoped token.
+    /// </para>
     /// </remarks>
-    private static async Task<IResult> ExchangeCredentialsAsync(
+    internal static async Task<IResult> ExchangeCredentialsAsync(
         Guid sessionId,
         CredentialExchangeRequest? body,
         HttpContext context,
@@ -122,42 +160,64 @@ public static class RunnerCallbackEndpoints
         SessionJournal journal,
         RunnerSessionTokens tokens,
         IRunnerCredentialBroker broker,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
-        var session = await db.Sessions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(candidate => candidate.Id == sessionId, cancellationToken);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
 
-        if (session is null || session.IsTerminal)
+        var decision = await SessionCredentialGuard.EvaluateAsync(db, journal, sessionId, cancellationToken);
+
+        if (decision.Refusal is SessionCredentialRefusal.UnknownSession
+            or SessionCredentialRefusal.Ended
+            or SessionCredentialRefusal.Cancelled)
         {
+            // Deliberately indistinguishable from a session that never existed: the caller has proved
+            // nothing yet, and which sessions an instance is running is not something to leak.
             return Results.NotFound();
         }
 
-        var repo = await RepoFullNameAsync(db, session.SpecId, cancellationToken);
-        if (repo is null)
-        {
-            return Results.NotFound();
-        }
+        var repo = decision.RepoFullName!;
 
         if (!tokens.ValidateSessionSecret(repo, Bearer(context)))
         {
             return Results.Unauthorized();
         }
 
-        var summary = await journal.SummarizeAsync(sessionId, cancellationToken);
-        if (!summary.Dispatched)
+        // The session-scoping factor. Checked after the repository secret so that a caller who cannot
+        // authenticate at all learns nothing about which dispatch tokens are current.
+        if (!tokens.ValidateDispatchToken(sessionId, body?.SessionToken))
         {
             return Results.Problem(
-                "This session has not been dispatched, so no credentials will be issued for it.",
-                statusCode: StatusCodes.Status409Conflict);
+                "This request carries no valid session token. The credential exchange is scoped to one "
+                + "session, so the workflow must forward `client_payload.session_token` as `session_token`. "
+                + "A repository secret alone is not enough. Update `.github/workflows/agent-session.yml` "
+                + "to the version Charter ships.",
+                statusCode: StatusCodes.Status403Forbidden);
         }
 
-        if (!string.IsNullOrWhiteSpace(body?.RunUrl))
+        if (decision.Refusal is SessionCredentialRefusal.NotDispatched)
+        {
+            return Results.Problem(decision.Explanation, statusCode: StatusCodes.Status409Conflict);
+        }
+
+        var reference = RunnerRunReference.Evaluate(body?.RunUrl, repo);
+
+        if (reference.IsRejected)
+        {
+            RefuseReference(loggerFactory, sessionId, repo, body?.RunUrl, "credential exchange");
+
+            // No token either. The exchange is the moment the instance decides how much of itself to
+            // lend this run, and a run that has just misreported where it is running is not a run to
+            // lend a contribute-scoped GitHub token and a twelve-hour event token to.
+            return Results.Problem(reference.Refusal, statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        if (reference.IsRecordable)
         {
             await journal.AppendAsync(
                 sessionId,
                 EventTypes.SessionStarted,
-                new JsonObject { ["run_url"] = body.RunUrl }.ToJsonString(),
+                new JsonObject { ["run_url"] = body!.RunUrl }.ToJsonString(),
                 $"run-url:{body.RunUrl}",
                 cancellationToken: cancellationToken);
         }
@@ -189,18 +249,37 @@ public static class RunnerCallbackEndpoints
     /// streams nothing to pane 1 for twenty minutes. A promotion that finds the session already past
     /// that label does nothing, so a replayed stream is still one thread.
     /// </para>
+    /// <para>
+    /// It is also where an oversized payload stops being a Postgres row. An adapter's <c>raw</c>
+    /// carries the agent's whole JSONL line - a <c>Write</c> tool call contains the file it wrote -
+    /// and <c>events</c> is already the largest table in the schema (section 5). When an object store
+    /// is configured, <see cref="TranscriptOffload"/> moves the oversized strings into it and leaves
+    /// their tail plus a <c>file_ref</c> behind; when none is, the payload is stored exactly as it
+    /// arrives, which is what every instance did before storage existed (section 2.3).
+    /// </para>
+    /// <para>
+    /// <c>session_started</c> is the other exception, and it is a security one. Its <c>run_url</c> is
+    /// the only thing a runner posts here that the control plane later <em>addresses something with</em>
+    /// — <see cref="Charter.Orchestration.SessionJournal.SummarizeAsync"/> folds it into the session's
+    /// external reference and cancellation reads a repository back out of it. The event token proves
+    /// which session is posting, never what is true, so the reference is checked against the session's
+    /// own repository before it is allowed into the journal (<see cref="RunnerRunReference"/>).
+    /// </para>
     /// </remarks>
-    private static async Task<IResult> IngestEventAsync(
+    internal static async Task<IResult> IngestEventAsync(
         Guid sessionId,
         RunnerEventRequest body,
         HttpContext context,
+        CharterDbContext db,
         SessionJournal journal,
         SessionMilestones milestones,
         RunnerSessionTokens tokens,
         NeedsInputAnnouncer needsInput,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
 
         if (!tokens.ValidateEventToken(sessionId, Bearer(context)))
         {
@@ -210,6 +289,22 @@ public static class RunnerCallbackEndpoints
         if (string.IsNullOrWhiteSpace(body.Type))
         {
             return Results.BadRequest(new { error = "An event needs a type." });
+        }
+
+        // Before the payload is rewritten by offload, and before anything is appended: a rejected
+        // reference must leave no trace on the session at all.
+        if (string.Equals(body.Type, EventTypes.SessionStarted, StringComparison.Ordinal)
+            && ReadRunUrl(body.Payload) is { } claimed)
+        {
+            var repo = await SessionCredentialGuard.SessionRepoFullNameAsync(db, sessionId, cancellationToken);
+            var reference = RunnerRunReference.Evaluate(claimed, repo);
+
+            if (reference.IsRejected)
+            {
+                RefuseReference(loggerFactory, sessionId, repo, claimed, "session_started event");
+
+                return Results.Problem(reference.Refusal, statusCode: StatusCodes.Status403Forbidden);
+            }
         }
 
         var payload = body.Payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
@@ -222,6 +317,14 @@ public static class RunnerCallbackEndpoints
         var key = body.Index is { } index
             ? $"runner:{index}"
             : $"runner-content:{ContentKey(body.Type, payload)}";
+
+        // Derived from what arrived, before anything is rewritten: an event that is offloaded on one
+        // delivery and inlined on the next - because storage went away in between - must still be the
+        // same event, or a retry would double the transcript.
+        if (context.RequestServices.GetService<TranscriptOffload>() is { Enabled: true } offload)
+        {
+            payload = await offload.RewriteAsync(sessionId, body.Type, payload, key, cancellationToken);
+        }
 
         var appended = await journal.AppendAsync(
             sessionId,
@@ -253,16 +356,29 @@ public static class RunnerCallbackEndpoints
         });
     }
 
+    /// <summary>
+    /// Records the runner's terminal report and settles a run that ended badly.
+    /// </summary>
+    /// <remarks>
+    /// The <c>run_url</c> here is checked the same way as everywhere else, but a failure is handled
+    /// differently: the report itself is still accepted. Refusing it would leave the session running in
+    /// Charter's eyes until recovery timed it out, which is a worse outcome than a missing link, so the
+    /// unattributable reference is dropped and the result stands. Nothing reads this field to address
+    /// anything today; it is validated so that nothing can start to.
+    /// </remarks>
     private static async Task<IResult> ReportResultAsync(
         Guid sessionId,
         RunnerResultRequest body,
         HttpContext context,
+        CharterDbContext db,
         SessionJournal journal,
         SessionCoordinator coordinator,
         RunnerSessionTokens tokens,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(loggerFactory);
 
         if (!tokens.ValidateEventToken(sessionId, Bearer(context)))
         {
@@ -271,13 +387,21 @@ public static class RunnerCallbackEndpoints
 
         var state = string.IsNullOrWhiteSpace(body.State) ? "failed" : body.State.Trim().ToLowerInvariant();
 
+        var repo = await SessionCredentialGuard.SessionRepoFullNameAsync(db, sessionId, cancellationToken);
+        var reference = RunnerRunReference.Evaluate(body.RunUrl, repo);
+
+        if (reference.IsRejected)
+        {
+            RefuseReference(loggerFactory, sessionId, repo, body.RunUrl, "result callback");
+        }
+
         await journal.AppendAsync(
             sessionId,
             EventTypes.SessionEnded,
             new JsonObject
             {
                 ["state"] = state,
-                ["run_url"] = body.RunUrl,
+                ["run_url"] = reference.IsRecordable ? body.RunUrl : null,
                 ["message"] = body.Message,
             }.ToJsonString(),
             $"result:{sessionId:D}:{state}",
@@ -327,17 +451,6 @@ public static class RunnerCallbackEndpoints
         return Results.Text($"# {spec.Title}\n\n{spec.BodyMd}\n", "text/markdown");
     }
 
-    private static async Task<string?> RepoFullNameAsync(
-        CharterDbContext db,
-        Guid specId,
-        CancellationToken cancellationToken)
-        => await (from spec in db.Specs.AsNoTracking()
-                  where spec.Id == specId
-                  join request in db.Requests.AsNoTracking() on spec.RequestId equals request.Id
-                  join repo in db.Repos.AsNoTracking() on request.RepoId equals repo.Id
-                  select repo.FullName)
-            .FirstOrDefaultAsync(cancellationToken);
-
     private static string? Bearer(HttpContext context)
     {
         var header = context.Request.Headers.Authorization.ToString();
@@ -346,6 +459,52 @@ public static class RunnerCallbackEndpoints
             ? header["Bearer ".Length..].Trim()
             : null;
     }
+
+    /// <summary>
+    /// The <c>run_url</c> of a <c>session_started</c> payload, read exactly as the journal reads it.
+    /// </summary>
+    /// <remarks>
+    /// Only a JSON string counts, because only a JSON string becomes an external reference in
+    /// <c>SessionJournal.SummarizeAsync</c>. Reading a wider set here would refuse callbacks that could
+    /// never have poisoned anything; reading a narrower one would let something through.
+    /// </remarks>
+    private static string? ReadRunUrl(JsonElement payload)
+    {
+        if (payload.ValueKind is not JsonValueKind.Object
+            || !payload.TryGetProperty("run_url", out var value)
+            || value.ValueKind is not JsonValueKind.String)
+        {
+            return null;
+        }
+
+        var text = value.GetString();
+
+        return string.IsNullOrEmpty(text) ? null : text;
+    }
+
+    /// <summary>
+    /// Section 19: an operator has to be able to see this happen.
+    /// </summary>
+    /// <remarks>
+    /// A warning rather than information, because the only ways to reach it are a target repository
+    /// running a workflow Charter did not ship, a repository renamed on GitHub without being
+    /// reconnected here, and a session trying to name somebody else's repository. All three want a
+    /// human. The <c>Authorization</c> header is not touched — the reference is not a credential and no
+    /// credential is logged (section 19).
+    /// </remarks>
+    private static void RefuseReference(
+        ILoggerFactory loggerFactory,
+        Guid sessionId,
+        string? repoFullName,
+        string? runUrl,
+        string callback)
+        => loggerFactory.CreateLogger(typeof(RunnerCallbackEndpoints)).LogWarning(
+            "Refused the run reference a runner reported on the {Callback} for session {SessionId}: it "
+            + "does not name a workflow run in {Repo}. Reported: {Reference}",
+            callback,
+            sessionId,
+            repoFullName ?? "(unknown)",
+            RunnerRunReference.Describe(runUrl));
 
     /// <summary>A stable identity for an event that carries no counter.</summary>
     internal static string ContentKey(string type, string payload)

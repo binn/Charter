@@ -2,6 +2,7 @@ using Charter.Domain;
 using Charter.GitHub;
 using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Charter.Tests;
 
@@ -211,6 +212,265 @@ public class VersionControlStalenessTests
         var row = Assert.Single(await world.ChangeRequestsAsync());
         Assert.False(row.IsStale);
         Assert.Equal("rebasedsha", row.HeadSha);
+    }
+
+    [Fact]
+    public async Task AReviewMovesTheRequestToInReview()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+        await world.SetRequestStatusAsync(RequestStatus.PreviewReady);
+
+        var applied = await world.Tracker.ReviewAsync(
+            new ChangeRequestReviewReport(
+                world.Repo.FullName,
+                142,
+                ChangeRequestReviewKind.Submitted,
+                "approved"),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(applied);
+
+        // Section 6: an engineer is checking it. Both halves move — the session an engineer reads and
+        // the thread the requester reads.
+        Assert.Equal(SessionStatus.InReview, await world.StatusAsync());
+        Assert.Equal(RequestStatus.InReview, await world.RequestStatusAsync());
+    }
+
+    [Fact]
+    public async Task AReviewRequestIsEnoughToReachInReview()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+
+        // What the thread says while the session is building: "Building this now" (section 6).
+        await world.SetRequestStatusAsync(RequestStatus.Running);
+
+        // On a repository with CODEOWNERS this is what happens first, and it can be the only thing
+        // that happens for a day.
+        Assert.True(await world.Tracker.ReviewAsync(
+            new ChangeRequestReviewReport(world.Repo.FullName, 142, ChangeRequestReviewKind.Requested),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(SessionStatus.InReview, await world.StatusAsync());
+        Assert.Equal(RequestStatus.InReview, await world.RequestStatusAsync());
+    }
+
+    [Fact]
+    public async Task AReviewOfSomebodyElsesPullRequestChangesNothing()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+
+        Assert.False(await world.Tracker.ReviewAsync(
+            new ChangeRequestReviewReport(world.Repo.FullName, 999, ChangeRequestReviewKind.Submitted),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(SessionStatus.PrOpen, await world.StatusAsync());
+    }
+
+    [Fact]
+    public async Task AReviewAfterAMergeDoesNotDragTheThreadBackwards()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+
+        await world.Tracker.ApplyAsync(
+            new ChangeRequestStateReport(world.Repo.FullName, 142, ChangeRequestState.Merged),
+            TestContext.Current.CancellationToken);
+
+        world.Db.ChangeTracker.Clear();
+
+        // A comment on a merged pull request is normal, and section 6 has no edge back from Merged.
+        Assert.False(await world.Tracker.ReviewAsync(
+            new ChangeRequestReviewReport(world.Repo.FullName, 142, ChangeRequestReviewKind.Submitted),
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(SessionStatus.Merged, await world.StatusAsync());
+        Assert.Equal(RequestStatus.Merged, await world.RequestStatusAsync());
+    }
+
+    [Fact]
+    public async Task AMergeTellsTheRequesterItIsLive()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+        await world.SetRequestStatusAsync(RequestStatus.InReview);
+        await world.SetSessionStatusAsync(SessionStatus.InReview);
+
+        await world.Tracker.ApplyAsync(
+            new ChangeRequestStateReport(world.Repo.FullName, 142, ChangeRequestState.Merged),
+            TestContext.Current.CancellationToken);
+
+        // The payoff for the whole pipeline: "This is live" (section 6). Nothing else sets it.
+        Assert.Equal(RequestStatus.Merged, await world.RequestStatusAsync());
+        Assert.Equal(SessionStatus.Merged, await world.StatusAsync());
+    }
+
+    [Fact]
+    public async Task StalenessIsRecordedOnTheTranscriptRatherThanOnlyOnARow()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+
+        world.Provider.Comparisons[("basesha", "newbase")] = new RevisionComparison(0, 2, ["src/Total.cs"]);
+        world.Provider.Comparisons[("newbase", "headsha")] =
+            new RevisionComparison(2, 1, ["src/Total.cs", "src/Widget.cs"]);
+
+        await world.Tracker.MarkStaleAsync(
+            new BranchPushReport(world.Repo.FullName, "main", "newbase", "basesha"),
+            TestContext.Current.CancellationToken);
+
+        var payload = Assert.Single(await world.EventsAsync(ChangeRequestEventTypes.MarkedStale));
+
+        Assert.Contains("base_branch_moved", payload, StringComparison.Ordinal);
+        Assert.Contains("newbase", payload, StringComparison.Ordinal);
+
+        // The session is not retired for it: section 17's remedy is a rebase, not an ending, and
+        // Stale is terminal.
+        Assert.Equal(SessionStatus.PrOpen, await world.StatusAsync());
+    }
+
+    [Fact]
+    public void AReviewDeliveryIsRecognisedInBothOfTheShapesGitHubSendsIt()
+    {
+        var submitted = GitHubWebhookDelivery.Parse(
+            "pull_request_review",
+            """
+            {
+              "action": "submitted",
+              "review": { "state": "approved" },
+              "pull_request": { "number": 142, "head": { "sha": "headsha", "ref": "charter/session-1" } },
+              "repository": { "full_name": "acme/widgets" }
+            }
+            """);
+
+        Assert.Equal(GitHubWebhookEventType.PullRequestReview, submitted.Type);
+        Assert.Equal(142, submitted.PullRequestNumber);
+        Assert.Equal("approved", submitted.ReviewState);
+        Assert.Equal("headsha", submitted.HeadSha);
+        Assert.True(submitted.IsReviewSignal);
+
+        var requested = GitHubWebhookDelivery.Parse(
+            "pull_request",
+            """
+            {
+              "action": "review_requested",
+              "pull_request": { "number": 142, "head": { "sha": "headsha" } },
+              "repository": { "full_name": "acme/widgets" }
+            }
+            """);
+
+        Assert.True(requested.IsReviewSignal);
+
+        // A review that was dismissed or edited is not somebody picking the work up.
+        var dismissed = GitHubWebhookDelivery.Parse(
+            "pull_request_review",
+            """{"action":"dismissed","review":{"state":"dismissed"},"pull_request":{"number":142}}""");
+
+        Assert.False(dismissed.IsReviewSignal);
+
+        // And neither is an ordinary synchronize.
+        var pushed = GitHubWebhookDelivery.Parse(
+            "pull_request",
+            """{"action":"synchronize","pull_request":{"number":142}}""");
+
+        Assert.False(pushed.IsReviewSignal);
+    }
+
+    [Fact]
+    public async Task TheListenerTurnsAReviewDeliveryIntoInReview()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+
+        var listener = new GitHubChangeRequestListener(
+            world.Tracker,
+            NullLogger<GitHubChangeRequestListener>.Instance);
+
+        await listener.OnDeliveryAsync(
+            GitHubWebhookDelivery.Parse(
+                "pull_request_review",
+                $$"""
+                  {
+                    "action": "submitted",
+                    "review": { "state": "changes_requested" },
+                    "pull_request": { "number": 142, "head": { "sha": "headsha" } },
+                    "repository": { "full_name": "{{world.Repo.FullName}}" }
+                  }
+                  """),
+            TestContext.Current.CancellationToken);
+
+        // Changes requested is still "an engineer is checking it". Charter never reports a verdict on
+        // the code: that is decided on the provider (section 7.4).
+        Assert.Equal(SessionStatus.InReview, await world.StatusAsync());
+    }
+
+    [Fact]
+    public async Task TheListenerTurnsAMergeDeliveryIntoMerged()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        await OpenAsync(world, "headsha");
+
+        var listener = new GitHubChangeRequestListener(
+            world.Tracker,
+            NullLogger<GitHubChangeRequestListener>.Instance);
+
+        await listener.OnDeliveryAsync(
+            GitHubWebhookDelivery.Parse(
+                "pull_request",
+                $$"""
+                  {
+                    "action": "closed",
+                    "pull_request": { "number": 142, "merged": true, "head": { "sha": "headsha" } },
+                    "repository": { "full_name": "{{world.Repo.FullName}}" }
+                  }
+                  """),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChangeRequestState.Merged, Assert.Single(await world.ChangeRequestsAsync()).State);
+        Assert.Equal(SessionStatus.Merged, await world.StatusAsync());
+        Assert.Equal(RequestStatus.Merged, await world.RequestStatusAsync());
     }
 
     [Fact]

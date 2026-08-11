@@ -7,13 +7,16 @@ using Charter.Data;
 using Charter.Deployments;
 using Charter.Diagnostics;
 using Charter.GitHub;
+using Charter.Logging;
 using Charter.Models;
 using Charter.Onboarding;
 using Charter.Recaps;
 using Charter.Refinement;
 using Charter.Runners;
 using Charter.Runners.Agent;
+using Charter.Storage;
 using Charter.Teaching;
+using Charter.Updates;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OpenTelemetry.Metrics;
@@ -130,9 +133,22 @@ public static class CharterHost
         services.AddSingleton(options);
         services.AddProblemDetails();
 
+        // Before AddCharterModels, which registers a body-withholding fallback with TryAdd. Section
+        // 19: whether transcript bodies reach a sink is one decision for the whole instance, so it is
+        // made once here rather than per sink or per call site.
+        services.AddSingleton<ITranscriptLog, TranscriptLog>();
+
         // Each subsystem owns its own registrations, so this stays a list of decisions rather than a
         // wiring dump. Order matters: credentials need both the key config and the DbContext.
         services.AddCharterConfig(config);
+
+        // A pure projection of section 4.2 with no dependencies, and it has to precede every
+        // subsystem that TryAdds a BudgetOptions of its own - AddCharterAuth, for the section 34.9
+        // budget a new organisation is seeded with, and AddCharterBudgets, for the evaluator. First
+        // registration wins, and it has to be this one or CHARTER_DEFAULT_SESSION_BUDGET_USD and
+        // CHARTER_DEFAULT_MONTHLY_BUDGET_USD reach a hardcoded pair instead.
+        services.AddCharterBudgetLimits(config);
+
         services.AddCharterPreflight();
         services.AddCharterData(config.Database.ConnectionString.Reveal());
 
@@ -159,7 +175,8 @@ public static class CharterHost
 
         // After AddCharterData and AddCharterModels: the estimator reads the ledger for what similar
         // work in this repository actually cost, and IModelPriceCatalog for what the selected model
-        // costs (sections 34.4, 20b.6).
+        // costs (sections 34.4, 20b.6). Its own BudgetOptions TryAdd loses to AddCharterBudgetLimits
+        // above, which is the point.
         services.AddCharterBudgets();
         services.AddCharterRefinement();
         services.AddCharterRecap();
@@ -168,6 +185,14 @@ public static class CharterHost
         services.AddCharterAdapters(AdapterSources.FromEnvironment(read));
         services.AddCharterRunners(config);
         services.AddCharterOrchestration();
+
+        // Before nothing in particular, but after AddCharterData: the offload writes as runner events
+        // are ingested, and the blob route reads back through the same visibility check pane 2 makes.
+        services.AddCharterStorage(StorageOptions.FromEnvironment(read, config.Storage));
+
+        // Section 28's daily release check. After AddCharterData for the queue; order against
+        // AddCharterOrchestration does not matter, since the dispatcher resolves handlers per job.
+        services.AddCharterUpdates(config);
 
         ConfigureTelemetry(services, options);
 
@@ -303,6 +328,7 @@ public static class CharterHost
         app.MapCharterGitHub();
         app.MapCharterRunnerCallbacks();
         app.MapCharterAgentPlane();
+        app.MapCharterStorageBlobs();
         app.MapCharterHubs();
 
         // Client-side routing: anything not matched above is the SPA's problem.
@@ -389,6 +415,14 @@ public static class CharterHost
         if (options.DatabaseConnectionString is null)
         {
             Log.Warning("DATABASE_URL is not set. /ready will report not_ready until it is configured.");
+        }
+
+        // Section 19's leak warning, said out loud rather than left in the documentation. An operator
+        // who turns this on is exporting their source code to their log platform, and the moment they
+        // most need to be told is the moment the instance starts doing it.
+        if (options.IncludeTranscripts)
+        {
+            Log.Warning(TranscriptLog.LeakWarning);
         }
     }
 

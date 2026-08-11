@@ -249,14 +249,18 @@ public class AgentPlaneRunnerTests
         }
 
         var (agentId, _) = await fixture.PairAsync();
-        var jobId = await fixture.EnqueueClaimableAsync(Guid.CreateVersion7());
+        var sessionId = Guid.CreateVersion7();
+        var jobId = await fixture.EnqueueClaimableAsync(sessionId);
 
         var (channel, run) = fixture.Connect(agentId);
         await fixture.HandshakeAsync(channel);
         await AgentPlaneConnectionTests.ClaimOneAsync(fixture, channel);
 
+        // The session id is the job's own. A reference naming a job that belongs to a different
+        // session is not acted on — the reference is folded from the session's event stream and
+        // session_started arrives from the execution plane (see RunnerRunReferenceTests).
         var result = await fixture.Runner.CancelAsync(
-            new RunnerCancellation(Guid.CreateVersion7(), AgentRunner.ExternalReferenceFor(jobId), "Cancelled by request."),
+            new RunnerCancellation(sessionId, AgentRunner.ExternalReferenceFor(jobId), "Cancelled by request."),
             TestContext.Current.CancellationToken);
 
         Assert.True(result.Stopped);
@@ -269,6 +273,81 @@ public class AgentPlaneRunnerTests
 
         channel.Disconnect();
         await run;
+    }
+
+    [Fact]
+    public async Task CancellingWithoutAReferenceFindsTheAgentsRowAndNotTheControlPlanes()
+    {
+        // Its own schema: the control plane row below requires no capabilities, and a row requiring
+        // nothing is claimable by every worker in the suite.
+        await using var fixture = await AgentPlaneFixture.CreateAsync(isolated: true);
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var sessionId = Guid.CreateVersion7();
+
+        // Both rows exist at once, which is ordinary rather than exotic: the dispatcher re-enqueues a
+        // pending control-plane build every time a dispatch defers, and its payload carries the same
+        // session id. Written first, so a lookup that does not filter by plane finds it first.
+        var controlPlaneJob = await fixture.InScopeAsync(async provider =>
+            await provider.GetRequiredService<JobQueue>().EnqueueAsync(
+                JobType.Build,
+                $$"""{"session_id":"{{sessionId:D}}"}""",
+                now: fixture.Clock.GetUtcNow(),
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        var dispatched = await fixture.Runner.DispatchAsync(
+            DispatchFor(fixture, sessionId, "linux"),
+            TestContext.Current.CancellationToken);
+
+        var agentJobId = AgentRunner.TryParseReference(dispatched.ExternalReference)!.Value;
+
+        // No external reference, so the fallback runs. Section 11: cancelling the wrong row and
+        // reporting success is worse than failing, because the session settles as cancelled while the
+        // agent holding the real claim was never told.
+        var cancelled = await fixture.Runner.CancelAsync(
+            new RunnerCancellation(sessionId, null, "Cancelled by request."),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(cancelled.Stopped);
+
+        Assert.Equal(JobStatus.Cancelled, (await fixture.JobAsync(agentJobId))!.Status);
+        Assert.Equal(JobStatus.Pending, (await fixture.JobAsync(controlPlaneJob.Id))!.Status);
+    }
+
+    [Fact]
+    public async Task CancellingWillNotStopAJobThatBelongsToAnotherSession()
+    {
+        // Its own schema: two agent jobs exist at once here, and a row requiring no capabilities is
+        // claimable by every worker in the suite.
+        await using var fixture = await AgentPlaneFixture.CreateAsync(isolated: true);
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var victim = Guid.CreateVersion7();
+        var victimJob = await fixture.EnqueueClaimableAsync(victim);
+
+        // The attacker's session, with a reference naming somebody else's job. The reference reaches
+        // the runner from the session's event stream, and `session_started` arrives from the execution
+        // plane, so `charter-agent:job:<victim>` is a string a sandbox can put there (section 16).
+        var attacker = Guid.CreateVersion7();
+        await fixture.EnqueueClaimableAsync(attacker);
+
+        var result = await fixture.Runner.CancelAsync(
+            new RunnerCancellation(
+                attacker,
+                AgentRunner.ExternalReferenceFor(victimJob),
+                "Cancelled by request."),
+            TestContext.Current.CancellationToken);
+
+        // The victim's work is untouched, and what was cancelled is the attacker's own row — which is
+        // the only honest reading of "cancel this session".
+        Assert.Equal(JobStatus.Pending, (await fixture.JobAsync(victimJob))!.Status);
+        Assert.True(result.Stopped);
     }
 
     [Fact]

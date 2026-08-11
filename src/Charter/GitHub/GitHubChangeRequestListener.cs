@@ -54,6 +54,27 @@ public sealed class GitHubChangeRequestListener : IGitHubWebhookListener
                         delivery.HeadSha,
                         delivery.PullRequestHeadBranch),
                     cancellationToken);
+
+                // A review request arrives as a pull_request action rather than as a review, and on a
+                // repository with CODEOWNERS it is the first thing that happens. Applied after the
+                // state report so the two writes cannot race each other over the same row.
+                if (delivery.IsReviewSignal)
+                {
+                    await ReviewAsync(repo, number, ChangeRequestReviewKind.Requested, delivery, cancellationToken);
+                }
+
+                break;
+
+            case GitHubWebhookEventType.PullRequestReview
+                when delivery.IsReviewSignal
+                     && delivery.RepositoryFullName is { Length: > 0 } reviewed
+                     && delivery.PullRequestNumber is { } reviewedNumber:
+                await ReviewAsync(
+                    reviewed,
+                    reviewedNumber,
+                    ChangeRequestReviewKind.Submitted,
+                    delivery,
+                    cancellationToken);
                 break;
 
             case GitHubWebhookEventType.Push when delivery.RepositoryFullName is { Length: > 0 } pushed
@@ -73,6 +94,25 @@ public sealed class GitHubChangeRequestListener : IGitHubWebhookListener
                 }
 
                 break;
+        }
+    }
+
+    private async Task ReviewAsync(
+        string repo,
+        int number,
+        ChangeRequestReviewKind kind,
+        GitHubWebhookDelivery delivery,
+        CancellationToken cancellationToken)
+    {
+        if (await _tracker.ReviewAsync(
+                new ChangeRequestReviewReport(repo, number, kind, delivery.ReviewState),
+                cancellationToken))
+        {
+            _logger.LogInformation(
+                "{Repository}#{Number} is being reviewed on GitHub ({Action})",
+                repo,
+                number,
+                delivery.Action);
         }
     }
 

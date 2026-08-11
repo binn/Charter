@@ -65,6 +65,15 @@ it:
 Accept that sessions take minutes longer here than on a Charter Agent, and budget wall-clock
 expectations accordingly. If build latency is the thing your users complain about, this is the fix.
 
+**The workflow file is part of the trust boundary, so keep it current.** Its first step exchanges two
+things for the session's credentials: `secrets.CHARTER_SESSION_SECRET`, which Charter writes once per
+repository, and `client_payload.session_token`, which Charter mints per session and sends only in that
+session's dispatch. Both are required. The repository secret proves the caller is a workflow run in
+this repository — every run in it reads the same value — and the session token is what says *which*
+session is asking; without it, any run in the repository could mint credentials for every other live
+session in it. If you are running a workflow file from before this was added, its first step now fails
+with a message telling you to update it. See [upgrading.md](upgrading.md).
+
 ### Docker — the Compose case
 
 For a VPS where the control plane and Docker share a host. The image is warm and caches live in named
@@ -254,8 +263,59 @@ outbound-only connections possible.
 
 - Claims carry a lease with a TTL, renewed by heartbeat. A crashed agent's jobs return to the queue
   automatically.
+- **A lease left out of a heartbeat acknowledgement is a lease that is gone**, and the agent stops
+  that job at once rather than waiting for its TTL to run down. That is how the control plane tells an
+  agent to stop work whose claim it has lost — to a sweep, to a cancellation, or to another worker —
+  and it is what keeps two runners off one session when a lease changes hands.
+- **A job already running on an agent is never started twice there.** If the same job is granted again
+  — clock skew between the two sides is enough to produce it — the agent keeps the copy it is running,
+  extends its lease, and starts nothing new. Two shims for one session on one host would both push the
+  same branch, and only one of them would be reachable by a cancel.
+- **Credentials are minted at the moment of the claim, and only for a live session.** An agent
+  claiming work whose session has ended, has been cancelled, or was never dispatched is given no
+  credentials and no job; the queue row is settled rather than handed back, so dead work is not
+  re-offered on the next claim.
 - Claims are filtered by capability, so an agent only ever sees jobs it can actually run.
+- **An agent only ever claims work addressed to a runner.** Charter runs a good deal of work on the
+  control plane itself — refining a request, writing the engineer recap, the daily release check,
+  onboarding a repository. That work is queued alongside runner jobs, and it requires no capabilities
+  at all, so capability filtering on its own would not keep it away from an idle agent. Runner jobs
+  carry a routing marker and agents claim only rows that carry it. Nothing you configure changes this,
+  and no capability you advertise can widen it: an agent that advertises everything still claims only
+  runner jobs.
 - Concurrency is limited per agent and defaults conservatively.
+
+## What a runner tells Charter, and what Charter believes
+
+A runner reports back over three callbacks — `/credentials`, `/events`, `/result` — and it holds a
+token for all three. Everything in those bodies is written by a process that also runs a coding agent
+over repository content nobody vetted, so Charter treats the token as saying *which session is
+speaking* and nothing at all about whether what it says is true.
+
+That matters most for **`run_url`**, the one field a runner reports that Charter later uses to address
+something: it is how the workflow tells Charter which run to cancel. Charter validates it against the
+repository the session belongs to, read from its own record, and refuses the callback if the two do
+not match.
+
+- On GitHub Actions the workflow sends `run_url` twice — on the credential exchange and again as the
+  `session_started` event — and both are checked. A mismatch at the exchange also means **no
+  credentials are issued**, so the step fails loudly with a message rather than running on with a
+  reference Charter will not use.
+- The check compares `owner/name` case-insensitively and does not care which host serves it, so GitHub
+  Enterprise works unchanged.
+- **If you rename a repository on GitHub without reconnecting it in Charter, sessions in it will fail
+  at their first callback.** The refusal names the repository Charter has on record. Reconnect the
+  repository so the two agree; there is no setting to relax the check.
+- Anything that is not an absolute `http(s)` run URL is refused, including a bare container id or an
+  internal `charter-agent:job:…` handle. Those are handles Charter mints for itself, and a runner has
+  no business reporting one.
+
+The same rule holds at the other end. Cancelling a session will not kill a container that does not
+carry that session's label, and will not cancel an agent job whose payload names a different session
+— whichever handle happens to be recorded against it. When a cancel cannot reach the run, it says so:
+Charter settles the session either way, but it does not report a run stopped that it did not stop, and
+the failure is logged at warning level with the reason. If you see one, check the repository's Actions
+tab or `docker ps` for something still running.
 
 ## What a session does, in order
 
@@ -271,12 +331,28 @@ it is started differs: a workflow step, a sibling container, or a child process 
    --locked-mode`. Install scripts are off unless the repository opted in.
 3. **Run the agent CLI** and stream every mapped event back as it happens.
 4. **Refuse any write outside the path scope**, and stop the run.
-5. **Publish the work.** Everything changed is staged and every staged path is checked against the path
+5. **Run the repository's checks** — the named commands in `.charter/config.yml`, in the order they are
+   declared, against the work the agent just did. Each one's outcome goes on the transcript and into
+   the change request. Skipped when the agent changed nothing.
+6. **Publish the work.** Everything changed is staged and every staged path is checked against the path
    scope again — this time against what is actually about to be committed, not against what the agent
    said it wrote. Then it commits, pushes the session branch, and reports the branch and revision. The
    control plane opens the change request from that report.
 
-Three things about step 5 are worth stating plainly:
+Two things about step 5 are worth stating plainly:
+
+- **A failing check does not stop the push.** The change request opens, with the failure at the top of
+  the body and on the transcript. Charter has no merge button — a red change request cannot ship,
+  because the merge gate is branch protection and CODEOWNERS on your provider — so the useful thing
+  Charter can do with a failure is put it in front of the engineer, along with the branch they need in
+  order to fix or take over the work. Discarding a session because one test failed would burn
+  everything it cost and leave nobody anything to read.
+- **A check whose toolchain is missing stops the session before the agent starts.** If `.charter/`
+  declares `dotnet build` and the runner image has no .NET SDK, the session fails immediately with a
+  message naming an image that has one. It does not install .NET, and it does not spend a model's time
+  producing work that could never have been validated.
+
+Three things about step 6 are worth stating plainly:
 
 - **The commit is authored by the requester.** The person who asked for the change is the author and
   the committer. Charter adds no machine account, no bot identity, and no attribution trailers; the

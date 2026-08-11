@@ -264,8 +264,8 @@ public sealed record BranchProtectionRequest(
 /// <param name="CallbackUrl">Where the provider posts.</param>
 /// <param name="Secret">The shared secret the delivery is signed with.</param>
 /// <param name="Events">
-/// Provider-neutral names: <c>push</c>, <c>change_request</c>, <c>check_suite</c>, <c>installation</c>.
-/// The provider translates.
+/// Provider-neutral names: <c>push</c>, <c>change_request</c>, <c>change_request_review</c>,
+/// <c>check_suite</c>, <c>installation</c>. The provider translates.
 /// </param>
 public sealed record WebhookSubscription(Uri CallbackUrl, Secret Secret, IReadOnlyList<string> Events);
 

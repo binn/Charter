@@ -344,6 +344,7 @@ public class AgentPlanePairingTests
                 fixture.Options.Lease,
                 1,
                 [AgentRunner.ClaimCapability, fixture.Tag],
+                AgentRunner.ClaimCapability,
                 fixture.Clock.GetUtcNow(),
                 TestContext.Current.CancellationToken));
 

@@ -1,5 +1,8 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Charter.Api.Accounts;
 using Charter.Api.Changes;
+using Charter.Api.Credentials;
 using Charter.Api.Endpoints;
 using Charter.Api.Repos;
 using Charter.Api.Requests;
@@ -49,6 +52,27 @@ public static class ApiServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(limits);
 
+        // Minimal APIs bind request bodies through the host's JSON options, not through
+        // `CharterApiJson` — that one is passed explicitly on the way out and is invisible on the way
+        // in. Without this, every body carrying one of the section 12b wire enums failed to bind and
+        // came back as a bare 400 with no body: `PATCH /api/me/preferences` (theme, pane, teaching
+        // level), `POST /api/invitations` (roles), `POST /api/repos/{id}/access` (a role grant) and
+        // `POST /api/members/{id}/roles`. Every one of those is spelled `snake_case` by the SPA
+        // because that is how Charter writes them, so the reader has to know the same spelling as the
+        // writer. Configured here rather than in the host so the API's own routes cannot be mapped
+        // without it.
+        services.ConfigureHttpJsonOptions(options =>
+        {
+            options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+            options.SerializerOptions.PropertyNameCaseInsensitive = true;
+            options.SerializerOptions.Converters.Add(
+                new JsonStringEnumConverter(JsonNamingPolicy.SnakeCaseLower));
+
+            // Section 7.4's mechanism, applied to anything that serialises without naming
+            // `CharterApiJson.Options`: a withheld field is absent, never null.
+            options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+        });
+
         // The read path names a change request by the provider's own word (change spec 001 part
         // A.2), so the registry has to resolve even in a host that wired no provider — with none, it
         // is empty and the wording falls back to Charter's neutral term. TryAdd throughout, so a host
@@ -65,7 +89,12 @@ public static class ApiServiceCollectionExtensions
         services.AddCharterOnboarding();
 
         services.AddScoped<AccountService>();
+        services.AddScoped<MembersService>();
+        services.AddScoped<AuditQueryService>();
         services.AddScoped<RepoOnboardingService>();
+
+        // Section 20b.2's management surface. Scoped, because it writes through CharterDbContext.
+        services.AddScoped<CredentialsService>();
 
         services.AddScoped<RequestQueryService>();
         services.AddScoped<RequestCommandService>();

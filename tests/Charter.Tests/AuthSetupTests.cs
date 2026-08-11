@@ -4,6 +4,7 @@ using Charter.Auth.Setup;
 using Charter.Configuration;
 using Charter.Data;
 using Charter.Domain;
+using Charter.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 
@@ -219,6 +220,57 @@ public class AuthSetupIntegrationTests
         // Setup mode has ended permanently and cannot be re-entered while a user exists.
         Assert.False(await fixture.Mode.IsSetupRequiredAsync(TestContext.Current.CancellationToken));
         Assert.True(fixture.State.IsCompleted);
+
+        // Section 34.9: personal mode gets no budgets at all. One person, their own credentials.
+        Assert.Empty(await fixture.Db.Budgets.ToListAsync(TestContext.Current.CancellationToken));
+    }
+
+    /// <summary>
+    /// The two budget variables of section 4.2 reach a row an admin can see.
+    /// </summary>
+    /// <remarks>
+    /// They used to reach nothing: <c>AddCharterBudgets</c> registered its own <c>BudgetOptions</c>
+    /// through <c>TryAdd</c> with a hardcoded 5 and 500, and no host projected <c>BudgetConfig</c>
+    /// into it, so an operator who set a cap silently got a different one. Asserting on the seeded
+    /// row rather than on the options record is deliberate - the options record being right is not
+    /// the same claim as the budget being right.
+    /// </remarks>
+    [Fact]
+    public async Task AnOrganisationIsSeededWithTheConfiguredBudget()
+    {
+        await using var fixture = await SetupFixture.CreateAsync(
+            ("CHARTER_MODE", "organization"),
+            ("CHARTER_DEFAULT_MONTHLY_BUDGET_USD", "2500"),
+            ("CHARTER_DEFAULT_SESSION_BUDGET_USD", "12.50"));
+
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var completed = Assert.IsType<SetupResult.Completed>(await fixture.Service.CompleteAsync(
+            new SetupRequest
+            {
+                Token = fixture.Tokens.Issue().Value,
+                Email = fixture.Email,
+                DisplayName = "First Admin",
+                Password = new Secret("a-long-enough-password"),
+                OrganizationName = "Acme",
+            },
+            TestContext.Current.CancellationToken));
+
+        var budget = await fixture.Db.Budgets
+            .SingleAsync(row => row.OrgId == completed.OrganizationId, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2500m, budget.Amount);
+        Assert.Equal(12.50m, budget.ApprovalThreshold);
+
+        // Section 34.9: available, not imposed. The shipped budget routes to an approver rather than
+        // refusing, and it covers every category including chat (section 34.6).
+        Assert.Equal(BudgetBehaviour.RequireApproval, budget.Behaviour);
+        Assert.Equal(BudgetScopeType.Org, budget.ScopeType);
+        Assert.Equal(BudgetPeriod.Monthly, budget.Period);
+        Assert.Empty(budget.Categories);
     }
 
     [Fact]
@@ -433,7 +485,15 @@ public class AuthSetupIntegrationTests
             Tokens = new SetupTokenStore(TimeProvider.System);
             Mode = new SetupModeService(db, State);
             Hasher = new CharterPasswordHasher(iterationCount: 1_000);
-            Service = new SetupService(db, Tokens, State, Mode, Hasher, config, TimeProvider.System);
+            Service = new SetupService(
+                db,
+                Tokens,
+                State,
+                Mode,
+                Hasher,
+                config,
+                BudgetLimitsServiceCollectionExtensions.From(config),
+                TimeProvider.System);
             Email = $"admin-{schema}@example.com";
         }
 
@@ -451,7 +511,7 @@ public class AuthSetupIntegrationTests
 
         public string Email { get; }
 
-        public static async Task<SetupFixture?> CreateAsync()
+        public static async Task<SetupFixture?> CreateAsync(params (string Key, string? Value)[] environment)
         {
             var url = Environment.GetEnvironmentVariable(DatabaseUrlVariable);
             if (string.IsNullOrWhiteSpace(url))
@@ -471,7 +531,8 @@ public class AuthSetupIntegrationTests
             var db = new CharterDbContext(Configure(url, schema));
             await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
 
-            var config = ConfigTestEnvironment.Valid(("CHARTER_MODE", "personal"));
+            var config = ConfigTestEnvironment.Valid(
+                environment.Length > 0 ? environment : [("CHARTER_MODE", "personal")]);
 
             return new SetupFixture(db, schema, config);
         }

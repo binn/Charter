@@ -194,9 +194,22 @@ public sealed class RecapJobHandler : IQueuedJobHandler
 
         if (credential.Credential is not { } resolved)
         {
-            return JobHandlingResult.Deferred(
-                "Every model credential is currently exhausted, so the recap is waiting for capacity.",
-                _options.LockRetryInterval);
+            // Section 20b.3: waiting is right only where capacity is coming back. Nothing configured,
+            // or nothing usable, means deferring forever and telling nobody — so the job fails with
+            // the sentence naming what to set instead.
+            if (credential.RecoversOnItsOwn)
+            {
+                return JobHandlingResult.Deferred(
+                    "Every model credential is currently exhausted, so the recap is waiting for capacity.",
+                    _options.LockRetryInterval);
+            }
+
+            _logger.LogError(
+                "The recap for session {SessionId} cannot run: {Explanation}",
+                id,
+                credential.Explanation);
+
+            return JobHandlingResult.Failed(credential.Explanation);
         }
 
         RecapResult result;

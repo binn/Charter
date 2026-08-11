@@ -422,6 +422,10 @@ public sealed class GitHubVersionControlProvider : IVersionControlProvider
     internal static string GitHubEventName(string name) => name switch
     {
         "change_request" => "pull_request",
+
+        // Section 6's InReview arrives on its own event, not on the change request's. A subscription
+        // that asks only for change requests never learns that a human picked the work up.
+        "change_request_review" => "pull_request_review",
         "check_suite" => "check_suite",
         "push" => "push",
         "installation" => "installation",

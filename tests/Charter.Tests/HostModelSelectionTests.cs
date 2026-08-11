@@ -174,4 +174,57 @@ public class HostModelSelectionTests
                 $"the model layer cannot route '{parsed.Qualified}', which the config parser accepts");
         }
     }
+
+    /// <summary>
+    /// <c>CHARTER_ALLOW_SHARED_POOL</c> reaches the resolver that decides whether tier 3 exists.
+    /// </summary>
+    /// <remarks>
+    /// Section 20b.7 makes pooling a terms-of-service decision the operator takes deliberately, and
+    /// <c>CredentialResolver</c> used to decide pool membership purely from the grant - so the
+    /// instance switch did nothing in either position. Composed through the host rather than by hand,
+    /// because "the projection exists" and "the host performs it" are different claims.
+    /// </remarks>
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData(null, false)]
+    public void TheSharedPoolSwitchReachesTheCredentialResolver(string? value, bool expected)
+    {
+        using var provider = Compose(("CHARTER_ALLOW_SHARED_POOL", value)).BuildServiceProvider();
+
+        Assert.Equal(expected, provider.GetRequiredService<CredentialPolicy>().AllowSharedPool);
+    }
+
+    /// <summary>
+    /// <c>CHARTER_DEFAULT_SESSION_BUDGET_USD</c> and <c>CHARTER_DEFAULT_MONTHLY_BUDGET_USD</c> reach
+    /// <c>BudgetOptions</c> through the host, beating <c>AddCharterBudgets</c>' own <c>TryAdd</c>.
+    /// </summary>
+    [Fact]
+    public void TheConfiguredBudgetCapsReachTheBudgetSubsystem()
+    {
+        using var provider = Compose(
+                ("CHARTER_DEFAULT_SESSION_BUDGET_USD", "9.25"),
+                ("CHARTER_DEFAULT_MONTHLY_BUDGET_USD", "1750"))
+            .BuildServiceProvider();
+
+        var options = provider.GetRequiredService<Charter.Budgets.BudgetOptions>();
+
+        Assert.Equal(9.25m, options.DefaultApprovalThresholdUsd);
+        Assert.Equal(1750m, options.DefaultOrganizationAmountUsd);
+    }
+
+    /// <summary>
+    /// <c>CHARTER_LOG_INCLUDE_TRANSCRIPTS</c> reaches the one component that may emit a body.
+    /// </summary>
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData(null, false)]
+    public void TheTranscriptSwitchReachesTheTranscriptLog(string? value, bool expected)
+    {
+        using var provider = Compose(("CHARTER_LOG_INCLUDE_TRANSCRIPTS", value)).BuildServiceProvider();
+
+        Assert.Equal(
+            expected,
+            provider.GetRequiredService<Charter.Logging.ITranscriptLog>().BodiesIncluded);
+    }
 }

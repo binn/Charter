@@ -57,27 +57,32 @@ adapter, the session, or the tooling appears in it.
 Charter checks GitHub once a day for a new release, so that your instance does not quietly keep
 running a version with a known vulnerability.
 
-**Not implemented yet.** `CHARTER_UPDATE_CHECK` and `CHARTER_UPDATE_CHANNEL` parse and validate, and
-nothing acts on them: no component in the current build contacts GitHub for a release. Today's
-instance therefore makes no outbound call at all beyond the ones you configure. What follows describes
-the check as designed, so that the shape of it is on the record before it ships.
+What that request is, exactly:
 
-What that request will be:
-
-- An unauthenticated `GET` against the public GitHub Releases API for the Charter repository.
-- Sent once per day, with jitter, and the result cached in your Postgres.
-- It sends **no data about your instance** — no version, no identifier, no query parameters. The
-  compiled-in build version is compared against the response locally.
+- An unauthenticated `GET` against the public GitHub Releases API for the Charter repository, at
+  `https://api.github.com/repos/<owner>/<name>/releases?per_page=30`. The owner and name come from the
+  source URL compiled into your build, so a fork checks its own releases.
+- Sent once per day, with jitter, and the result cached in your Postgres. The first check waits a
+  minute after startup, so a container in a crash loop cannot turn restarts into requests.
+- It sends **no data about your instance** — no version, no identifier, no telemetry, and no query
+  parameters beyond the page size. It carries no credential and no cookie. The `User-Agent` is the
+  constant `Charter`, with no version in it: a version there would tell GitHub which release you run.
+  The comparison against your build version happens locally, after the response arrives.
 - GitHub sees the source IP address of the request, as it would for any HTTP request from your server.
   That is the entirety of what leaves your network.
-- Failures are silent. An air-gapped, offline, or rate-limited instance does not log an error every
-  day, because logs that cry wolf get ignored.
+- Failures are silent. An air-gapped, offline, or rate-limited instance keeps whatever it last knew
+  and does not log an error every day, because logs that cry wolf get ignored. The timestamp shown as
+  "last checked" only moves when a check actually reached GitHub — you are never told an offline
+  instance was checked an hour ago.
 
 Turn it off with one variable:
 
 ```bash
 CHARTER_UPDATE_CHECK=false
 ```
+
+That is not a flag consulted at the moment of the call. With it set, the component that would make the
+request is never built, so there is nothing in the running instance capable of contacting GitHub.
 
 `CHARTER_DEMO=true` also disables it, along with every other call Charter would make to a third
 party — model providers, GitHub, OAuth, and SMTP included. That is a demonstration mode, not a
@@ -133,17 +138,22 @@ Charter-operated destination.
 Traces, metrics, and logs all travel over OTLP to your own collector — Grafana, Datadog, Honeycomb,
 Signoz, or anything else that speaks the protocol.
 
-One thing to know before you wire up a hosted log platform: **agent transcripts contain your source
-code and your business context.** By default Charter logs event metadata only — event type, timing,
-file paths, cost. Transcript bodies are logged only when you set:
+One thing to know before you wire up a hosted log platform: **transcripts contain your source code and
+your business context.** By default Charter logs event metadata only — event type, timing, correlation
+id, token counts, cost. Transcript bodies are logged only when you set:
 
 ```bash
 CHARTER_LOG_INCLUDE_TRANSCRIPTS=true
 ```
 
-Setting it exports transcript content to every enabled sink. If any of those sinks is a third-party
-SaaS, that is your code leaving your infrastructure. Enable it for a specific debugging session and
-turn it off afterwards.
+Setting it exports transcript content to every enabled sink, and Charter says so in the startup log
+so an instance never does it quietly. If any of those sinks is a third-party SaaS, that is your code
+leaving your infrastructure. Enable it for a specific debugging session and turn it off afterwards.
+
+The flag currently governs the model calls Charter's own control plane makes — refinement, teaching,
+and the engineer recap. The agent's transcript from a runner is not written to any log sink with the
+flag on or off; it lives in your Postgres and in the session's transcript pane. See
+[configuration.md](configuration.md) for what that means when you are debugging a runner.
 
 Transcripts, specs, and requests are stored in your Postgres. So is everything around them: the
 refinement conversation turn by turn — including what a requester typed in their own words — the
@@ -152,6 +162,31 @@ level, and the metadata describing a verification artifact (filename, size, chec
 test counts, device identifier). None of it leaves your instance. Per-request deletion and
 organisation export are first-class features, not support requests. Event retention is configurable
 and enforced by a pruning job ([spec §20](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
+
+## Object storage, if you configure it
+
+`CHARTER_STORAGE_BACKEND` is `none` by default, and on that setting nothing is written outside
+Postgres. Setting it to `filesystem` or `s3` gives Charter somewhere to put the bytes that do not fit
+in a row: today, the oversized strings in a transcript event — the file body in an agent's `Write`
+tool call, the output of a failing check. The event keeps the tail of that text and a reference to
+the rest.
+
+Three things are worth knowing before you turn it on.
+
+**It is your storage, on your terms.** A bucket is reached at the endpoint you configure, with the
+credentials you supply. Charter makes no other outbound call on account of it, and the store is never
+a third party's by default.
+
+**Reads go through Charter, not through a link.** Stored objects are served from
+`GET /api/requests/{id}/blobs/{key}`, behind the same permission as the transcript pane. Charter does
+not generate public or presigned URLs and has no setting that would — a link that authorises whoever
+holds it would let a pasted URL bypass every permission check. Your bucket should not be public.
+
+**Charter never deletes on a schedule.** Objects are capped at 8 MiB each and keyed under the session
+that produced them, but there is no sweeper and no expiry setting: something Charter deleted quietly
+would be evidence about a session somebody may still need. Retention is yours to run — a bucket
+lifecycle rule, or a cron over `CHARTER_STORAGE_PATH`. If you have a deletion obligation, that is
+where it belongs, and the same store is where a per-request deletion has to reach.
 
 ---
 

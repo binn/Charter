@@ -48,64 +48,7 @@ public class ConfigReachabilityTests
     /// else's build; the assertion that matters is the other direction.
     /// </para>
     /// </remarks>
-    private static readonly Dictionary<string, string> AcceptedAndIgnored = new(StringComparer.Ordinal)
-    {
-        ["CharterConfig.AllowRepoCreation"] =
-            "CHARTER_ALLOW_REPO_CREATION. Section 26.10 treats repo creation as a privilege "
-            + "escalation, but nothing gates on it: MemberCapability.CanCreateRepo is granted "
-            + "unconditionally to the first admin and never checked, and no caller of "
-            + "IVersionControlProvider.CreateRepositoryAsync exists outside tests.",
-
-        ["ModelConfig.AllowSharedPool"] =
-            "CHARTER_ALLOW_SHARED_POOL. Section 20b.7 wants the instance-level opt-in consulted "
-            + "before a credential may join the pool; CredentialResolver decides purely per grant, "
-            + "so the instance switch does nothing in either position.",
-
-        ["LoggingConfig.IncludeTranscripts"] =
-            "CHARTER_LOG_INCLUDE_TRANSCRIPTS. Section 19 makes this the switch that lets repository "
-            + "content into the log platform. It reaches StartupOptions and stops there; no logging "
-            + "site consults it, so transcripts are neither logged nor deliberately withheld.",
-
-        ["BudgetConfig.DefaultSessionUsd"] =
-            "CHARTER_DEFAULT_SESSION_BUDGET_USD. AddCharterBudgets registers its own BudgetOptions "
-            + "with hardcoded defaults through TryAdd and the host never projects BudgetConfig into "
-            + "it - the same shape as the CHARTER_MODEL_REFINE defect, in the budget subsystem.",
-
-        ["BudgetConfig.DefaultMonthlyUsd"] =
-            "CHARTER_DEFAULT_MONTHLY_BUDGET_USD. Same registration as the session budget above.",
-
-        ["UpdateCheckConfig.Enabled"] =
-            "CHARTER_UPDATE_CHECK. Section 28's release check has no implementation: JobKind."
-            + "UpdateCheck exists with no handler and no hosted service phones out.",
-
-        ["UpdateCheckConfig.Channel"] =
-            "CHARTER_UPDATE_CHANNEL. Nothing to select a channel for until the check above exists.",
-
-        ["StorageConfig.Endpoint"] =
-            "CHARTER_STORAGE_ENDPOINT. The whole storage block is validated as a unit and consumed "
-            + "by nothing: there is no S3 client and no object-storage package in the project, so "
-            + "section 4.2's promise to refuse a repo whose project type needs artifact storage is "
-            + "also unimplemented.",
-
-        ["StorageConfig.Bucket"] = "CHARTER_STORAGE_BUCKET. See StorageConfig.Endpoint.",
-        ["StorageConfig.AccessKey"] = "CHARTER_STORAGE_ACCESS_KEY. See StorageConfig.Endpoint.",
-        ["StorageConfig.SecretKey"] = "CHARTER_STORAGE_SECRET_KEY. See StorageConfig.Endpoint.",
-        ["StorageConfig.Region"] = "CHARTER_STORAGE_REGION. See StorageConfig.Endpoint.",
-        ["StorageConfig.ForcePathStyle"] = "CHARTER_STORAGE_FORCE_PATH_STYLE. See StorageConfig.Endpoint.",
-
-        // Not section 4.2 variables in their own right: both are detail the DATABASE_URL and
-        // GITHUB_APP_PRIVATE_KEY parsers recorded for somebody to use, and nobody did. Listed anyway,
-        // because the same sentence applies - parsed, retained, read by nothing.
-        ["DatabaseConfig.Username"] =
-            "Parsed out of DATABASE_URL alongside Host, Port and Database, which preflight names in "
-            + "its messages. The username is not shown anywhere and everything that connects uses the "
-            + "converted connection string instead.",
-
-        ["GitHubConfig.PrivateKeyWasBase64"] =
-            "Records that GITHUB_APP_PRIVATE_KEY arrived base64-encoded rather than as PEM (section "
-            + "4.2 accepts both). Nothing reports it, so an operator who encoded a key twice gets no "
-            + "hint from the value that noticed.",
-    };
+    private static readonly Dictionary<string, string> AcceptedAndIgnored = new(StringComparer.Ordinal);
 
     [Fact]
     public void EverySection42ValueIsReadBySomething()
@@ -137,6 +80,46 @@ public class ConfigReachabilityTests
         Assert.DoesNotContain("CharterConfig.DemoMode", unconsumed);
         Assert.DoesNotContain("ModelConfig.AnthropicApiKey", unconsumed);
         Assert.DoesNotContain("ModelConfig.OpenRouterApiKey", unconsumed);
+
+        // The six this change wired up, each of which had its own entry above until it did not.
+        Assert.DoesNotContain("BudgetConfig.DefaultSessionUsd", unconsumed);
+        Assert.DoesNotContain("BudgetConfig.DefaultMonthlyUsd", unconsumed);
+        Assert.DoesNotContain("LoggingConfig.IncludeTranscripts", unconsumed);
+        Assert.DoesNotContain("ModelConfig.AllowSharedPool", unconsumed);
+        Assert.DoesNotContain("CharterConfig.AllowRepoCreation", unconsumed);
+        Assert.DoesNotContain("DatabaseConfig.Username", unconsumed);
+        Assert.DoesNotContain("GitHubConfig.PrivateKeyWasBase64", unconsumed);
+
+        // Section 28's release check and section 4.2's object storage, which between them were the
+        // last eight. CHARTER_STORAGE_BACKEND and CHARTER_STORAGE_PATH select the backend that reads
+        // these six, and they live outside CharterConfig, so the sweep below does not cover them.
+        Assert.DoesNotContain("UpdateCheckConfig.Enabled", unconsumed);
+        Assert.DoesNotContain("UpdateCheckConfig.Channel", unconsumed);
+        Assert.DoesNotContain("StorageConfig.Endpoint", unconsumed);
+        Assert.DoesNotContain("StorageConfig.Bucket", unconsumed);
+        Assert.DoesNotContain("StorageConfig.AccessKey", unconsumed);
+        Assert.DoesNotContain("StorageConfig.SecretKey", unconsumed);
+        Assert.DoesNotContain("StorageConfig.Region", unconsumed);
+        Assert.DoesNotContain("StorageConfig.ForcePathStyle", unconsumed);
+    }
+
+    [Fact]
+    public void TheAcceptedAndIgnoredListCarriesNoStaleEntries()
+    {
+        // Without this, the list only ever grows: an entry describing a gap somebody has since
+        // closed goes on asserting the value is dead, and the next reader believes it. Every entry
+        // above was removed by wiring its value up, and this is what proves the list said so.
+        var consumed = AcceptedAndIgnored.Keys
+            .Except(Unconsumed(), StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.True(
+            consumed.Length == 0,
+            "These values are documented as accepted and ignored, and something reads them now. "
+            + $"Delete them from {nameof(AcceptedAndIgnored)} and, if the wiring is worth pinning, "
+            + $"assert them in {nameof(TheValuesThisChangeWiredUpAreNoLongerInert)}:"
+            + Environment.NewLine + "  "
+            + string.Join(Environment.NewLine + "  ", consumed));
     }
 
     [Fact]

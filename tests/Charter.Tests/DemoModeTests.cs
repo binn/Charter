@@ -1,3 +1,5 @@
+using Charter.Auth;
+using Charter.Auth.Providers;
 using Charter.Configuration;
 using Charter.Configuration.Preflight;
 using Charter.Data;
@@ -5,6 +7,7 @@ using Charter.Data.Demo;
 using Charter.Domain;
 using Charter.Hosting;
 using Charter.Notifications;
+using Charter.Onboarding;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -24,6 +27,16 @@ namespace Charter.Tests;
 /// </remarks>
 public class DemoModeTests
 {
+    /// <summary>
+    /// The real hasher with its work factor turned down.
+    /// </summary>
+    /// <remarks>
+    /// The type is the one production uses, so the format, the salt and the verification are the
+    /// production ones; only the iteration count differs, and it differs in the direction that cannot
+    /// hide a defect - a hash this writes is still verified by the same code path.
+    /// </remarks>
+    private static ICharterPasswordHasher Hasher() => new CharterPasswordHasher(iterationCount: 1);
+
     private static ServiceCollection Compose(bool demo)
     {
         var read = ConfigTestEnvironment.With(
@@ -215,10 +228,10 @@ public class DemoModeTests
             return;
         }
 
-        var seeded = await new DemoSeeder(fixture.Database, TimeProvider.System)
+        var seeded = await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
             .SeedAsync(TestContext.Current.CancellationToken);
 
-        Assert.True(seeded);
+        Assert.Equal(DemoSeedOutcome.Seeded, seeded);
 
         var cancellationToken = TestContext.Current.CancellationToken;
 
@@ -268,6 +281,36 @@ public class DemoModeTests
         }
 
         Assert.Equal(3, await fixture.Database.Requests.CountAsync(cancellationToken));
+
+        // Section 7.3 deny by default applies to everyone, so both roles need a grant of their own.
+        // Without the engineer's, the administrator's project list is empty and the instance looks
+        // broken rather than locked down.
+        var scopes = await fixture.Database.RepoScopes.ToListAsync(cancellationToken);
+        Assert.Contains(scopes, scope => scope.Role == MemberRole.Requester && scope.CanRequest);
+        Assert.Contains(scopes, scope => scope.Role == MemberRole.Engineer && scope.CanRequest);
+
+        // Section 34: budgets with nothing booked against them show zero next to sessions that
+        // plainly cost money, which reads as a bug in the accounting rather than a gap in a fixture.
+        var budgets = await fixture.Database.Budgets.ToListAsync(cancellationToken);
+        Assert.Equal(2, budgets.Count);
+        Assert.Contains(budgets, budget => budget.ScopeType == BudgetScopeType.Org);
+        Assert.Contains(budgets, budget => budget.ScopeType == BudgetScopeType.User);
+
+        var ledger = await fixture.Database.LedgerEntries.ToListAsync(cancellationToken);
+        Assert.All(ledger, entry => Assert.Equal(LedgerState.Settled, entry.State));
+        Assert.Equal(
+            sessions.Sum(session => session.CostUsd),
+            ledger.Where(entry => entry.Category == LedgerCategory.Build).Sum(entry => entry.Usd));
+
+        // Section 7.3, guardrail 5: an audit page showing only the evaluator's own sign-in is the
+        // least informative possible answer to "what has this instance done".
+        var audit = await fixture.Database.AuditLogs.ToListAsync(cancellationToken);
+        Assert.True(audit.Count >= 10);
+        Assert.Contains(audit, entry => entry.Action == AuditActions.SpecApproved);
+        Assert.Contains(audit, entry => entry.Action == OnboardingAuditActions.RepoReady);
+
+        // Every agent action attributable to a named human, except the ones no human took.
+        Assert.Contains(audit, entry => entry.ActorUserId is not null);
     }
 
     [Fact]
@@ -280,16 +323,22 @@ public class DemoModeTests
             return;
         }
 
-        var seeder = new DemoSeeder(fixture.Database, TimeProvider.System);
+        var seeder = new DemoSeeder(fixture.Database, TimeProvider.System, Hasher());
 
-        Assert.True(await seeder.SeedAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(DemoSeedOutcome.Seeded, await seeder.SeedAsync(TestContext.Current.CancellationToken));
 
         // The hosted service runs on every boot, and a container restarts. A second organisation
-        // would also be a section 7.2a violation: an instance serves exactly one.
-        Assert.False(await new DemoSeeder(fixture.Database, TimeProvider.System)
-            .SeedAsync(TestContext.Current.CancellationToken));
+        // would also be a section 7.2a violation: an instance serves exactly one. AlreadySeeded rather
+        // than Occupied, because the operator who restarted still needs the credentials printed.
+        Assert.Equal(
+            DemoSeedOutcome.AlreadySeeded,
+            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+                .SeedAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(1, await fixture.Database.Organizations.CountAsync(TestContext.Current.CancellationToken));
+
+        Assert.Equal(2, await fixture.Database.Identities
+            .CountAsync(row => row.Provider == IdentityProviderKind.Password, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -305,10 +354,160 @@ public class DemoModeTests
         fixture.Database.Organizations.Add(Organization.Create("A real customer"));
         await fixture.Database.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        Assert.False(await new DemoSeeder(fixture.Database, TimeProvider.System)
-            .SeedAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(
+            DemoSeedOutcome.Occupied,
+            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+                .SeedAsync(TestContext.Current.CancellationToken));
 
         Assert.Empty(await fixture.Database.Repos.ToListAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await fixture.Database.Identities.ToListAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task NoPublishedPasswordIsWrittenIntoADatabaseThatHasAUser()
+    {
+        // The security-relevant half of the guard, and the reason it asks about users and not only
+        // about organisations. An instance claimed through section 30.1 has an admin before it has a
+        // named organisation; booting it once with CHARTER_DEMO set must not hand two accounts with a
+        // documented password to whoever can reach it.
+        await using var fixture = await DemoDatabase.CreateAsync(TestContext.Current.CancellationToken);
+        if (fixture.Skipped)
+        {
+            Assert.Skip(DemoDatabase.SkipReason);
+            return;
+        }
+
+        fixture.Database.Users.Add(User.Create("real.admin@example.com", "A real admin"));
+        await fixture.Database.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            DemoSeedOutcome.Occupied,
+            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+                .SeedAsync(TestContext.Current.CancellationToken));
+
+        Assert.Empty(await fixture.Database.Identities.ToListAsync(TestContext.Current.CancellationToken));
+        Assert.Empty(await fixture.Database.Organizations.ToListAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task BothSeededAccountsSignInThroughTheOrdinaryPasswordPath()
+    {
+        // The defect this test exists for: demo mode seeded a beautiful instance and no way into it.
+        //
+        // It authenticates through PasswordIdentityProvider - the same type /api/auth/sign-in calls,
+        // with no demo argument, no demo branch and no knowledge that these rows were seeded. That is
+        // the section 7.2a rule applied to section 30.6: demo mode is data, not a second auth path.
+        await using var fixture = await DemoDatabase.CreateAsync(TestContext.Current.CancellationToken);
+        if (fixture.Skipped)
+        {
+            Assert.Skip(DemoDatabase.SkipReason);
+            return;
+        }
+
+        var hasher = Hasher();
+
+        Assert.Equal(
+            DemoSeedOutcome.Seeded,
+            await new DemoSeeder(fixture.Database, TimeProvider.System, hasher)
+                .SeedAsync(TestContext.Current.CancellationToken));
+
+        var provider = new PasswordIdentityProvider(
+            fixture.Database,
+            hasher,
+            new SignInThrottle(TimeProvider.System),
+            NullLogger<PasswordIdentityProvider>.Instance);
+
+        foreach (var account in DemoSeeder.Accounts)
+        {
+            var result = await provider.BeginAsync(
+                new IdentityAuthenticationAttempt
+                {
+                    Email = account.Email,
+                    Password = new Secret(DemoSeeder.Password),
+                },
+                TestContext.Current.CancellationToken);
+
+            var authenticated = Assert.IsType<IdentityAuthenticationResult.Authenticated>(result);
+            Assert.Equal(account.Email, authenticated.Identity.Email);
+            Assert.Equal(IdentityProviderKind.Password, authenticated.Identity.Provider);
+
+            // The wrong password is refused for a seeded account exactly as for any other, which is
+            // what "no magic account" means in practice.
+            var refused = await provider.BeginAsync(
+                new IdentityAuthenticationAttempt
+                {
+                    Email = account.Email,
+                    Password = new Secret("not-the-demo-password"),
+                },
+                TestContext.Current.CancellationToken);
+
+            Assert.IsType<IdentityAuthenticationResult.Failed>(refused);
+        }
+    }
+
+    [Fact]
+    public async Task TheTwoSeededAccountsHoldDifferentRoles()
+    {
+        // Section 7.4 is only demonstrable with two accounts. One account, whatever its roles, shows
+        // an evaluator a single view and leaves the central claim - that the requester's narrower
+        // instance is server-side omission rather than a hidden div - entirely unevidenced.
+        await using var fixture = await DemoDatabase.CreateAsync(TestContext.Current.CancellationToken);
+        if (fixture.Skipped)
+        {
+            Assert.Skip(DemoDatabase.SkipReason);
+            return;
+        }
+
+        Assert.Equal(
+            DemoSeedOutcome.Seeded,
+            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+                .SeedAsync(TestContext.Current.CancellationToken));
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        var members = await (from member in fixture.Database.Members
+                             join user in fixture.Database.Users on member.UserId equals user.Id
+                             select new { user.Email, member.Roles })
+            .ToListAsync(cancellationToken);
+
+        var requester = members.Single(row => row.Email == DemoSeeder.RequesterEmail);
+        var engineer = members.Single(row => row.Email == DemoSeeder.EngineerEmail);
+
+        Assert.Equal([MemberRole.Requester], requester.Roles);
+        Assert.DoesNotContain(MemberRole.Engineer, requester.Roles);
+        Assert.DoesNotContain(MemberRole.Admin, requester.Roles);
+
+        Assert.Contains(MemberRole.Engineer, engineer.Roles);
+        Assert.Contains(MemberRole.Admin, engineer.Roles);
+        Assert.Contains(MemberRole.Approver, engineer.Roles);
+    }
+
+    [Fact]
+    public void TheStartupBannerTellsAnOperatorHowToGetIn()
+    {
+        // An operator should never have to read source to find the credentials of an instance whose
+        // whole purpose is being looked at.
+        var banner = DemoSeedHostedService.Banner(DemoSeedOutcome.Seeded, DateTimeOffset.UnixEpoch);
+
+        Assert.Contains(DemoSeeder.Password, banner, StringComparison.Ordinal);
+        Assert.Contains("/sign-in", banner, StringComparison.Ordinal);
+        Assert.Contains(DemoSeeder.OrganizationName, banner, StringComparison.Ordinal);
+
+        foreach (var account in DemoSeeder.Accounts)
+        {
+            Assert.Contains(account.Email, banner, StringComparison.Ordinal);
+            Assert.Contains(account.Roles, banner, StringComparison.Ordinal);
+        }
+
+        // A published password plus a reachable URL is a real exposure, and the banner is where it is
+        // said out loud rather than left in a documentation page nobody opened.
+        Assert.Contains("public", banner, StringComparison.Ordinal);
+        Assert.Contains("real work", banner, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Seeded on an earlier boot",
+            DemoSeedHostedService.Banner(DemoSeedOutcome.AlreadySeeded, DateTimeOffset.UnixEpoch),
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -323,6 +522,7 @@ public class DemoModeTests
 
         var services = new ServiceCollection();
         services.AddSingleton(fixture.Database);
+        services.AddSingleton(Hasher());
 
         using var provider = services.BuildServiceProvider();
 

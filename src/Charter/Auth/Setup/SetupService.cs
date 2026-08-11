@@ -1,5 +1,6 @@
 using Charter.Auth.Audit;
 using Charter.Auth.Providers;
+using Charter.Budgets;
 using Charter.Configuration;
 using Charter.Data;
 using Microsoft.EntityFrameworkCore;
@@ -70,6 +71,7 @@ public sealed class SetupService
     private readonly SetupModeService mode;
     private readonly ICharterPasswordHasher hasher;
     private readonly CharterConfig config;
+    private readonly BudgetOptions budgets;
     private readonly TimeProvider clock;
 
     public SetupService(
@@ -79,6 +81,7 @@ public sealed class SetupService
         SetupModeService mode,
         ICharterPasswordHasher hasher,
         CharterConfig config,
+        BudgetOptions budgets,
         TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(database);
@@ -87,6 +90,7 @@ public sealed class SetupService
         ArgumentNullException.ThrowIfNull(mode);
         ArgumentNullException.ThrowIfNull(hasher);
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(budgets);
         ArgumentNullException.ThrowIfNull(clock);
 
         this.database = database;
@@ -95,6 +99,7 @@ public sealed class SetupService
         this.mode = mode;
         this.hasher = hasher;
         this.config = config;
+        this.budgets = budgets;
         this.clock = clock;
     }
 
@@ -150,6 +155,17 @@ public sealed class SetupService
         database.Members.Add(seeded.Member);
         database.Identities.Add(seeded.Identity);
         database.AutoDispatchPolicies.Add(seeded.AutoDispatch);
+
+        // Section 34.9: an organisation starts with one org-level require_approval budget; personal
+        // mode starts with none, and BudgetDefaults returns null for it rather than making the caller
+        // write the branch. The amount and the per-session threshold come from
+        // CHARTER_DEFAULT_MONTHLY_BUDGET_USD and CHARTER_DEFAULT_SESSION_BUDGET_USD through
+        // BudgetOptions, which is what makes the two variables reach a row an operator can see.
+        var budget = BudgetDefaults.For(seeded.Organization, budgets, clock.GetUtcNow());
+        if (budget is not null)
+        {
+            database.Budgets.Add(budget);
+        }
 
         database.AuditLogs.Add(AuditWriter.ToRow(
             new AuditEntry

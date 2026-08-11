@@ -91,17 +91,17 @@ internal static class EmailFixture
         string to = "person@example.com",
         EmailCategory category = EmailCategory.Notification,
         string kind = "needs_input") => new()
-    {
-        To = EmailAddress.Create(to, "A Person"),
-        Content = new EmailContent
         {
-            Subject = "A question about your request",
-            Text = "Question for you\n\nThere is one thing to check.\n",
-            Html = "<p>There is one thing to check.</p>",
-        },
-        Category = category,
-        Kind = kind,
-    };
+            To = EmailAddress.Create(to, "A Person"),
+            Content = new EmailContent
+            {
+                Subject = "A question about your request",
+                Text = "Question for you\n\nThere is one thing to check.\n",
+                Html = "<p>There is one thing to check.</p>",
+            },
+            Category = category,
+            Kind = kind,
+        };
 
     public static EmailSender Sender(
         IEmailProvider provider,

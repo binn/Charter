@@ -190,6 +190,30 @@ this folder is for anything that needs a script.
 Checks are what turn "the agent says it is done" into evidence. A repository with no test command gets
 far less value from Charter, because there is nothing to fail.
 
+The session runs them after the agent exits and before the branch is pushed, in the order you declare
+them, from the root of the checkout. Each one's outcome lands on the transcript and in the change
+request body — including "this repository declares no checks, so nothing was verified automatically",
+which is said out loud rather than left as a blank.
+
+Four rules govern how they run:
+
+- **A failing check is reported, not fatal.** The branch is still pushed and the change request still
+  opens, with the failure at the top of the body. Charter has no merge button, so a red change request
+  cannot ship on its own; what a failure changes is what the engineer reads first, not whether they get
+  anything to read. This also means Charter stays usable on a repository whose main branch is already
+  red, or that has one flaky test.
+- **Each check is one command, run directly, with no shell.** `run: "dotnet build"` works;
+  `run: "dotnet build && dotnet test"` does not, and is reported as a check that could not be run
+  rather than silently passing. Split it into two checks, or put it in a script in this folder and
+  point `run:` at that.
+- **A check whose toolchain the image lacks stops the session before the agent starts.** If you declare
+  `dotnet build` and `runner_image` has no .NET SDK, the session fails immediately with a message
+  naming an image that has one. Sessions never install a language runtime. Charter can only detect this
+  for the toolchains runners probe for — .NET, Node, Python, uv, git and Xcode — so a check that runs
+  `make` is started and allowed to fail on its own terms.
+- **Checks are skipped entirely when the agent changed nothing.** There is nothing to validate, and a
+  full test run to prove it is minutes of somebody's time spent on an empty diff.
+
 ## policies/migrations.yml
 
 Rules for classifying schema migrations. Preview databases are disposable, so the risk is not data loss

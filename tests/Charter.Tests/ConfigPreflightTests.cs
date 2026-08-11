@@ -181,6 +181,83 @@ public class ConfigPreflightTests
         Assert.Contains("[FAIL] database", report.Describe(), StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The login role from <c>DATABASE_URL</c> reaches the operator.
+    /// </summary>
+    /// <remarks>
+    /// It was parsed alongside host, port and database and then shown nowhere, which is a shame,
+    /// because "connected as which role" is the whole answer to a migration that cannot create
+    /// tables - a failure that looks nothing like the connectivity failure this check otherwise
+    /// reports.
+    /// </remarks>
+    [Fact]
+    public async Task TheDatabaseCheckNamesTheRoleItConnectedAs()
+    {
+        var config = ConfigTestEnvironment.Valid(
+            ("DATABASE_URL", "postgres://charter_app:secret@db.internal:6432/charter"));
+
+        var result = await new DatabaseConnectivityPreflightCheck(config, new FakeDatabaseProbe())
+            .RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(PreflightStatus.Passed, result.Status);
+        Assert.Contains("charter_app", result.Detail, StringComparison.Ordinal);
+        Assert.Contains("db.internal:6432", result.Detail, StringComparison.Ordinal);
+
+        // Never the password, which travels in the same URL.
+        Assert.DoesNotContain("secret", result.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Section 4.2 accepts the GitHub App key as PEM or as base64 PEM, and the parser was the only
+    /// thing that knew which.
+    /// </summary>
+    /// <remarks>
+    /// A key encoded twice decodes to something that is not PEM, and the only symptom is that every
+    /// GitHub call fails to sign. Saying which encoding was accepted turns that into a one-line
+    /// diagnosis instead of a hunt.
+    /// </remarks>
+    [Fact]
+    public async Task TheGitHubAppCheckSaysHowThePrivateKeyArrived()
+    {
+        var pem = ConfigTestEnvironment.Valid().GitHub.PrivateKeyPem.Reveal();
+        var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(pem));
+
+        var asPem = await new GitHubAppPreflightCheck(ConfigTestEnvironment.Valid())
+            .RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(PreflightStatus.Passed, asPem.Status);
+        Assert.Contains("PEM", asPem.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("base64", asPem.Detail, StringComparison.Ordinal);
+
+        var asBase64 = await new GitHubAppPreflightCheck(
+                ConfigTestEnvironment.Valid(("GITHUB_APP_PRIVATE_KEY", encoded)))
+            .RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(PreflightStatus.Passed, asBase64.Status);
+        Assert.Contains("base64", asBase64.Detail, StringComparison.Ordinal);
+        Assert.Contains("encoded twice", asBase64.Detail, StringComparison.Ordinal);
+
+        // Never the key itself, in either encoding.
+        Assert.DoesNotContain("PRIVATE KEY-----", asBase64.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>A key encoded twice is refused at startup, with the cause named.</summary>
+    [Fact]
+    public void ADoubleEncodedPrivateKeyIsRefusedWithAHint()
+    {
+        var pem = ConfigTestEnvironment.Valid().GitHub.PrivateKeyPem.Reveal();
+        var once = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(pem));
+        var twice = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(once));
+
+        var result = CharterConfigParser.Parse(
+            ConfigTestEnvironment.With(("GITHUB_APP_PRIVATE_KEY", twice)));
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Errors,
+            problem => problem.Text.Contains("encoded twice", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(-1, "does not exist")]
     [InlineData(0, "empty")]

@@ -69,6 +69,53 @@ sessions later.
 An agent that refuses to claim work after a control-plane upgrade needs its binary replaced. Agents
 auto-update only if you opt in; the default is to warn and let you upgrade deliberately.
 
+### The GitHub Actions workflow file: a breaking change before 1.0
+
+**If you use `CHARTER_RUNNER=github-actions`, every target repository needs the current
+`.github/workflows/agent-session.yml`.** The credential exchange now requires two things instead of
+one, and a workflow file from before this change sends only the first.
+
+What changed, and why it is not something that can be phased in gently:
+
+- `secrets.CHARTER_SESSION_SECRET` is unchanged. It is still derived the same way, still written once
+  per repository, and **you do not need to rotate it**. Nothing you have stored becomes invalid.
+- The exchange additionally requires `client_payload.session_token`, which Charter mints per session
+  and sends only in that session's dispatch. The workflow forwards it in the request body as
+  `session_token`.
+
+The reason both are needed is that the repository secret is the same value for every workflow run in
+the repository. It proves the caller is a run in that repository; it cannot prove which session is
+asking. Until this change, any run in a repository could name any other live session of the same
+repository and be handed that session's repository token, its callback token, and with it the ability
+to write that session's transcript and report it failed. No derivation of the repository secret can fix
+that — every holder of the secret could compute the same value — so the second factor has to come from
+the control plane, per dispatch. Continuing to accept the old one-factor request during a transition
+would have left the hole open for exactly as long as the transition lasted, which is why there is no
+compatibility window.
+
+**What you will see if you miss a repository.** The workflow's first step fails immediately with a
+`403` naming the file to update. Nothing runs, nothing is half-done, and no credential is issued. Fix
+it by copying the current `agent-session.yml` into the repository.
+
+This is a pre-1.0 breaking change of the kind the [changelog](https://github.com/binn/Charter/blob/master/CHANGELOG.md)
+warns about: until 1.0, breaking changes ship without a deprecation cycle.
+
+### Repositories renamed on GitHub must be reconnected
+
+Charter now checks the run URL a runner reports against the repository the session belongs to, and
+refuses the callback when the two disagree — see [runners.md](runners.md) and
+[security.md](security.md) for why. One honest case trips that check: **a repository renamed on GitHub
+whose new name was never recorded in Charter.** The workflow reports the new name, Charter has the old
+one, and the session fails at its first callback with a message naming the repository on record.
+
+Before upgrading, check that every connected repository's full name matches what GitHub calls it
+today. Where it does not, reconnect the repository in Charter's settings. There is no setting that
+relaxes the check, and there is no migration for it: the fix is to make the two agree.
+
+Sessions that already ran are unaffected. References recorded by an older version are not rewritten,
+and they are not acted on either — cancelling such a session reports that nothing was stopped rather
+than issuing a call, which is visible as a warning in the log.
+
 ## Migrations
 
 **EF Core migrations run automatically at boot.** There is no separate migration command to run and no
@@ -154,6 +201,38 @@ Two things are worth knowing before you add your first budget:
 - **A model nothing can price cannot be capped in dollars.** Self-hosted and gateway models with no
   published rates estimate zero and pass every `usd` budget. Use a `quota_sessions` budget if you need
   a limit on those. See [budgets.md](budgets.md).
+
+### Object storage needs `CHARTER_STORAGE_BACKEND` to be set
+
+Object storage works now — a filesystem directory or any S3-compatible bucket. There is one change to
+make if you already had the bucket variables set.
+
+**Charter no longer infers the backend from which variables are set.** If your instance has
+`CHARTER_STORAGE_ENDPOINT` and friends, add:
+
+```bash
+CHARTER_STORAGE_BACKEND=s3
+```
+
+Without it the boot stops, on purpose:
+
+```
+[FAIL] object storage: CHARTER_STORAGE_ENDPOINT is set and CHARTER_STORAGE_BACKEND is not, so
+nothing would read it -> set CHARTER_STORAGE_BACKEND to the backend you meant (filesystem or s3),
+or unset CHARTER_STORAGE_ENDPOINT. ...
+```
+
+Inference is what makes a typo dangerous: `CHARTER_STORAGE_BUCKETT` under a rule that guesses the
+backend produces an instance that boots, selects something else, and tells nobody.
+
+Nothing is lost either way. No previous release ever wrote to your bucket — the variables parsed,
+validated, and reached no client — so there is nothing in it to migrate. Verification artifacts
+continue to live in Postgres; what moves to the store from this release on is oversized transcript
+output, and only on the sessions that run after you configure it.
+
+If you do not want object storage, leave `CHARTER_STORAGE_BACKEND` unset and unset the rest of the
+block. That is the supported configuration, and the only correct one on a platform whose filesystem
+does not survive a deploy. See [configuration.md](configuration.md).
 
 ### If a migration fails
 
@@ -249,8 +328,12 @@ requester has no action to take and never sees it.
 - The badge and banner are dismissible **per version** — dismissing one release does not suppress the
   next.
 - Release notes render inline, sanitised, with a link to the full release.
-- Security releases render persistently and cannot be dismissed.
-- Releases including schema migrations are flagged as such, so you know to take a backup first.
+- Security releases render persistently and cannot be dismissed. They carry `[SECURITY]` in the title.
+- Releases including schema migrations are flagged as such, so you know to take a backup first. They
+  carry `[MIGRATIONS]` in the title or in the release body.
+- The check runs on Charter's job queue, so one replica performs it and a restart does not lose the
+  schedule. An instance that cannot reach GitHub keeps the answer it last had and logs nothing above
+  debug — there is no daily error to filter out of an air-gapped deployment's logs.
 
 Turn the check off with `CHARTER_UPDATE_CHECK=false`. What it does and does not send is documented in
 [privacy.md](privacy.md).

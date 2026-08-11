@@ -23,6 +23,12 @@ public enum GitHubWebhookEventType
     /// <summary>A pull request opened, closed, merged, or moved.</summary>
     PullRequest,
 
+    /// <summary>
+    /// Somebody reviewed a pull request. Section 6's <c>InReview</c> — <em>an engineer is checking
+    /// it</em> — and the only signal there is that a human picked the work up.
+    /// </summary>
+    PullRequestReview,
+
     /// <summary>Checks finished for a commit — the "checks pass" leg of the smoke test (section 9).</summary>
     CheckSuite,
 
@@ -128,6 +134,29 @@ public sealed record GitHubWebhookDelivery
     public bool? PullRequestMerged { get; init; }
 
     /// <summary>
+    /// A review's <c>state</c>: <c>approved</c>, <c>changes_requested</c>, <c>commented</c>.
+    /// </summary>
+    /// <remarks>
+    /// Carried, but section 6 does not branch on it. Every one of them means the same thing to the
+    /// requester's thread — somebody is looking at this — and Charter never reports an approval as an
+    /// outcome, because whether the work is fit to ship is decided on the provider (section 7.4).
+    /// </remarks>
+    public string? ReviewState { get; init; }
+
+    /// <summary>True when this delivery says a human has picked the change request up.</summary>
+    /// <remarks>
+    /// Two shapes mean it. A submitted review is the obvious one; a review <em>request</em> is the
+    /// other, and it matters because on a repository with CODEOWNERS it is what happens first and can
+    /// be the only thing that happens for a day. Both are "an engineer is checking it" as far as the
+    /// thread is concerned, and neither is Charter deciding anything about the code.
+    /// </remarks>
+    public bool IsReviewSignal =>
+        (Type == GitHubWebhookEventType.PullRequestReview
+         && string.Equals(Action, "submitted", StringComparison.Ordinal))
+        || (Type == GitHubWebhookEventType.PullRequest
+            && Action is "review_requested" or "ready_for_review");
+
+    /// <summary>
     /// The issue or pull request number an <c>issue_comment</c> event was written on.
     /// </summary>
     /// <remarks>
@@ -173,6 +202,7 @@ public sealed record GitHubWebhookDelivery
             "installation_repositories" => GitHubWebhookEventType.InstallationRepositories,
             "push" => GitHubWebhookEventType.Push,
             "pull_request" => GitHubWebhookEventType.PullRequest,
+            "pull_request_review" => GitHubWebhookEventType.PullRequestReview,
             "check_suite" => GitHubWebhookEventType.CheckSuite,
             "issue_comment" => GitHubWebhookEventType.IssueComment,
             _ => GitHubWebhookEventType.Unknown,
@@ -241,6 +271,7 @@ public sealed record GitHubWebhookDelivery
                 CommentAuthorLogin = Text(Object(comment, "user"), "login"),
                 CommentBody = Truncate(Text(comment, "body")),
                 CheckSuiteConclusion = Text(checkSuite, "conclusion"),
+                ReviewState = Text(Object(root, "review"), "state")?.ToLowerInvariant(),
             };
         }
     }
@@ -252,7 +283,8 @@ public sealed record GitHubWebhookDelivery
         JsonElement? checkSuite) => type switch
         {
             GitHubWebhookEventType.Push => Text(root, "after"),
-            GitHubWebhookEventType.PullRequest => Text(Object(pullRequest, "head"), "sha"),
+            GitHubWebhookEventType.PullRequest or GitHubWebhookEventType.PullRequestReview
+                => Text(Object(pullRequest, "head"), "sha"),
             GitHubWebhookEventType.CheckSuite => Text(checkSuite, "head_sha"),
             _ => null,
         };

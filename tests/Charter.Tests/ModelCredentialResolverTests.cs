@@ -94,10 +94,55 @@ public class ModelCredentialResolverTests
                 }),
         };
 
-        var resolution = CredentialResolver.Resolve(Query(), candidates, Now);
+        var resolution = CredentialResolver.Resolve(Query(), candidates, Now, CredentialPolicy.Pooled);
 
         Assert.Equal("pool-high", resolution.Credential!.Credential.Id);
         Assert.Equal(ModelCredentialTier.OrganizationSharedPool, resolution.Credential.Tier);
+    }
+
+    /// <summary>
+    /// Section 20b.7: the instance-level opt-in, which for a long time did nothing in either
+    /// position.
+    /// </summary>
+    /// <remarks>
+    /// Routing one person's request through another person's consumer subscription may breach that
+    /// subscription's terms, which is the operator's call and not Charter's. So an instance that has
+    /// not set <c>CHARTER_ALLOW_SHARED_POOL</c> does not merely refuse new opt-ins - it stops
+    /// honouring the grants that are already marked <c>shared_pool</c>, because the grant flag alone
+    /// was never the operator's decision.
+    /// </remarks>
+    [Fact]
+    public void WithoutTheInstanceOptInAPooledGrantServesNobodyElsesSession()
+    {
+        var candidates = new[]
+        {
+            Grant("pool", ModelCredentialKind.AnthropicOAuth, "user-2", ModelCredentialScope.SharedPool),
+            Grant(
+                "mine",
+                ModelCredentialKind.AnthropicOAuth,
+                "user-1",
+                status: ModelCredentialStatus.Exhausted,
+                exhaustedUntil: Now.AddHours(3)),
+        };
+
+        var withoutOptIn = CredentialResolver.Resolve(Query(), candidates, Now);
+
+        Assert.False(withoutOptIn.Resolved);
+        Assert.Equal(Now.AddHours(3), withoutOptIn.WaitingForCapacityUntil);
+
+        // The same grants, on an instance whose operator did opt in.
+        var withOptIn = CredentialResolver.Resolve(Query(), candidates, Now, CredentialPolicy.Pooled);
+
+        Assert.Equal("pool", withOptIn.Credential!.Credential.Id);
+        Assert.Equal(ModelCredentialTier.OrganizationSharedPool, withOptIn.Credential.Tier);
+    }
+
+    /// <summary>The default is off, so omitting the policy cannot accidentally open the pool.</summary>
+    [Fact]
+    public void TheDefaultPolicyIsPoolingOff()
+    {
+        Assert.False(CredentialPolicy.Default.AllowSharedPool);
+        Assert.True(CredentialPolicy.Pooled.AllowSharedPool);
     }
 
     [Fact]
@@ -171,7 +216,7 @@ public class ModelCredentialResolverTests
             Grant("or", ModelCredentialKind.OpenRouterKey, status: ModelCredentialStatus.Exhausted, exhaustedUntil: Now.AddHours(9)),
         };
 
-        var resolution = CredentialResolver.Resolve(Query(), candidates, Now);
+        var resolution = CredentialResolver.Resolve(Query(), candidates, Now, CredentialPolicy.Pooled);
 
         Assert.False(resolution.Resolved);
         Assert.True(resolution.AllExhausted);

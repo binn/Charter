@@ -300,6 +300,45 @@ public class RunnerDockerTests
     }
 
     [Fact]
+    public async Task CancellingWillNotKillAContainerThatIsNotThisSessions()
+    {
+        // The same defect as the run URL, in the backend that reads the reference as a container id.
+        // The reference is folded from the session's events, and `session_started` arrives from the
+        // execution plane, so a sandbox that posts `{"run_url":"<any container id>"}` used to have
+        // Charter `docker kill` it on the operator's own host — and report the cancel confirmed while
+        // its own session went on running. The session label is written by this runner at dispatch and
+        // is the one statement about ownership the sandbox never touched (sections 11, 16).
+        var engine = new FakeDockerEngine();
+        var runner = Runner(engine);
+
+        await runner.DispatchAsync(Dispatch(), TestContext.Current.CancellationToken);
+
+        var result = await runner.CancelAsync(
+            new RunnerCancellation(SessionId, "container-belonging-to-something-else", "The requester cancelled."),
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(engine.Killed);
+        Assert.False(result.Stopped);
+        Assert.Contains("not one of this session's containers", result.Explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CancellingKillsTheContainerTheReferenceNamesWhenItIsThisSessions()
+    {
+        var engine = new FakeDockerEngine();
+        var runner = Runner(engine);
+
+        var dispatched = await runner.DispatchAsync(Dispatch(), TestContext.Current.CancellationToken);
+
+        var result = await runner.CancelAsync(
+            new RunnerCancellation(SessionId, dispatched.ExternalReference, "The requester cancelled."),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Stopped);
+        Assert.Equal(["container-1"], engine.Killed);
+    }
+
+    [Fact]
     public async Task CancellingASessionWithNoContainerIsNotAFailure()
     {
         var result = await Runner(new FakeDockerEngine()).CancelAsync(

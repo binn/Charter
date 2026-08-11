@@ -1,6 +1,8 @@
 using System.Globalization;
+using Charter.Api.Accounts;
 using Charter.Api.Changes;
 using Charter.Api.Contracts;
+using Charter.Api.Credentials;
 using Charter.Api.Requests;
 using Charter.Api.Runners;
 using Charter.Api.Settings;
@@ -51,7 +53,13 @@ public static class CharterApiEndpoints
         // Section 9: connect, recon, confirm scope, smoke test, primer.
         endpoints.MapCharterOnboardingEndpoints();
 
+        // Section 20b.2: link, list and revoke model credentials. Mapped onto this group so the
+        // routes inherit its authorisation and its plain-language failures; the engineer/admin check
+        // is a further one inside the service (section 7.4).
+        api.MapCharterCredentialEndpoints();
+
         MapViewer(api);
+        MapAdministration(api);
         MapProjects(api);
         MapRequests(api);
         MapSessionActions(api);
@@ -612,6 +620,81 @@ public static class CharterApiEndpoints
             var (outcome, dismissed) = await checklist.DismissAsync(member, cancellationToken);
 
             return outcome.Succeeded && dismissed is not null ? Json(dismissed) : ToResult(outcome);
+        });
+    }
+
+    /// <summary>
+    /// Section 7.1's administrator column: members, roles and the audit log.
+    /// </summary>
+    /// <remarks>
+    /// Every route here refuses anybody who is not an administrator, in the service rather than in a
+    /// route filter, so the refusal carries the sentence the screen shows. There is no field-level
+    /// withholding to do: a member who may not read this reads none of it.
+    /// </remarks>
+    private static void MapAdministration(IEndpointRouteBuilder api)
+    {
+        var members = api.MapGroup("/members");
+
+        members.MapGet("/", async (
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            MembersService people,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            var (outcome, listed) = await people.ListAsync(member, cancellationToken);
+
+            return outcome.Succeeded && listed is not null ? Json(listed) : ToResult(outcome);
+        });
+
+        members.MapPost("/{id}/roles", async (
+            string id,
+            SetMemberRoleBody body,
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            MembersService people,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            if (!Guid.TryParse(id, CultureInfo.InvariantCulture, out var targetId))
+            {
+                return ApiProblems.NotFound();
+            }
+
+            var (outcome, updated) = await people.SetRoleAsync(
+                member,
+                targetId,
+                body ?? new SetMemberRoleBody(),
+                cancellationToken);
+
+            return outcome.Succeeded && updated is not null ? Json(updated) : ToResult(outcome);
+        });
+
+        api.MapGet("/audit", async (
+            HttpContext http,
+            ICharterAuthorizationService authorization,
+            AuditQueryService log,
+            CancellationToken cancellationToken) =>
+        {
+            var member = await CharterCaller.ResolveAsync(http.User, authorization, cancellationToken);
+            if (member is null)
+            {
+                return ApiProblems.Unauthorized();
+            }
+
+            var (outcome, entries) = await log.ListAsync(member, cancellationToken);
+
+            return outcome.Succeeded && entries is not null ? Json(entries) : ToResult(outcome);
         });
     }
 

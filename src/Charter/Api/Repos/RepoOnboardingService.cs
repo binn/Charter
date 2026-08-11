@@ -149,17 +149,39 @@ public sealed class RepoOnboardingService
             .OrderBy(row => row.CreatedAt)
             .ToListAsync(cancellationToken);
 
+        // One join rather than a lookup per row, and only for the members a grant actually names.
+        var namedIds = grants.Where(grant => grant.MemberId.HasValue).Select(grant => grant.MemberId!.Value).ToList();
+
+        var named = await database.Members
+            .AsNoTracking()
+            .Where(row => row.OrgId == member.OrgId && namedIds.Contains(row.Id))
+            .Join(
+                database.Users.AsNoTracking(),
+                row => row.UserId,
+                user => user.Id,
+                (row, user) => new { row.Id, user.DisplayName, user.Email })
+            .ToListAsync(cancellationToken);
+
+        var people = named.ToDictionary(row => row.Id);
+
         return (
             CommandOutcome.Ok(),
             new RepoAccessResponse
             {
                 Grants =
                 [
-                    .. grants.Select(grant => new RepoAccessGrantResponse
+                    .. grants.Select(grant =>
                     {
-                        MemberId = grant.MemberId?.ToString(),
-                        Role = grant.Role?.ToApi(),
-                        CanRequest = grant.CanRequest,
+                        var person = grant.MemberId is { } id ? people.GetValueOrDefault(id) : null;
+
+                        return new RepoAccessGrantResponse
+                        {
+                            MemberId = grant.MemberId?.ToString(),
+                            MemberName = person?.DisplayName,
+                            MemberEmail = person?.Email,
+                            Role = grant.Role?.ToApi(),
+                            CanRequest = grant.CanRequest,
+                        };
                     }),
                 ],
                 RequesterVisible = repo.IsRequesterVisible,
@@ -396,6 +418,7 @@ public sealed class RepoOnboardingService
         CancellationToken cancellationToken)
     {
         var history = await HistoryAsync(member.OrgId, repo.Id, cancellationToken);
+        var recon = ReadRecon(history);
 
         return new RepoOnboardingResponse
         {
@@ -404,8 +427,49 @@ public sealed class RepoOnboardingService
             ScopeConfigPullRequest = ReadInt(history, OnboardingAuditActions.ScopeProposed, "pull_request"),
             LastSmokeTest = ReadSmokeTest(history),
             MergeGate = ReadMergeGate(repo, history),
+            ProposedScope = recon is null ? null : DescribeProposal(recon),
+
+            // The published primer wins: editing a published page starts from the page, not from the
+            // draft it was written over months ago.
+            PrimerDraftMd = repo.PrimerMd ?? recon?.DraftPrimer(repo.FullName),
         };
     }
+
+    /// <summary>The recon proposal, from the newest run that recorded one.</summary>
+    private static ReconSnapshot? ReadRecon(IReadOnlyList<AuditLog> history)
+    {
+        foreach (var entry in history.Where(row => row.Action == OnboardingAuditActions.ScopeProposed))
+        {
+            if (ReconSnapshot.FromJson(Metadata(entry).GetValueOrDefault("recon")) is { } snapshot)
+            {
+                return snapshot;
+            }
+        }
+
+        return null;
+    }
+
+    private static ScopeProposalResponse DescribeProposal(ReconSnapshot recon) => new()
+    {
+        DetectedStack = recon.DetectedStack,
+        Commands = [.. recon.Commands.Select(command => new ScopeCommandResponse
+        {
+            Label = command.Label,
+            Command = command.Command,
+        })],
+
+        // Absent rather than empty: the screen says "imported your AGENTS.md" only when there was
+        // one, and an empty array would have it say it about nothing.
+        ImportedFrom = recon.ImportedFrom.Count == 0 ? null : recon.ImportedFrom,
+        Entries = [.. recon.Entries.Select(entry => new ScopeEntryResponse
+        {
+            Path = entry.Path,
+            Kind = entry.Directory ? "directory" : "file",
+            Allowed = entry.Allowed,
+            Locked = entry.Locked ? true : null,
+            Reason = entry.Reason,
+        })],
+    };
 
     private Task<Repo?> FindAsync(MemberSnapshot member, Guid repoId, CancellationToken cancellationToken)
         => database.Repos
@@ -505,14 +569,100 @@ public sealed class RepoOnboardingService
         }
 
         var metadata = Metadata(entry);
+        var passed = entry.Action == OnboardingAuditActions.RepoReady;
+
+        // Section 9's empty-preview warning, rebuilt from the same fact the report carried. It warns
+        // and never blocks, so it rides on a passing outcome rather than turning it into a failure.
+        var warnings = metadata.ContainsKey("preview_has_data") && !ReadBool(metadata, "preview_has_data")
+            ?
+            [
+                "Preview deployed but appears to have no data — requesters may not be able to "
+                + "evaluate changes.",
+            ]
+            : (IReadOnlyList<string>)[];
 
         return new SmokeTestOutcomeResponse
         {
-            Passed = entry.Action == OnboardingAuditActions.RepoReady,
+            Passed = passed,
             At = entry.CreatedAt,
             PullRequestNumber = ReadInt(metadata, "pull_request"),
             PreviewBound = ReadBool(metadata, "preview_bound"),
+            Checkpoints = ReadCheckpoints(metadata),
+            Warnings = warnings.Count == 0 ? null : warnings,
         };
+    }
+
+    /// <summary>
+    /// The six integration points, in the order the loop exercises them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Absent — not six pending rows — for a run recorded before the six were written down. The
+    /// client reconstructs what it can prove from the pull request and the preview binding and marks
+    /// the rest unknown, which is the honest answer; six invented ticks would not be.
+    /// </para>
+    /// <para>
+    /// Everything after the first failure is <c>skipped</c> rather than <c>failed</c>. A preview
+    /// that was never asked to deploy did not break, and saying it did sends the engineer to the
+    /// wrong subsystem.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<SmokeTestCheckpointResponse>? ReadCheckpoints(
+        IReadOnlyDictionary<string, string?> metadata)
+    {
+        if (!metadata.ContainsKey("request_filed"))
+        {
+            return null;
+        }
+
+        var points = new (ApiSmokeTestCheckpointId Id, string Label, bool Reached, string? Detail)[]
+        {
+            (ApiSmokeTestCheckpointId.RequestFiled, "Filed a trivial request",
+                ReadBool(metadata, "request_filed"), null),
+            (ApiSmokeTestCheckpointId.AgentRan, "The agent ran",
+                ReadBool(metadata, "agent_ran"), null),
+            (ApiSmokeTestCheckpointId.ChecksPassed, "Your checks passed",
+                ReadBool(metadata, "checks_passed"), null),
+            (ApiSmokeTestCheckpointId.PullRequest, "A pull request opened",
+                ReadBool(metadata, "pull_request_opened"),
+                ReadInt(metadata, "pull_request") is { } number
+                    ? string.Create(CultureInfo.InvariantCulture, $"Pull request #{number}.")
+                    : null),
+            (ApiSmokeTestCheckpointId.PreviewDeployed, "A preview deployed",
+                ReadBool(metadata, "preview_deployed"),
+                metadata.ContainsKey("preview_has_data") && !ReadBool(metadata, "preview_has_data")
+                    ? "It came up with no data in it."
+                    : null),
+            (ApiSmokeTestCheckpointId.UrlBound, "The preview URL bound back",
+                ReadBool(metadata, "preview_bound"), null),
+        };
+
+        var broken = false;
+
+        return
+        [
+            .. points.Select(point =>
+            {
+                var state = point.Reached
+                    ? ApiSmokeTestCheckpointState.Passed
+                    : broken
+                        ? ApiSmokeTestCheckpointState.Skipped
+                        : ApiSmokeTestCheckpointState.Failed;
+
+                if (!point.Reached)
+                {
+                    broken = true;
+                }
+
+                return new SmokeTestCheckpointResponse
+                {
+                    Id = point.Id,
+                    Label = point.Label,
+                    State = state,
+                    Detail = state == ApiSmokeTestCheckpointState.Skipped ? "Never reached." : point.Detail,
+                };
+            }),
+        ];
     }
 
     private static MergeGateResponse? ReadMergeGate(Repo repo, IReadOnlyList<AuditLog> history)

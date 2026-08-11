@@ -23,10 +23,11 @@ public static class CharterComposition
 {
     /// <summary>Extension method name to the reason the host does not call it.</summary>
     /// <remarks>
-    /// Empty, and worth keeping that way. Every registration Charter ships is composed by the running
-    /// application; the dictionary exists so that the day one of them should not be, the omission is
-    /// written down where a reviewer sees it rather than expressed as a call that quietly is not
-    /// there.
+    /// Worth keeping empty. Every registration Charter ships should be composed by the running
+    /// application; the dictionary exists so that the day one of them is not, the omission is written
+    /// down where a reviewer sees it rather than expressed as a call that quietly is not there. An
+    /// entry whose reason begins <c>TODO: wire</c> is a queue, not a decision — it means the subsystem
+    /// is built and the host call has not landed yet.
     /// </remarks>
     public static IReadOnlyDictionary<string, string> DeliberatelyNotComposed { get; } =
         new Dictionary<string, string>(StringComparer.Ordinal);

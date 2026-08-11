@@ -2,6 +2,7 @@ using Charter.Budgets;
 using Charter.Configuration;
 using Charter.Data;
 using Charter.Domain;
+using Charter.Hosting;
 using Charter.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -89,6 +90,60 @@ public class BudgetWiringTests
             new BudgetOptions());
 
         Assert.NotEqual(BudgetBehaviour.Block, org!.Behaviour);
+    }
+
+    /// <summary>
+    /// The host's projection of section 4.2 beats <c>AddCharterBudgets</c>'s own <c>TryAdd</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the assertion the budget subsystem was missing. <c>AddCharterBudgets</c> has always
+    /// said, in a comment, that a host projecting <c>CharterConfig</c> could register first and win -
+    /// and no host did, so <c>CHARTER_DEFAULT_SESSION_BUDGET_USD</c> and
+    /// <c>CHARTER_DEFAULT_MONTHLY_BUDGET_USD</c> parsed, validated, warned about each other, and
+    /// reached a hardcoded 5 and 500 instead.
+    /// </remarks>
+    [Fact]
+    public void TheConfiguredCapsBeatTheHardcodedOnes()
+    {
+        var config = ConfigTestEnvironment.Valid(
+            ("CHARTER_DEFAULT_SESSION_BUDGET_USD", "12.50"),
+            ("CHARTER_DEFAULT_MONTHLY_BUDGET_USD", "2500"));
+
+        var services = new ServiceCollection();
+        services.AddCharterBudgetLimits(config);
+        Wire(services);
+
+        using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<BudgetOptions>();
+
+        Assert.Equal(12.50m, options.DefaultApprovalThresholdUsd);
+        Assert.Equal(2500m, options.DefaultOrganizationAmountUsd);
+
+        // And they reach the row, not just the options record.
+        var budget = BudgetDefaults.For(
+            Organization.Create("acme", OrganizationMode.Organization),
+            options);
+
+        Assert.Equal(2500m, budget!.Amount);
+        Assert.Equal(12.50m, budget.ApprovalThreshold);
+    }
+
+    /// <summary>An instance that sets nothing gets exactly what section 4.2's table promises.</summary>
+    [Fact]
+    public void TheProjectedDefaultsAreTheOnesSection42Documents()
+    {
+        var options = BudgetLimitsServiceCollectionExtensions.From(ConfigTestEnvironment.Valid());
+
+        Assert.Equal(5.00m, options.DefaultApprovalThresholdUsd);
+        Assert.Equal(100.00m, options.DefaultOrganizationAmountUsd);
+
+        // And the record's own defaults agree with them, so the TryAdd fallback a subsystem graph
+        // gets is the same instance an unconfigured host would have projected. They disagreed until
+        // now - 500 against a documented 100 - which was invisible while nothing projected either.
+        var fallback = new BudgetOptions();
+
+        Assert.Equal(options.DefaultApprovalThresholdUsd, fallback.DefaultApprovalThresholdUsd);
+        Assert.Equal(options.DefaultOrganizationAmountUsd, fallback.DefaultOrganizationAmountUsd);
     }
 
     private static ServiceCollection Services(Action<BudgetOptions>? configure = null)

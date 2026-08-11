@@ -1,6 +1,7 @@
 using Charter.Auth;
 using Charter.Auth.Authorization;
 using Charter.Domain;
+using Charter.VersionControl;
 
 namespace Charter.Tests;
 
@@ -267,6 +268,102 @@ public class AuthSpecApprovalTests
 
         Assert.True(SpecApprovalPolicy
             .CanApprove(approver, AuthTestData.Repo(RepoStatus.Disabled), AuthTestData.Spec(approver))
+            .IsDenied);
+    }
+}
+
+/// <summary>
+/// Section 26.10: repo creation is a privilege escalation, gated three ways.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Only one of the three gates existed. <c>CHARTER_ALLOW_REPO_CREATION</c> parsed and was read by
+/// nothing, the provider's own scope was never consulted, and
+/// <c>MemberCapability.CanCreateRepo</c> was granted to the first admin and then never checked - so
+/// the capability was a row nothing asked about and the instance switch was inert.
+/// </para>
+/// <para>
+/// Every case below asserts the refusal names the gate that stopped it. A dead end that does not say
+/// what to change is how an operator concludes the feature is broken rather than off.
+/// </para>
+/// </remarks>
+public class AuthRepoCreationTests
+{
+    private static VersionControlCapabilities Provider(bool repoCreation)
+        => VersionControlCapabilities.None with { RepoCreation = repoCreation };
+
+    private static MemberSnapshot Admin(params MemberCapability[] capabilities)
+        => AuthTestData.Member(MemberRole.Admin) with { Capabilities = capabilities };
+
+    [Fact]
+    public void AllThreeGatesOpenIsTheOnlyWayThrough()
+    {
+        var decision = RepoCreationPolicy.CanCreateRepo(
+            Admin(MemberCapability.CanCreateRepo),
+            instanceAllows: true,
+            Provider(repoCreation: true));
+
+        Assert.True(decision.IsAllowed);
+
+        // Section 7.3, guardrail 5: the largest escalation Charter grants leaves a trail.
+        Assert.Equal(AuditActions.RepoCreationAuthorized, decision.AuditAction);
+    }
+
+    [Fact]
+    public void TheInstanceSwitchRefusesEvenAFullyCapableAdmin()
+    {
+        var decision = RepoCreationPolicy.CanCreateRepo(
+            Admin(MemberCapability.CanCreateRepo),
+            instanceAllows: false,
+            Provider(repoCreation: true));
+
+        Assert.True(decision.IsDenied);
+        Assert.Contains("CHARTER_ALLOW_REPO_CREATION", decision.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AProviderWithoutTheScopeRefusesRegardlessOfRole()
+    {
+        var decision = RepoCreationPolicy.CanCreateRepo(
+            Admin(MemberCapability.CanCreateRepo),
+            instanceAllows: true,
+            Provider(repoCreation: false));
+
+        Assert.True(decision.IsDenied);
+        Assert.Contains("code host", decision.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheCapabilityIsWhatSeparatesAnAdminFromAnAdminWhoMayCreateRepositories()
+    {
+        // Section 26.10 calls it a distinct capability rather than a role for exactly this reason:
+        // being an admin is not the same as holding it, and it is grantable to an engineer.
+        var withoutIt = RepoCreationPolicy.CanCreateRepo(
+            Admin(),
+            instanceAllows: true,
+            Provider(repoCreation: true));
+
+        Assert.True(withoutIt.IsDenied);
+        Assert.Contains("can_create_repo", withoutIt.Reason, StringComparison.Ordinal);
+
+        var engineer = AuthTestData.Member(MemberRole.Engineer) with
+        {
+            Capabilities = [MemberCapability.CanCreateRepo],
+        };
+
+        Assert.True(RepoCreationPolicy
+            .CanCreateRepo(engineer, instanceAllows: true, Provider(repoCreation: true))
+            .IsAllowed);
+    }
+
+    [Fact]
+    public void ARequesterMayNeverCreateARepository()
+    {
+        // Section 26.10: requesters may propose projects in Plan mode; they may not create them.
+        var requester = AuthTestData.Member(MemberRole.Requester);
+
+        Assert.True(RepoCreationPolicy
+            .CanCreateRepo(requester, instanceAllows: true, Provider(repoCreation: true))
             .IsDenied);
     }
 }

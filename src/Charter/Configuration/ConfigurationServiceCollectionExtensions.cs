@@ -81,6 +81,8 @@ public static class ConfigurationServiceCollectionExtensions
         services.AddSingleton<IPreflightCheck>(provider =>
             new OutboundCallsPreflightCheck(provider.GetRequiredService<CharterConfig>()));
         services.AddSingleton<IPreflightCheck>(provider =>
+            new GitHubAppPreflightCheck(provider.GetRequiredService<CharterConfig>()));
+        services.AddSingleton<IPreflightCheck>(provider =>
             new BaseUrlPreflightCheck(
                 provider.GetRequiredService<CharterConfig>(),
                 provider.GetRequiredService<IHostnameResolver>()));

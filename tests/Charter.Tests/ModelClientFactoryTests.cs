@@ -1,3 +1,4 @@
+using Charter.Logging;
 using Charter.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -67,9 +68,15 @@ public class ModelClientFactoryTests
         using var provider = services.BuildServiceProvider();
 
         var factory = provider.GetRequiredService<IModelClientFactory>();
-        Assert.IsType<AnthropicModelClient>(factory.GetClient(ModelProvider.Anthropic));
-        Assert.IsType<GeminiModelClient>(factory.GetClient(ModelProvider.Google));
-        Assert.IsType<OpenAiCompatibleModelClient>(factory.GetClient(ModelProvider.OpenRouter));
+
+        // Every client is wrapped so section 19's transcript rule holds for whichever provider a
+        // session resolves to; the wrapper still carries the transport that did the work.
+        Assert.IsType<AnthropicModelClient>(Unwrap(factory.GetClient(ModelProvider.Anthropic)));
+        Assert.IsType<GeminiModelClient>(Unwrap(factory.GetClient(ModelProvider.Google)));
+        Assert.IsType<OpenAiCompatibleModelClient>(Unwrap(factory.GetClient(ModelProvider.OpenRouter)));
+
+        // Section 4.2's default: bodies are withheld until an operator asks for them.
+        Assert.False(provider.GetRequiredService<ITranscriptLog>().BodiesIncluded);
 
         Assert.NotNull(provider.GetRequiredService<IModelCostCalculator>());
         Assert.NotNull(provider.GetRequiredService<IModelPriceCatalog>());
@@ -151,4 +158,8 @@ public class ModelClientFactoryTests
                 ModelTestFixtures.Silent<GeminiModelClient>()),
         ]);
     }
+
+    /// <summary>The transport underneath the section 19 transcript wrapper, if there is one.</summary>
+    private static IModelClient Unwrap(IModelClient client)
+        => client is TranscriptLoggingModelClient wrapper ? wrapper.Inner : client;
 }

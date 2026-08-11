@@ -48,7 +48,9 @@ public sealed record GitHubConfig
                     "GITHUB_APP_PRIVATE_KEY",
                     "GITHUB_APP_PRIVATE_KEY must be a PEM private key (a block beginning " +
                     "-----BEGIN RSA PRIVATE KEY-----) or that same PEM base64-encoded. The value is " +
-                    "neither: it contains no PEM header and does not base64-decode to one.");
+                    "neither: it contains no PEM header and does not base64-decode to one. The usual " +
+                    "cause is a key that was base64-encoded twice, or one pasted with the surrounding " +
+                    "quotes included - decode it once and check the first line reads -----BEGIN.");
             }
         }
 

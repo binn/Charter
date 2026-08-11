@@ -12,6 +12,7 @@ import { StatusPill } from '@/components/ui/StatusPill';
 import { TextArea } from '@/components/ui/Field';
 import { FormAlert } from '@/features/auth/AuthPage';
 import { MergeGateCard } from '@/features/repos/MergeGateCard';
+import { RepoAccessCard } from '@/features/repos/RepoAccessCard';
 import { ScopeConfirmation } from '@/features/repos/ScopeConfirmation';
 import { SmokeTestRun } from '@/features/repos/SmokeTestRun';
 import { cn } from '@/lib/cn';
@@ -170,6 +171,11 @@ export function RepoOnboardingPage() {
           <SmokeTestRun outcome={lastSmokeTest ?? null} running={running ?? false} />
 
           {mergeGate ? <MergeGateCard gate={mergeGate} /> : null}
+
+          {/* §7.3: readiness is only half of it. A repository whose smoke test passed is still
+              requestable by nobody until somebody is named here, and this is the only screen that
+              says who. */}
+          <RepoAccessCard repoId={repo.id} repoName={repo.fullName} />
 
           <Card className="px-4 py-5 sm:px-5">
             <SectionLabel>The primer</SectionLabel>

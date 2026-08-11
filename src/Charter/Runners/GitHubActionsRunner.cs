@@ -21,11 +21,26 @@ namespace Charter.Runners;
 /// exchanges a per-repository bearer secret for a short-TTL installation token at
 /// <c>{callback_url}/credentials</c> instead (sections 7.4, 33.5).
 /// </para>
+/// <para>
+/// <see cref="SessionToken"/> is not an exception to that. It is not a credential: it grants nothing
+/// without <c>secrets.CHARTER_SESSION_SECRET</c>, which is not readable from a payload. What it does
+/// is name the one session this run is allowed to exchange for, which a per-repository secret cannot.
+/// </para>
 /// </remarks>
 public sealed record GitHubActionsClientPayload
 {
     [JsonPropertyName("session_id")]
     public required string SessionId { get; init; }
+
+    /// <summary>
+    /// The session-scoping half of the credential exchange (section 7.4).
+    /// </summary>
+    /// <remarks>
+    /// Minted per session by <see cref="RunnerSessionTokens.DispatchTokenFor"/> and delivered only in
+    /// the dispatch for that session, so a run started for one session has no way to produce another's.
+    /// </remarks>
+    [JsonPropertyName("session_token")]
+    public required string SessionToken { get; init; }
 
     /// <summary>
     /// The base the job calls back on. The workflow appends <c>/credentials</c>, <c>/events</c> and
@@ -169,11 +184,22 @@ public sealed class GitHubActionsRunner : IAgentRunner
     private readonly IGitHubRepositoryDispatcher _github;
     private readonly GitHubActionsRunnerOptions _options;
     private readonly ILogger<GitHubActionsRunner> _logger;
+    private readonly RunnerSessionTokens? _tokens;
 
+    /// <param name="github">The dispatch seam.</param>
+    /// <param name="options">What this backend advertises and which image it asks for.</param>
+    /// <param name="logger">Section 19.</param>
+    /// <param name="tokens">
+    /// Mints the per-session dispatch token the workflow forwards to the credential exchange. Optional
+    /// in the same way <c>DockerRunner</c>'s is — <c>AddCharterRunners</c> runs before
+    /// <c>AddCharterOrchestration</c> registers it — and a dispatch without it fails loudly rather
+    /// than sending a payload the exchange will refuse.
+    /// </param>
     public GitHubActionsRunner(
         IGitHubRepositoryDispatcher github,
         GitHubActionsRunnerOptions options,
-        ILogger<GitHubActionsRunner> logger)
+        ILogger<GitHubActionsRunner> logger,
+        RunnerSessionTokens? tokens = null)
     {
         ArgumentNullException.ThrowIfNull(github);
         ArgumentNullException.ThrowIfNull(options);
@@ -182,6 +208,7 @@ public sealed class GitHubActionsRunner : IAgentRunner
         _github = github;
         _options = options;
         _logger = logger;
+        _tokens = tokens;
     }
 
     /// <inheritdoc />
@@ -201,7 +228,15 @@ public sealed class GitHubActionsRunner : IAgentRunner
     {
         ArgumentNullException.ThrowIfNull(dispatch);
 
-        var payload = BuildPayload(dispatch, _options);
+        if (_tokens is null)
+        {
+            return RunnerDispatchResult.Refused(
+                "The GitHub Actions runner cannot dispatch a session because no signing key is "
+                + "registered, so the per-session token the credential exchange requires cannot be "
+                + "minted. Set CHARTER_SECRET_KEY.");
+        }
+
+        var payload = BuildPayload(dispatch, _options, _tokens.DispatchTokenFor(dispatch.SessionId));
 
         await _github.RepositoryDispatchAsync(
             dispatch.RepoFullName,
@@ -220,7 +255,25 @@ public sealed class GitHubActionsRunner : IAgentRunner
         return RunnerDispatchResult.Ok();
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Section 11: cancel the workflow run this session started, and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The repository is read out of the reference, and the reference reached the journal from the
+    /// execution plane, so it is checked against the repository the session actually belongs to before
+    /// a single call is made. Without that check, cancelling one session issued a write against
+    /// whatever repository the run URL named — with the instance's own credential, against any other
+    /// repository connected to it — and reported success while the real run kept running and kept
+    /// spending. <see cref="RunnerRunReference"/> now refuses such a URL at the callback, but rows
+    /// written before it existed are still in the journal, so this is the gate that has to hold.
+    /// </para>
+    /// <para>
+    /// Every path that does not end in GitHub confirming a cancellation returns
+    /// <see cref="RunnerCancelResult.NothingToStop"/>. A cancel that reports success for work that is
+    /// still running is the more dangerous half of getting this wrong.
+    /// </para>
+    /// </remarks>
     public async Task<RunnerCancelResult> CancelAsync(
         RunnerCancellation cancellation,
         CancellationToken cancellationToken = default)
@@ -234,6 +287,23 @@ public sealed class GitHubActionsRunner : IAgentRunner
                 + "The session is settled here and the run, if it starts, will be rejected.");
         }
 
+        if (string.IsNullOrWhiteSpace(cancellation.RepoFullName)
+            || !string.Equals(repo, cancellation.RepoFullName, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(
+                "Refusing to cancel session {SessionId} through a run reference naming {NamedRepo}: the "
+                + "session belongs to {SessionRepo}. No call was made to GitHub.",
+                cancellation.SessionId,
+                repo,
+                cancellation.RepoFullName ?? "(unknown)");
+
+            return RunnerCancelResult.NothingToStop(
+                "The run reference recorded for this session names a repository the session does not "
+                + "belong to, so Charter will not act on it. The session is settled here, but if a "
+                + "workflow run is still going it has not been stopped — check the repository's Actions "
+                + "tab and cancel it there.");
+        }
+
         var cancelled = await _github.CancelWorkflowRunAsync(repo, runId, cancellationToken);
 
         return cancelled
@@ -242,16 +312,25 @@ public sealed class GitHubActionsRunner : IAgentRunner
     }
 
     /// <summary>Builds the client payload. Separated so tests can assert the contract without HTTP.</summary>
+    /// <param name="dispatch">The session being dispatched.</param>
+    /// <param name="options">Backend defaults for image and timeout.</param>
+    /// <param name="sessionToken">
+    /// <see cref="RunnerSessionTokens.DispatchTokenFor"/> for this session. The only thing in the
+    /// payload that is session-scoped rather than repository-scoped.
+    /// </param>
     public static GitHubActionsClientPayload BuildPayload(
         RunnerDispatch dispatch,
-        GitHubActionsRunnerOptions options)
+        GitHubActionsRunnerOptions options,
+        string sessionToken)
     {
         ArgumentNullException.ThrowIfNull(dispatch);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionToken);
 
         return new GitHubActionsClientPayload
         {
             SessionId = dispatch.SessionId.ToString(),
+            SessionToken = sessionToken,
             CallbackUrl = dispatch.CallbackUrl.ToString().TrimEnd('/'),
             Repo = dispatch.RepoFullName,
             BaseBranch = dispatch.BaseBranch,

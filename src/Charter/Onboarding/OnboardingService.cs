@@ -279,6 +279,12 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
                     ["pull_request"] = pullRequest?.Number.ToString(),
                     ["allowed_paths"] = proposal.Allow.Count.ToString(),
                     ["refused_paths"] = proposal.Refusals.Count.ToString(),
+
+                    // Section 9 step 3: the proposal is what an engineer edits before the repository
+                    // is requestable, so it has to outlive the run that produced it. Facts only —
+                    // paths, globs, command lines, stack names — because section 19 keeps agent
+                    // prose out of the audit log. See ReconSnapshot.
+                    ["recon"] = ReconSnapshot.From(report, proposal).ToJson(),
                 },
             },
             cancellationToken);
@@ -448,6 +454,17 @@ public sealed class OnboardingService : IOnboardingRunCallbacks
                 {
                     ["pull_request"] = report.PullRequestNumber?.ToString(),
                     ["preview_bound"] = report.PreviewUrlBound.ToString(),
+
+                    // Section 9: the smoke test is the one thing that exercises all six integration
+                    // points at once, so all six are recorded individually. A boolean tells an
+                    // engineer that it failed; these tell them *where*, which is the difference
+                    // between a report and a bisect across six subsystems.
+                    ["request_filed"] = report.RequestFiled.ToString(),
+                    ["agent_ran"] = report.AgentRan.ToString(),
+                    ["checks_passed"] = report.ChecksPassed.ToString(),
+                    ["pull_request_opened"] = report.PullRequestOpened.ToString(),
+                    ["preview_deployed"] = report.PreviewDeployed.ToString(),
+                    ["preview_has_data"] = report.PreviewHasData.ToString(),
                 },
             },
             cancellationToken);

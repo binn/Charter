@@ -114,6 +114,10 @@ return result.State switch
     ShimSessionState.ScopeViolation => 5,
     ShimSessionState.InstallFailed => 6,
     ShimSessionState.PublishFailed => 7,
+
+    // Section 15: the agent generated a destructive migration and the session stopped. Distinct from
+    // a failed run because it needs an engineer to author a migration, not an operator to fix a host.
+    ShimSessionState.DestructiveMigration => 8,
     _ => 1,
 };
 

@@ -9,10 +9,10 @@ using Charter.Auth;
 using Charter.Configuration;
 using Charter.Data;
 using Charter.Hubs;
-using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Charter.Tests;

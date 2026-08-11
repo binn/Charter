@@ -1,5 +1,6 @@
 import type {
   AcceptInvitationBody,
+  AuditLog,
   AuthProviders,
   CompleteSetupBody,
   ConfirmScopeBody,
@@ -9,12 +10,15 @@ import type {
   ForgotPasswordAcknowledgement,
   Id,
   InstanceInfo,
+  Member,
   OnboardingAction,
   PairingToken,
   PendingApproval,
   Project,
   PublishPrimerBody,
   Repo,
+  RepoAccess,
+  RepoAccessGrantBody,
   RepoOnboarding,
   RequestDetail,
   RequestStreamEvent,
@@ -23,6 +27,7 @@ import type {
   RunnersView,
   SendRefinementMessageBody,
   Session,
+  SetMemberRoleBody,
   SetupChecklist,
   SetupStatus,
   SignInBody,
@@ -37,9 +42,14 @@ import type {
 /**
  * Every server call the SPA makes, in one interface.
  *
- * The backend does not exist yet, so the app runs against `mockApi` (see `api/mock/mockApi.ts`).
- * Swapping to the real thing is changing which implementation `resolveApi()` returns — no component
- * imports either implementation directly, they all take `CharterApi` from context.
+ * Every method here is backed by a route on a running instance. The app still runs against
+ * `mockApi` (see `api/mock/mockApi.ts`) unless it is built with `VITE_CHARTER_LIVE_API=true`, which
+ * is what keeps the fixtures out of the production bundle entirely — no component imports either
+ * implementation directly, they all take `CharterApi` from context.
+ *
+ * **Keep the two in step.** The mock decides what a viewer may see exactly as the server does, so a
+ * refusal is a refusal in both. A mock that answered something the API withholds would be the same
+ * lie as a type nothing sends.
  *
  * The endpoint each method calls is written above it. That list *is* the request half of the
  * contract; `api/types.ts` is the response half.
@@ -229,6 +239,33 @@ export interface CharterApi {
 
   /** POST /api/repos/{id}/primer — §9 step 5, publish the primer the engineer edited. */
   publishPrimer(id: Id, body: PublishPrimerBody, signal?: AbortSignal): Promise<OnboardingAction>;
+
+  /**
+   * GET /api/repos/{id}/access — who may file against this repository (§7.3, guardrail 1).
+   *
+   * Deny by default: a newly connected repository comes back with one grant, the person who
+   * connected it, and everybody else has to be added deliberately.
+   */
+  getRepoAccess(id: Id, signal?: AbortSignal): Promise<RepoAccess>;
+
+  /** POST /api/repos/{id}/access — grant or withhold, one row at a time. Returns the new list. */
+  setRepoAccess(id: Id, body: RepoAccessGrantBody, signal?: AbortSignal): Promise<RepoAccess>;
+
+  /* ---- Members, roles and the audit log (§7.1) ---------------------------- */
+
+  /** GET /api/members — administrators only; everybody else is refused, not filtered. */
+  listMembers(signal?: AbortSignal): Promise<Member[]>;
+
+  /**
+   * POST /api/members/{id}/roles — add or remove one role.
+   *
+   * Refuses two things with a 409 and a sentence: leaving somebody with no role at all, and removing
+   * the last administrator on the instance.
+   */
+  setMemberRole(id: Id, body: SetMemberRoleBody, signal?: AbortSignal): Promise<Member>;
+
+  /** GET /api/audit — the most recent entries, newest first. Administrators only (§7.1). */
+  getAuditLog(signal?: AbortSignal): Promise<AuditLog>;
 
   /* ---- Admin setup checklist (§30.2) -------------------------------------- */
 
@@ -512,12 +549,14 @@ export const httpApi: CharterApi = {
       (response) => response.repos,
     ),
 
+  // `POST /api/repos` answers 201 with the whole wizard state, because connecting is step one of
+  // six and the engineer is going straight to it. The caller wants the repository it just made.
   connectRepo: (body, signal) =>
-    request<Repo>('/api/repos', {
+    request<RepoOnboarding>('/api/repos', {
       method: 'POST',
       body: JSON.stringify(body),
       signal: signal ?? null,
-    }),
+    }).then((response) => response.repo),
 
   getRepoOnboarding: (id, signal) =>
     request<RepoOnboarding>(`/api/repos/${encodeURIComponent(id)}`, { signal: signal ?? null }),
@@ -546,6 +585,31 @@ export const httpApi: CharterApi = {
       body: JSON.stringify(body),
       signal: signal ?? null,
     }),
+
+  getRepoAccess: (id, signal) =>
+    request<RepoAccess>(`/api/repos/${encodeURIComponent(id)}/access`, { signal: signal ?? null }),
+
+  setRepoAccess: (id, body, signal) =>
+    request<RepoAccess>(`/api/repos/${encodeURIComponent(id)}/access`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal: signal ?? null,
+    }),
+
+  // `GET /api/members` answers `{ members: [...] }`; the list is what every caller wants.
+  listMembers: (signal) =>
+    request<{ members: Member[] }>('/api/members', { signal: signal ?? null }).then(
+      (response) => response.members,
+    ),
+
+  setMemberRole: (id, body, signal) =>
+    request<Member>(`/api/members/${encodeURIComponent(id)}/roles`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal: signal ?? null,
+    }),
+
+  getAuditLog: (signal) => request<AuditLog>('/api/audit', { signal: signal ?? null }),
 
   getSetupChecklist: (signal) =>
     request<SetupChecklist | null>('/api/setup/checklist', { signal: signal ?? null }),

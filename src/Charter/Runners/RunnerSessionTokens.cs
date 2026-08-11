@@ -16,12 +16,23 @@ namespace Charter.Runners;
 /// <para>
 /// The <em>session secret</em> is per repository and long-lived — Charter writes it once as a
 /// repository secret during onboarding, and the shipped workflow reads it from
-/// <c>secrets.CHARTER_SESSION_SECRET</c>. On its own it grants nothing except the right to ask for
-/// scoped credentials for a session that is genuinely dispatched and genuinely running.
+/// <c>secrets.CHARTER_SESSION_SECRET</c>. It proves one thing: the caller is a workflow run inside
+/// that repository. It deliberately proves nothing about <em>which</em> session is calling, because
+/// every run in the repository holds the same value.
+/// </para>
+/// <para>
+/// The <em>dispatch token</em> is what makes the exchange session-scoped. It is minted per session and
+/// travels in the dispatch payload for that session alone, so a run started for one session cannot
+/// produce another session's. Both are required at the exchange: the repository secret is the
+/// authentication factor and never appears in a payload anybody with repository read access can see;
+/// the dispatch token is the binding factor and grants nothing without the secret. Without the second
+/// factor, any workflow in the repository could mint credentials — and a 12-hour event token — for
+/// every other live session in it, which is the whole of what sections 7.4 and 16 are trying to
+/// prevent.
 /// </para>
 /// <para>
 /// The <em>event token</em> is per session and short-lived, and it is what the workflow uses for every
-/// subsequent call. Neither is a GitHub token, neither is a model credential, and neither can be
+/// subsequent call. None of the three is a GitHub token, none is a model credential, and none can be
 /// exchanged for a refresh token (section 20b.2).
 /// </para>
 /// </remarks>
@@ -58,6 +69,22 @@ public sealed class RunnerSessionTokens
     /// <summary>Constant-time check of a presented session secret.</summary>
     public bool ValidateSessionSecret(string repoFullName, string? presented)
         => presented is not null && FixedTimeEquals(SessionSecretFor(repoFullName), presented);
+
+    /// <summary>
+    /// The per-session half of the credential exchange, handed only to the run started for it.
+    /// </summary>
+    /// <remarks>
+    /// Signed rather than stored, for the reason every token here is: dispatch must not need a write
+    /// to hand a runner an identity, and a control plane that restarted mid-session must be able to
+    /// validate one it has no memory of issuing (section 2.3). It carries no expiry of its own —
+    /// the liveness gate on the exchange is the bound, and it is a tighter one than a clock: the token
+    /// stops working the moment its session is cancelled or ends.
+    /// </remarks>
+    public string DispatchTokenFor(Guid sessionId) => Sign($"session-dispatch:v1:{sessionId:D}");
+
+    /// <summary>Constant-time check that a presented dispatch token names this session.</summary>
+    public bool ValidateDispatchToken(Guid sessionId, string? presented)
+        => presented is not null && FixedTimeEquals(DispatchTokenFor(sessionId), presented);
 
     /// <summary>Mints the per-session token every later callback authenticates with.</summary>
     public string IssueEventToken(Guid sessionId, DateTimeOffset? now = null)

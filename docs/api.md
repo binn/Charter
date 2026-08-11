@@ -172,6 +172,7 @@ Panes 2 and 3, the four post-hoc session actions, runner administration, and set
 |---|---|
 | `GET /api/requests/{id}/transcript` | Pane 2. Query `cursor`, `aroundSeq`, `limit` — mutually exclusive. Pages backwards from the tail; `aroundSeq` centres the window on one event so a pane-1 milestone can jump to event 12 of 12,480. Returns `{ events, nextCursor, totalCount }`. **`403` without repository read access.** |
 | `GET /api/requests/{id}/changes/{path}` | Pane 3. One file's before and after for the diff viewer, plus hunks, a resolved language id, and `binary` / `truncated` flags. Per file rather than bundled into the detail body, because a session can touch a hundred files. **`403` without repository read access**, `503` when this instance has no version-control client wired. |
+| `GET /api/requests/{id}/blobs/{key}` | One stored object — the full text behind a transcript event that was offloaded to object storage, whose payload carries the key as `{property}_ref`. Served as an attachment with `nosniff`. **`403` without repository read access**, the same check pane 2 makes; `404` for a key belonging to another session, which is indistinguishable from one that does not exist; `503` when this instance keeps everything in Postgres. There is no public or presigned URL alternative — see [security.md](security.md). |
 | `POST /api/requests/{id}/session/approve` | Approves a session after the fact. `204`. |
 | `POST /api/requests/{id}/session/steer` | Body `{ instruction }`. Continues the existing session — same branch, same thread. Intake-limited. |
 | `POST /api/requests/{id}/session/revise` | Body `{ revisedSpecMd }`. Forks the spec onto a fresh session on the same branch. Sent in full, because forking a spec means replacing it. Intake-limited. |
@@ -180,6 +181,81 @@ Panes 2 and 3, the four post-hoc session actions, runner administration, and set
 | `POST /api/setup/checklist/dismiss` | Allowed only once every task is done. |
 | `GET /api/settings/email` | Whether mail is configured, and the recent delivery log. Admin only. |
 | `POST /api/settings/email/test` | Body `{ to }`. Sends through the real send path. A mail server that refused the message is a `200` carrying `sent: false` and the server's own words — the only non-2xx here is "you are not an administrator". Intake-limited. |
+
+## Repository onboarding
+
+The five steps of the onboarding wizard and the gate that ends it. Every route here is engineer or
+admin only, and refuses everybody else outright — a requester never sees a repository name, and the
+way that stays true is that these endpoints say no rather than that a projection hides fields.
+
+**Nothing here makes a repository requestable.** There is no route that sets `ready`: the only path
+to it is a passing smoke test reported by the execution plane, because readiness is earned.
+
+| Route | What it does |
+|---|---|
+| `GET /api/repos` | Every connected repository, with the onboarding state each has reached. |
+| `POST /api/repos` | Connects one. Body `{ fullName, installationId, baseBranch? }`. Admin only. Returns `201` with the whole wizard state — the repository, its steps, and anything the previous runs recorded. The one scope grant it writes is for the person who connected it; everybody else is added deliberately. |
+| `GET /api/repos/{id}` | Where this repository is: `steps`, `scopeConfigPullRequest`, `lastSmokeTest`, `mergeGate`, `proposedScope`, `primerDraftMd`. Each of the last four is **absent until the run that produces it has happened**. |
+| `POST /api/repos/{id}/recon` | Queues the read-only recon run. Intake-limited. |
+| `POST /api/repos/{id}/scope` | Confirms the scope. Body `{ allow?, deny? }`; sending neither accepts what recon proposed. Opens `.charter/config.yml` as a pull request **and queues the smoke test**. Whatever arrives is filtered through the deny-by-default floor again, so a client cannot widen scope past it. Intake-limited. |
+| `GET /api/repos/{id}/smoke-test` | The last run. A read, never a trigger: a `GET` that could spend money on a refresh would be a mistake. Answers `null` — not `404` — when nothing has run, because the repository plainly exists and the run is a step still to do. |
+| `POST /api/repos/{id}/primer` | Publishes the primer the engineer edited. Body `{ markdown }`. |
+
+`proposedScope` is what recon found and proposed: the detected stack, the build and test commands, any
+`CLAUDE.md` / `AGENTS.md` it imported, and one entry per path with `allowed`, an optional `reason`,
+and `locked` on the deny-by-default floor. A locked entry is rendered as a denial with its reason and
+never as a toggle, because whatever the client sends back is filtered through that floor anyway.
+
+`lastSmokeTest.checkpoints` carries all six integration points — `request_filed`, `agent_ran`,
+`checks_passed`, `pull_request`, `preview_deployed`, `url_bound` — each `passed`, `failed` or
+`skipped`. Everything after the first failure is `skipped`: a preview that was never asked to deploy
+did not break, and saying it did sends an engineer to the wrong subsystem. `warnings` carries the
+empty-preview caveat, which warns and never blocks.
+
+`primerDraftMd` is what the primer editor opens with: the published primer once there is one, and
+before that a draft scaffolded from what recon verified. It is deliberately a scaffold with headings
+rather than finished prose — the sentences that matter in a primer are the domain ones only your team
+knows, and a draft that reads as finished gets published unedited.
+
+## Repository access
+
+Who may file against a repository. **Deny by default**: a newly connected repository is requestable by
+nobody, and the absence of a grant *is* the refusal. There is no synthesised "denied" row for everyone
+without a grant, because that would be a list of your whole organisation and would read as a policy
+rather than as the default.
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET /api/repos/{id}/access` | Engineer or admin | `{ grants, requesterVisible }`. Each grant names either one member — with their display name and email, so the screen is auditable rather than a column of ids — or one role. `requesterVisible` is carried beside them because the two conditions are independent: a repository can be fully granted and still invisible because its smoke test has not passed. |
+| `POST /api/repos/{id}/access` | Admin | Body `{ memberId? , role?, canRequest }`, **exactly one** of `memberId` and `role`. Returns the new list. `canRequest: false` writes a withholding row rather than deleting the grant, and a withholding row beats a granting one at the same level — which is what makes "why can this person not file?" answerable. |
+
+An engineer configures a repository; only an admin decides who may ask it for things.
+
+## Members, roles and the audit log
+
+| Route | What it does |
+|---|---|
+| `GET /api/members` | Everybody in the organisation with their roles, whether they may create repositories, and which one is you. Admin only. |
+| `POST /api/members/{id}/roles` | Body `{ role, granted }` — one role per call, never a whole set, because a set replaces state the caller read minutes ago and a single verb is what the audit log records. Writes `member.role.granted` or `member.role.revoked` naming you. Refuses with `409` and a sentence in two cases: leaving somebody with no role at all, and removing the last administrator on the instance. |
+| `GET /api/audit` | The most recent entries, newest first, each with the dotted verb, a plain-English sentence, the acting human, and short metadata. Admin only. An entry with no actor is Charter itself and is shown rather than hidden — those are the ones worth being able to find. |
+
+Roles are additive: a member may hold several, and granting one never removes another.
+
+## Model credentials
+
+| Route | Who | What it does |
+|---|---|---|
+| `GET /api/credentials` | Engineer or admin | Every credential this instance can authenticate with: stored grants for the organisation, plus the instance-level `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` marked `source: "environment"`. Also carries `sharedPoolAllowed` and, per configured control-plane model, whether anything present can serve it and the remedy if not. |
+| `POST /api/credentials` | Engineer or admin | Body `{ kind, secret, scope?, baseUrl?, priority?, maxSessionsPerDayFromOthers? }`. `201`. The credential is owned by the caller, always — an administrator cannot upload somebody else's key on their behalf, because §20b.5's consent mechanics rest on the owner having offered it. `scope: "shared_pool"` returns a `warning` carrying the terms-of-service caution. |
+| `POST /api/credentials/{id}/revoke` | Engineer or admin | `204`. Immediate: the next resolution skips it. Revoking leaves the row, so the credential list still shows what happened. |
+
+**No route returns a secret, at any point, including immediately after creating one.** There is no
+property on any response that could carry one and there is no reveal endpoint — the list shows
+provider, owner, scope, status, why it was marked invalid, and when it was last used. Instance-level
+entries have no owner and cannot be revoked over HTTP; they are environment variables, and they change
+when the deployment does.
+
+Both writes are audited, as `credential.linked` and `credential.revoked`.
 
 ## Runner registration
 
@@ -242,9 +318,9 @@ short-lived event token that call returns.
 
 | Route | What it does |
 |---|---|
-| `POST …/credentials` | Exchanges the repository session secret for scoped, short-TTL credentials. Returns `{ github_token, model_api_key, event_token }`. Gated on the session being genuinely dispatched and not terminal, so a leaked repository secret cannot mint an installation token whenever its holder likes. |
-| `POST …/events` | One streamed event: `{ session_id, type, payload, index? }`. Returns `{ seq, appended }`. |
-| `POST …/result` | The terminal report, always sent, even on failure: `{ session_id, state, run_url?, message? }`. |
+| `POST …/credentials` | Exchanges the repository session secret **and this session's dispatch token** for scoped, short-TTL credentials. Body `{ session_id, session_token, run_url? }`, with the secret in `Authorization`. Returns `{ github_token, model_api_key, event_token }`. Both factors are required: the secret is one value per repository, so on its own it authenticates a repository rather than a session, and `session_token` — minted per session and sent only in that session's dispatch payload — is what says which session is asking. A request without it is refused `403`. Gated further on the session genuinely running: a session that has ended or has a cancel in flight answers `404`, and one no backend has dispatched answers `409`. `run_url` is checked against the repository the session belongs to and a mismatch is refused `403` with nothing minted — the value comes from inside the sandbox, and Charter later reads a repository back out of it. |
+| `POST …/events` | One streamed event: `{ session_id, type, payload, index? }`. Returns `{ seq, appended }`. A `session_started` event whose payload carries a `run_url` is subject to the same check as the exchange and is refused `403` on a mismatch. |
+| `POST …/result` | The terminal report, always sent, even on failure: `{ session_id, state, run_url?, message? }`. A `run_url` that does not pass the check is dropped and the result still stands — refusing a terminal report would leave the session running in Charter's eyes, which is worse than a missing link. |
 | `GET …/spec` | The approved spec as `text/markdown`. This is what the agent is told — a model-authored, human-approved document, never the requester's own words. |
 
 Every write is idempotent. A runner that loses its connection retries, and a control plane that
@@ -330,21 +406,29 @@ The hub is mapped and publishes. **The bundled web app does not subscribe to it 
 Stated plainly, because a docs set that oversells gets discovered and costs more trust than the
 limitation itself. All of the following are true of the code as it stands.
 
-- **There are no sign-in routes.** The cookie scheme, the password hasher, the identity provider
-  registry, and the OAuth exchange are all built and registered, but no endpoint issues a cookie. The
-  OAuth callback URI `/api/auth/{provider}/callback` is constructed by the provider and is not mapped.
-  Everything under `/api` that requires authorisation therefore answers `401` on a running instance.
-- **There is no route that redeems the setup token.** Setup mode works, the token is generated and
-  printed, and the service that redeems it exists and is registered — but `/api/setup` maps only the
-  admin checklist, which itself requires an authenticated admin.
-- **There are no repository connection or onboarding routes.** The onboarding flow — connect, recon,
-  scope confirmation, smoke test, primer, merge-gate check — is implemented as a service and a state
-  machine with an audit trail, and nothing HTTP reaches it.
-- **The bundled web app runs against an in-memory mock** unless it is built with
-  `VITE_CHARTER_LIVE_API=true`. The published container image does not set it, so the UI in that image
-  is a demonstration of the interface rather than a client of the API described on this page.
-- **`GET /api/settings/email` and the checklist are the only settings routes.** There is no HTTP
-  surface for members, roles, budgets, model credentials, or repository scopes.
+- **OAuth sign-in is not mapped.** Password sign-in, sign-out, invitations and password reset are all
+  mapped under `/api/auth`, and `/api/setup` redeems the first-run token — you can claim an instance
+  and sign into it. What is missing is the OAuth half: the exchange is built and registered, but the
+  callback URI `/api/auth/{provider}/callback` that the provider constructs is not mapped, so any
+  identity provider other than a password is unreachable.
+- **Recon and the smoke test have no execution plane on a single-container instance.** The onboarding
+  routes above are all mapped, and the wizard reads back everything a completed run recorded — but
+  the two runs themselves are dispatched as jobs, and a job needs a runner. Until one is registered,
+  `POST /api/repos/{id}/recon` queues work nothing claims, so `proposedScope`, `primerDraftMd` and
+  `lastSmokeTest` stay absent and the repository stays requestable by nobody. That is the guardrail
+  working, not a bug, but it is the wall you will hit first.
+- **Re-confirming a scope does not update `proposedScope`.** The proposal is recorded when recon
+  reports, and confirming the scope opens a new commit on the pull request rather than rewriting what
+  the wizard shows. The pull request is the source of truth for what was agreed; the wizard is showing
+  you what recon suggested.
+- **The mock survives only in a development build.** The container image sets
+  `VITE_CHARTER_LIVE_API=true` before bundling, so the shipped UI calls the API described on this page
+  and the in-memory mock is compiled out entirely. Running the Vite dev server without that variable
+  still gets you the mock.
+- **There is no HTTP surface for budgets.** Members, roles, repository scopes, the audit log and model
+  credentials all have one now; budgets are still configured through the environment and the database.
+- **Model credentials have routes but no screen.** `/api/credentials` works and is tested; the web app
+  does not call it yet, so linking a credential today means `curl` with a session cookie.
 
 Beyond the missing routes, the loop itself stops short of a preview on a real instance: nothing pushes
 the session branch, so no change request is opened and no deployment report has a commit to bind to.

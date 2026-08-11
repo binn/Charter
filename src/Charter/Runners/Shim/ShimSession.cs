@@ -184,6 +184,12 @@ public sealed record ShimRunRequest
     public MigrationPolicy? MigrationPolicy { get; init; }
 
     /// <summary>
+    /// Section 8's named validation commands. Null reads them from the checkout's
+    /// <c>.charter/config.yml</c>, which is where they live and what every backend gets.
+    /// </summary>
+    public IReadOnlyList<ShimCheck>? Checks { get; init; }
+
+    /// <summary>
     /// Environment for the agent process — the credential variables the adapter's <c>auth</c> block
     /// names, and nothing else. The runner never sees the control plane's environment (section 7.4).
     /// </summary>
@@ -299,6 +305,36 @@ public sealed class ShimSession
             }, cancellationToken);
 
             return new ShimResult(ShimSessionState.ToolchainMissing, toolchain.Message);
+        }
+
+        // 1b. The repository's own checks (section 8), and whether this image can run them at all.
+        // Read here rather than after the agent because the answer to "this image has no .NET" must
+        // arrive before a model spends an hour producing work that could never have been validated.
+        var checkWarnings = new List<string>();
+        var checks = request.Checks ?? ShimChecks.Load(request.WorkspaceRoot, checkWarnings);
+
+        foreach (var warning in checkWarnings)
+        {
+            await PublishAsync(translator, EventTypes.Error, new JsonObject
+            {
+                ["reason"] = "charter_config_warning",
+                ["message"] = warning,
+            }, cancellationToken);
+        }
+
+        var checkToolchains = ShimChecks.VerifyToolchains(checks, request.ProbedCapabilities, request.RunnerImage);
+
+        if (!checkToolchains.Satisfied)
+        {
+            await PublishAsync(translator, EventTypes.Error, new JsonObject
+            {
+                ["reason"] = "toolchain_missing",
+                ["stage"] = "checks",
+                ["missing"] = ToArray(checkToolchains.Missing),
+                ["message"] = checkToolchains.Message,
+            }, cancellationToken);
+
+            return new ShimResult(ShimSessionState.ToolchainMissing, checkToolchains.Message);
         }
 
         // 2. Section 16.2: lockfile-only, install scripts off unless this repository opted in.
@@ -459,7 +495,11 @@ public sealed class ShimSession
                 agent.ExitCode);
         }
 
-        // 5. Commit, push, and say so. Without this step nothing the agent did ever leaves the
+        // 5. Section 8: the repository's own checks, against the work the agent just did. A failing
+        // one is reported and does not stop the push — see ShimCheckRunner for why.
+        var checkOutcomes = await RunChecksAsync(request, checks, translator, cancellationToken);
+
+        // 6. Commit, push, and say so. Without this step nothing the agent did ever leaves the
         // sandbox: ChangeRequestPublisher reads `branch_pushed` and there is no other producer of it.
         var published = request.Publish
             ? await CommitAndPushAsync(request, scope, translator, prompt, cancellationToken)
@@ -480,9 +520,68 @@ public sealed class ShimSession
             ["state"] = "completed",
             ["malformed_lines"] = translator.MalformedLines,
             ["published"] = published is { Outcome: ShimPublishOutcome.Published },
+
+            // Section 14 needs both numbers: what was verified, and what could not be. A session that
+            // completed with a red check completed — and the recap must be able to say so.
+            ["checks_passed"] = checkOutcomes.Count(outcome => outcome.Passed),
+            ["checks_failed"] = checkOutcomes.Count(outcome => !outcome.Passed),
         }, CancellationToken.None);
 
         return new ShimResult(ShimSessionState.Completed, published?.Message);
+    }
+
+    /// <summary>
+    /// Runs the repository's checks and puts each outcome on the transcript.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Skipped when the agent changed nothing, because there is then nothing to validate and a full
+    /// test run against an untouched tree is minutes of a requester's time spent proving something
+    /// nobody asked. Section 6's <c>NoChangesNeeded</c> is the outcome in that case, and it is not
+    /// improved by a green build.
+    /// </para>
+    /// <para>
+    /// The event is <see cref="EventTypes.CheckResult"/> with a <c>passed</c> boolean, which is the
+    /// shape the transcript already reads to colour a row and the change request already reads to
+    /// decide what to say about the change (sections 11, 12).
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<ShimCheckOutcome>> RunChecksAsync(
+        ShimRunRequest request,
+        IReadOnlyList<ShimCheck> checks,
+        ShimEventTranslator translator,
+        CancellationToken cancellationToken)
+    {
+        if (checks.Count == 0 || (request.Publish && !await HasChangesAsync(request, cancellationToken)))
+        {
+            return [];
+        }
+
+        return await new ShimCheckRunner(_processes).RunAsync(
+            checks,
+            request.WorkspaceRoot,
+            async (outcome, token) => await PublishAsync(translator, EventTypes.CheckResult, new JsonObject
+            {
+                ["check"] = outcome.Check.Name,
+                ["command"] = outcome.Check.Display,
+                ["passed"] = outcome.Passed,
+                ["status"] = outcome.Status.ToString().ToLowerInvariant(),
+                ["exit_code"] = outcome.ExitCode,
+                ["duration_ms"] = outcome.DurationMs,
+                ["summary"] = outcome.Summary,
+                ["output"] = outcome.Detail,
+            }, token),
+            cancellationToken);
+    }
+
+    /// <summary>True when there is anything in the workspace worth validating.</summary>
+    private async Task<bool> HasChangesAsync(ShimRunRequest request, CancellationToken cancellationToken)
+    {
+        var status = await new ShimGit(_processes, request.WorkspaceRoot)
+            .RunAsync(["status", "--porcelain"], null, cancellationToken);
+
+        // A workspace git cannot read is not evidence that nothing changed, so the checks run.
+        return !status.Succeeded || status.Output.Trim().Length > 0;
     }
 
     /// <summary>

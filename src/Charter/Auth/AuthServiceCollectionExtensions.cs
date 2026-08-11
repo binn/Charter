@@ -2,7 +2,9 @@ using Charter.Auth.Audit;
 using Charter.Auth.Authorization;
 using Charter.Auth.Providers;
 using Charter.Auth.Setup;
+using Charter.Budgets;
 using Charter.Configuration;
+using Charter.Data;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -29,6 +31,13 @@ public static class AuthServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddSingleton(TimeProvider.System);
+
+        // Section 34.9: setup seeds an organisation's first budget, so this graph needs the amounts.
+        // TryAdd, and the host registers its projection of CHARTER_DEFAULT_MONTHLY_BUDGET_USD and
+        // CHARTER_DEFAULT_SESSION_BUDGET_USD before calling this - so an instance gets the operator's
+        // figures and a subsystem test that only wants a SetupService gets section 4.2's defaults
+        // rather than a missing registration.
+        services.TryAddSingleton(new BudgetOptions());
 
         // Section 21: never hand-rolled. This wraps ASP.NET Core's PasswordHasher.
         services.TryAddSingleton<ICharterPasswordHasher>(_ => new CharterPasswordHasher());
@@ -69,7 +78,13 @@ public static class AuthServiceCollectionExtensions
         services.AddScoped<SignInService>();
 
         services.AddScoped<IAuditWriter, AuditWriter>();
-        services.AddScoped<ICharterAuthorizationService, CharterAuthorizationService>();
+        // Constructed explicitly rather than by convention: section 26.10's instance switch reaches
+        // authorisation through CharterConfig, and the constructor defaults it to off, so a graph
+        // that let the container guess would deny repository creation on an instance that allows it.
+        services.AddScoped<ICharterAuthorizationService>(provider => new CharterAuthorizationService(
+            provider.GetRequiredService<CharterDbContext>(),
+            provider.GetRequiredService<IAuditWriter>(),
+            provider.GetRequiredService<CharterConfig>()));
         services.AddScoped<IRepoScopeAdministration, RepoScopeAdministration>();
 
         // Section 30.1. The state latch and the token are singletons because setup is a property of

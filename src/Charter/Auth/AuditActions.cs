@@ -54,6 +54,12 @@ public static class AuditActions
     /// <summary>A repository scope grant was withdrawn.</summary>
     public const string RepoScopeRevoked = "repo.scope.revoked";
 
+    /// <summary>
+    /// A member passed all three of section 26.10's gates and may create a repository. The largest
+    /// escalation Charter grants, so it is attributable to a named human by construction.
+    /// </summary>
+    public const string RepoCreationAuthorized = "repo.creation.authorized";
+
     /// <summary>The spend gate of section 7.5 was passed by a named approver.</summary>
     public const string SpecApproved = "spec.approved";
 

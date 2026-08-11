@@ -210,10 +210,27 @@ to be able to name who to invite.
 Labels applied where the provider supports them: `unreviewed-spec` when the session was auto-dispatched,
 `schema-change` when the session's migration classification says so.
 
-Charter learns about the change request's life afterwards from the GitHub webhook: state changes, and
-staleness. A change request is marked stale only when it is **behind the base branch and overlaps it on
-changed files**. Merely being behind is not stale — most open change requests are behind most of the
-time, and a flag that fires on all of them is one everybody ignores.
+The body states what the repository's own checks made of the change, and says so plainly when the
+repository declares none. A check that failed does not stop the change request being opened: Charter
+cannot merge it, so the useful thing to do with a failure is put it in front of the engineer along with
+the branch they need to fix or take over the work.
+
+Charter learns about the change request's life afterwards from the GitHub webhook: state changes,
+reviews, and staleness.
+
+- A review, or a review request, moves the request to `InReview` — *An engineer is checking it*. Any
+  review does: approved, changes requested, or a comment. Charter never reports a verdict on the code,
+  because that is not its to report.
+- A merge moves it to `Merged` — **This is live**. That is the end of the loop, and the only thing the
+  requester ever needed to be told about it.
+- A change request is marked stale only when it is **behind the base branch and overlaps it on changed
+  files**. Merely being behind is not stale — most open change requests are behind most of the time,
+  and a flag that fires on all of them is one everybody ignores. Staleness is recorded on the session's
+  transcript; the change request still needs a rebase, and Charter does not do it for you today.
+
+Neither `InReview` nor `Merged` notifies. Both need the GitHub App subscribed to **Pull request review**
+and **Pull request** respectively; without those subscriptions the thread simply stops at the last thing
+Charter was told.
 
 **There is no merge button, and there will not be one.**
 
@@ -341,23 +358,13 @@ What "tell the runner" means depends on the backend:
 
 Stated plainly, because a docs set that oversells gets discovered.
 
-**Nothing pushes the session branch.** Charter opens a change request from a branch the session
-published, and it recognises that branch from a `branch_pushed` event on the session journal. No code
-path in the control plane, the shim, the Charter Agent, or the shipped GitHub Actions workflow writes
-that event or runs a commit or push. The workflow checks out the base commit, runs the agent, and
-reports a result; the work stays in the runner's ephemeral workspace.
+**A stale change request is not rebased for you.** §17 asks for an attempted auto-rebase — clean rebase
+plus green checks means the change request is quietly brought up to date, and a conflict becomes a new
+session with the conflict as context. Charter detects and records staleness today and stops there. The
+rebase itself needs a checkout, which means a runner, which means dispatching work that is not a
+session; until that exists, a stale change request is rebased by whoever is reviewing it.
 
-The consequence follows the chain above exactly: the publisher finds no branch and no reported
-revision, so it records `NoChangesNeeded`; no change request opens; no head commit exists for a
-deployment report to bind to; no preview appears. Every clean session on a real instance ends as
-*Nothing needed changing* — a legitimate state reached for an illegitimate reason.
-
-Everything upstream of that point is real and runs: intake, refinement, the ambiguity guard, the spend
-gate, deterministic dispatch, the session journal, and the event stream. Everything downstream is
-implemented and is exercised end to end by an integration test that supplies the missing branch event
-itself.
-
-Two smaller gaps in the same area:
+Three smaller gaps elsewhere in the loop:
 
 - **`CHARTER_MODEL_REFINE` is parsed and validated, then ignored.** Refinement runs on a hard-coded
   model identifier that resolves to the Anthropic provider. An instance holding only an OpenRouter key
@@ -366,6 +373,8 @@ Two smaller gaps in the same area:
 - **With no usable model credential, a refine job defers rather than failing.** The request stays in
   `Refining` indefinitely and the requester is told nothing, because deferral does not consume an
   attempt and nothing writes a turn explaining the wait.
+- **A check runs with no timeout of its own.** A check command that hangs hangs until the session is
+  cancelled. Keep the checks a repository declares to things that finish.
 
 ## Related
 

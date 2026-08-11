@@ -287,6 +287,11 @@ public class RunnerGitHubActionsTests
         45,
         "dispatch:11111111-2222-3333-4444-555555555555");
 
+    private static RunnerSessionTokens Tokens() => new("a-test-signing-key-of-sufficient-length-000000");
+
+    /// <summary>The dispatch token the control plane would mint for <see cref="Dispatch"/>.</summary>
+    private static string SessionToken() => Tokens().DispatchTokenFor(Dispatch().SessionId);
+
     private static string WorkflowText()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -309,14 +314,14 @@ public class RunnerGitHubActionsTests
     public void EveryClientPayloadFieldTheWorkflowReadsIsSent()
     {
         var workflow = WorkflowText();
-        var payload = GitHubActionsRunner.BuildPayload(Dispatch(), new GitHubActionsRunnerOptions());
+        var payload = GitHubActionsRunner.BuildPayload(Dispatch(), new GitHubActionsRunnerOptions(), SessionToken());
 
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(payload));
         var sent = document.RootElement.EnumerateObject().Select(property => property.Name).ToHashSet(StringComparer.Ordinal);
 
         foreach (var field in new[]
                  {
-                     "session_id", "callback_url", "repo", "base_branch", "base_commit_sha",
+                     "session_id", "session_token", "callback_url", "repo", "base_branch", "base_commit_sha",
                      "adapter", "model", "runner_image", "timeout_minutes", "spec_url", "path_scope",
                  })
         {
@@ -346,6 +351,12 @@ public class RunnerGitHubActionsTests
         Assert.Contains("${CHARTER_CALLBACK_URL}/result", workflow, StringComparison.Ordinal);
         Assert.Contains(RunnerSessionTokens.RepositorySecretName, workflow, StringComparison.Ordinal);
 
+        // And the session-scoping factor travels with it. The repository secret alone authenticates a
+        // repository, not a session: without this line every run in the repository could mint
+        // credentials for every other live session in it (sections 7.4, 16).
+        Assert.Contains("client_payload.session_token", workflow, StringComparison.Ordinal);
+        Assert.Contains("session_token: $token", workflow, StringComparison.Ordinal);
+
         // And the fields the exchange responds with are the ones the workflow's jq reads.
         Assert.Contains("jq -r '.github_token'", workflow, StringComparison.Ordinal);
         Assert.Contains("jq -r '.event_token'", workflow, StringComparison.Ordinal);
@@ -360,7 +371,7 @@ public class RunnerGitHubActionsTests
             CallbackUrl = new Uri("https://charter.example.com/api/runners/sessions/abc/"),
         };
 
-        var payload = GitHubActionsRunner.BuildPayload(dispatch, new GitHubActionsRunnerOptions());
+        var payload = GitHubActionsRunner.BuildPayload(dispatch, new GitHubActionsRunnerOptions(), SessionToken());
 
         Assert.EndsWith("abc", payload.CallbackUrl, StringComparison.Ordinal);
     }
@@ -368,7 +379,7 @@ public class RunnerGitHubActionsTests
     [Fact]
     public void TheTimeoutIsSentAsAStringBecauseFromJsonNeedsOne()
     {
-        var payload = GitHubActionsRunner.BuildPayload(Dispatch(), new GitHubActionsRunnerOptions());
+        var payload = GitHubActionsRunner.BuildPayload(Dispatch(), new GitHubActionsRunnerOptions(), SessionToken());
 
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(payload));
 
@@ -379,7 +390,7 @@ public class RunnerGitHubActionsTests
     [Fact]
     public void ADispatchWithNoImageFallsBackToTheFullstackImage()
     {
-        var payload = GitHubActionsRunner.BuildPayload(Dispatch(), new GitHubActionsRunnerOptions());
+        var payload = GitHubActionsRunner.BuildPayload(Dispatch(), new GitHubActionsRunnerOptions(), SessionToken());
 
         Assert.Equal(GitHubActionsRunnerOptions.DefaultRunnerImage, payload.RunnerImage);
         Assert.Contains(GitHubActionsRunnerOptions.DefaultRunnerImage, WorkflowText(), StringComparison.Ordinal);
@@ -392,7 +403,8 @@ public class RunnerGitHubActionsTests
         var runner = new GitHubActionsRunner(
             github,
             new GitHubActionsRunnerOptions(),
-            NullLogger<GitHubActionsRunner>.Instance);
+            NullLogger<GitHubActionsRunner>.Instance,
+            Tokens());
 
         var result = await runner.DispatchAsync(Dispatch(), TestContext.Current.CancellationToken);
 
@@ -404,7 +416,41 @@ public class RunnerGitHubActionsTests
         var (repo, eventType, json) = Assert.Single(github.Dispatches);
         Assert.Equal("acme/spectra", repo);
         Assert.Equal(GitHubActionsRunnerOptions.EventType, eventType);
-        Assert.DoesNotContain("token", json, StringComparison.OrdinalIgnoreCase);
+
+        // The payload carries exactly one token-shaped value and it is the session's dispatch token,
+        // which is not a credential: it grants nothing without secrets.CHARTER_SESSION_SECRET, which
+        // never appears here. Nothing else token-shaped may — client_payload is readable by anyone
+        // with repository read access (section 7.4).
+        using var document = JsonDocument.Parse(json);
+        var tokenFields = document.RootElement
+            .EnumerateObject()
+            .Where(property => property.Name.Contains("token", StringComparison.OrdinalIgnoreCase))
+            .Select(property => property.Name)
+            .ToArray();
+
+        Assert.Equal(["session_token"], tokenFields);
+        Assert.Equal(SessionToken(), document.RootElement.GetProperty("session_token").GetString());
+        Assert.DoesNotContain(RunnerSessionTokens.RepositorySecretName, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(Tokens().SessionSecretFor("acme/spectra"), json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ADispatchWithNoSigningKeyRefusesRatherThanSendingAPayloadTheExchangeWillReject()
+    {
+        // Section 4.1's fail-loud rule. Without the key there is no per-session token to send, and a
+        // workflow that starts and then cannot exchange is a session that burns a runner minute to
+        // produce a 403 nobody is watching for.
+        var github = new RecordingGitHubDispatcher();
+        var runner = new GitHubActionsRunner(
+            github,
+            new GitHubActionsRunnerOptions(),
+            NullLogger<GitHubActionsRunner>.Instance);
+
+        var result = await runner.DispatchAsync(Dispatch(), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Accepted);
+        Assert.Contains("CHARTER_SECRET_KEY", result.Explanation!, StringComparison.Ordinal);
+        Assert.Empty(github.Dispatches);
     }
 
     [Fact]
@@ -414,10 +460,17 @@ public class RunnerGitHubActionsTests
         var runner = new GitHubActionsRunner(
             github,
             new GitHubActionsRunnerOptions(),
-            NullLogger<GitHubActionsRunner>.Instance);
+            NullLogger<GitHubActionsRunner>.Instance,
+            Tokens());
 
+        // The repository is supplied by the caller from the session's own aggregate, and the reference
+        // is only acted on when the two agree — see RunnerRunReferenceTests for why.
         var result = await runner.CancelAsync(
-            new RunnerCancellation(Guid.NewGuid(), "https://github.com/acme/spectra/actions/runs/98765", "cancel"),
+            new RunnerCancellation(
+                Guid.NewGuid(),
+                "https://github.com/acme/spectra/actions/runs/98765",
+                "cancel",
+                "acme/spectra"),
             TestContext.Current.CancellationToken);
 
         Assert.True(result.Stopped);
@@ -431,7 +484,8 @@ public class RunnerGitHubActionsTests
         var runner = new GitHubActionsRunner(
             github,
             new GitHubActionsRunnerOptions(),
-            NullLogger<GitHubActionsRunner>.Instance);
+            NullLogger<GitHubActionsRunner>.Instance,
+            Tokens());
 
         var result = await runner.CancelAsync(
             new RunnerCancellation(Guid.NewGuid(), null, "cancel"),

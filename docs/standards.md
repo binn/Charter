@@ -269,6 +269,15 @@ open:
    must grant explicitly. Granting it is what makes the escalation real, so grant it to an App
    installed on your sandbox organisation rather than your production one.
 3. **Role.** A distinct `can_create_repo` capability, admin-only by default and grantable to engineers.
+   The first admin an instance seeds holds it; being an admin is not by itself enough, which is why it
+   is a capability rather than a role.
+
+All three are evaluated together and the refusal names the gate that stopped it, so an operator is
+never left guessing which of the three to change.
+
+**Not yet reachable.** The new-project flow that would call this is not built, so nothing in Charter
+currently creates a repository. The gate is in place and tested; the door behind it is not. Leave
+`CHARTER_ALLOW_REPO_CREATION` off and do not grant the App the scope until the flow ships.
 
 ## A note on naming
 

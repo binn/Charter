@@ -236,6 +236,15 @@ public sealed class AgentRunner : IAgentRunner
             ? await db.Jobs.FirstOrDefaultAsync(candidate => candidate.Id == id, cancellationToken)
             : await FindBySessionAsync(db, cancellation.SessionId, cancellationToken);
 
+        // The reference is folded from the session's events, and session_started arrives from the
+        // execution plane, so a job id read out of it is a claim rather than a fact. Cancelling
+        // somebody else's job and reporting confirmed would stop work nobody asked to stop and leave
+        // this session running. Fall back to this session's own row instead.
+        if (job is not null && AgentJobPayload.TryParse(job.Payload)?.SessionId != cancellation.SessionId)
+        {
+            job = await FindBySessionAsync(db, cancellation.SessionId, cancellationToken);
+        }
+
         if (job is null)
         {
             return RunnerCancelResult.NothingToStop(
@@ -250,27 +259,27 @@ public sealed class AgentRunner : IAgentRunner
                 return RunnerCancelResult.Confirmed;
 
             case JobStatus.Claimed when AgentIdFrom(job.ClaimedBy) is { } agentId:
-            {
-                var delivered = await _connections.CancelJobAsync(
-                    agentId,
-                    job.Id,
-                    cancellation.Reason,
-                    cancellationToken);
+                {
+                    var delivered = await _connections.CancelJobAsync(
+                        agentId,
+                        job.Id,
+                        cancellation.Reason,
+                        cancellationToken);
 
-                var queue = scope.ServiceProvider.GetRequiredService<JobQueue>();
-                await queue.FailAsync(
-                    job.Id,
-                    WorkerIdFor(agentId),
-                    cancellation.Reason,
-                    now: _clock.GetUtcNow(),
-                    cancellationToken: cancellationToken);
+                    var queue = scope.ServiceProvider.GetRequiredService<JobQueue>();
+                    await queue.FailAsync(
+                        job.Id,
+                        WorkerIdFor(agentId),
+                        cancellation.Reason,
+                        now: _clock.GetUtcNow(),
+                        cancellationToken: cancellationToken);
 
-                return delivered
-                    ? RunnerCancelResult.Confirmed
-                    : RunnerCancelResult.NothingToStop(
-                        "The agent holding this job is not connected right now. Its lease will lapse "
-                        + "and the work will stop when it reconnects.");
-            }
+                    return delivered
+                        ? RunnerCancelResult.Confirmed
+                        : RunnerCancelResult.NothingToStop(
+                            "The agent holding this job is not connected right now. Its lease will lapse "
+                            + "and the work will stop when it reconnects.");
+                }
 
             default:
                 return RunnerCancelResult.NothingToStop("The agent job had already finished.");
@@ -310,6 +319,25 @@ public sealed class AgentRunner : IAgentRunner
         return new Guid(hash.AsSpan(0, 16));
     }
 
+    /// <summary>
+    /// The fallback for a cancel with no usable external reference: find this session's agent row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Restricted to rows that require the routing marker, because the session id alone does not
+    /// identify a plane. The control plane's own <c>BuildJobPayload</c> is <c>{"session_id": …}</c>
+    /// and parses as an <see cref="AgentJobPayload"/> perfectly well, and a session can legitimately
+    /// have one of each at the same instant — <c>QueueDispatcher</c> re-enqueues a pending control
+    /// plane row every time a dispatch defers. Matching on the payload alone could therefore cancel
+    /// the pending control plane row, report <em>confirmed</em>, and settle the session as cancelled
+    /// while the agent holding the real claim was never told and went on to push a branch. Section 11
+    /// says the cancel button must reach the runner; a cancel that reports success without reaching it
+    /// is worse than one that fails.
+    /// </para>
+    /// <para>
+    /// Ordered, so that two candidate rows resolve the same way on every replica and every retry.
+    /// </para>
+    /// </remarks>
     private static async Task<Job?> FindBySessionAsync(
         CharterDbContext db,
         Guid sessionId,
@@ -317,7 +345,11 @@ public sealed class AgentRunner : IAgentRunner
     {
         var candidates = await db.Jobs
             .Where(job => job.Type == JobType.Build
-                          && (job.Status == JobStatus.Pending || job.Status == JobStatus.Claimed))
+                          && (job.Status == JobStatus.Pending || job.Status == JobStatus.Claimed)
+                          && job.RequiredCapabilities.Contains(ClaimCapability))
+            .OrderByDescending(job => job.Status == JobStatus.Claimed)
+            .ThenBy(job => job.CreatedAt)
+            .ThenBy(job => job.Id)
             .ToListAsync(cancellationToken);
 
         return candidates.FirstOrDefault(job => AgentJobPayload.TryParse(job.Payload)?.SessionId == sessionId);

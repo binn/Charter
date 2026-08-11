@@ -70,6 +70,46 @@ public sealed record OnboardingStepResponse
     public required bool Current { get; init; }
 }
 
+/// <summary>The six integration points the smoke test proves, in the order it exercises them.</summary>
+public enum ApiSmokeTestCheckpointId
+{
+    RequestFiled,
+    AgentRan,
+    ChecksPassed,
+    PullRequest,
+    PreviewDeployed,
+    UrlBound,
+}
+
+/// <summary>How one of the six turned out.</summary>
+/// <remarks>
+/// <c>Skipped</c> is what a point gets when an earlier one failed and it therefore never ran. It is
+/// not <c>Failed</c>: telling an engineer that the preview deploy broke when nothing ever asked it
+/// to deploy sends them to the wrong subsystem.
+/// </remarks>
+public enum ApiSmokeTestCheckpointState
+{
+    Pending,
+    Running,
+    Passed,
+    Failed,
+    Skipped,
+}
+
+/// <summary>One of the six integration points, as the wizard renders it.</summary>
+public sealed record SmokeTestCheckpointResponse
+{
+    public required ApiSmokeTestCheckpointId Id { get; init; }
+
+    /// <summary>What this point is called, in words an engineer reads once.</summary>
+    public required string Label { get; init; }
+
+    public required ApiSmokeTestCheckpointState State { get; init; }
+
+    /// <summary>One line: what this point actually did. Absent when there is nothing to add.</summary>
+    public string? Detail { get; init; }
+}
+
 /// <summary>
 /// What the last smoke test did (section 9, step 4).
 /// </summary>
@@ -88,6 +128,68 @@ public sealed record SmokeTestOutcomeResponse
 
     /// <summary>Section 18: whether the preview URL bound back to the pull request.</summary>
     public required bool PreviewBound { get; init; }
+
+    /// <summary>
+    /// All six integration points, individually.
+    /// </summary>
+    /// <remarks>
+    /// Section 9's argument for the smoke test is that nothing else validates these together, which
+    /// only helps if the reader can see which one broke. Absent for a run recorded before the six
+    /// were written down; the client reconstructs what it can prove and marks the rest unknown.
+    /// </remarks>
+    public IReadOnlyList<SmokeTestCheckpointResponse>? Checkpoints { get; init; }
+
+    /// <summary>Section 9: an empty preview warns rather than blocks. Absent when there is nothing to say.</summary>
+    public IReadOnlyList<string>? Warnings { get; init; }
+}
+
+/// <summary>One path recon proposed a decision about (section 9, step 3).</summary>
+public sealed record ScopeEntryResponse
+{
+    public required string Path { get; init; }
+
+    /// <summary><c>file</c> or <c>directory</c>.</summary>
+    public required string Kind { get; init; }
+
+    public required bool Allowed { get; init; }
+
+    /// <summary>
+    /// True for the deny-by-default floor. Rendered as a denial with the reason attached rather than
+    /// as a toggle, because whatever the client sends is filtered through the floor again anyway.
+    /// </summary>
+    public bool? Locked { get; init; }
+
+    /// <summary>Why recon proposed this. Absent when there is nothing useful to say.</summary>
+    public string? Reason { get; init; }
+}
+
+/// <summary>A named command recon found.</summary>
+public sealed record ScopeCommandResponse
+{
+    public required string Label { get; init; }
+
+    public required string Command { get; init; }
+}
+
+/// <summary>
+/// What the recon session found and proposed (section 9, step 2).
+/// </summary>
+/// <remarks>
+/// Absent from <see cref="RepoOnboardingResponse"/> until recon has run, so the wizard offers the
+/// recon step rather than rendering an empty file tree.
+/// </remarks>
+public sealed record ScopeProposalResponse
+{
+    /// <summary>Recon's detected stack, shown verbatim.</summary>
+    public required IReadOnlyList<string> DetectedStack { get; init; }
+
+    /// <summary>Build, test and seed commands, so the engineer can sanity-check them.</summary>
+    public required IReadOnlyList<ScopeCommandResponse> Commands { get; init; }
+
+    /// <summary>Section 9: existing agent guidance is imported and extended, never overwritten.</summary>
+    public IReadOnlyList<string>? ImportedFrom { get; init; }
+
+    public required IReadOnlyList<ScopeEntryResponse> Entries { get; init; }
 }
 
 /// <summary>What the merge gate is worth for this repository (change spec 001 part A.5).</summary>
@@ -124,6 +226,19 @@ public sealed record RepoOnboardingResponse
 
     /// <summary>The last merge-gate check. Absent until one has run.</summary>
     public MergeGateResponse? MergeGate { get; init; }
+
+    /// <summary>What recon proposed. Absent until recon has run.</summary>
+    public ScopeProposalResponse? ProposedScope { get; init; }
+
+    /// <summary>
+    /// What the primer editor should open with (section 9, step 5).
+    /// </summary>
+    /// <remarks>
+    /// The published primer once there is one — editing a published page starts from the page — and
+    /// before that the draft Charter scaffolded from what recon found. Absent when recon has not run
+    /// and nothing has been published, because there is then nothing to edit but an empty box.
+    /// </remarks>
+    public string? PrimerDraftMd { get; init; }
 }
 
 /// <summary><c>POST /api/repos</c> (section 9, step 1).</summary>
@@ -161,6 +276,18 @@ public sealed record RepoAccessGrantResponse
 {
     /// <summary>The member this grant names. Absent on a role grant.</summary>
     public string? MemberId { get; init; }
+
+    /// <summary>
+    /// That member's name, so the screen can say who this is.
+    /// </summary>
+    /// <remarks>
+    /// Sent with the grant rather than left to a second lookup: an access list rendered as a column
+    /// of opaque ids is a list nobody audits, which defeats the point of showing it.
+    /// </remarks>
+    public string? MemberName { get; init; }
+
+    /// <summary>That member's email. Absent on a role grant.</summary>
+    public string? MemberEmail { get; init; }
 
     /// <summary>The role this grant names. Absent on a member grant.</summary>
     public ApiRole? Role { get; init; }

@@ -7,7 +7,9 @@ import { AppShell } from '@/components/AppShell';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { AcceptInvitationPage } from '@/pages/AcceptInvitationPage';
 import { ApprovalsPage } from '@/pages/ApprovalsPage';
+import { AuditPage } from '@/pages/AuditPage';
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage';
+import { MembersPage } from '@/pages/MembersPage';
 import { NewRequestPage } from '@/pages/NewRequestPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { ProjectsPage } from '@/pages/ProjectsPage';
@@ -117,6 +119,8 @@ export default function App() {
               path="settings/repositories/:id"
             />
             <Route element={<RunnersPage />} path="settings/runners" />
+            <Route element={<MembersPage />} path="settings/members" />
+            <Route element={<AuditPage />} path="settings/audit" />
             <Route element={<NotFoundPage />} path="*" />
           </Route>
         </Routes>

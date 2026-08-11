@@ -1,4 +1,6 @@
+using Charter.Api.Changes;
 using Charter.Configuration;
+using Charter.Domain;
 using Charter.Notifications;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http;
@@ -107,6 +109,38 @@ public sealed class DemoModeSmtpTransport : ISmtpTransport
     }
 }
 
+/// <summary>
+/// Pane 3's file reader under demo mode: unavailable, rather than a blocked outbound call.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <c>GitHubRepositoryFileText</c> fetches file contents from the provider per file, so under
+/// <c>CHARTER_DEMO=true</c> it meets the kill switch and throws <see cref="DemoModeException"/>. That
+/// escapes as a 500: the seeded repository does not exist on GitHub, so the call was never going to
+/// succeed on its own terms, and a thrown egress refusal is the right answer to a *real* instance
+/// reaching out but the wrong answer here.
+/// </para>
+/// <para>
+/// <c>FileDiffService</c> already has a designed degrade path for exactly this case, so demo mode
+/// takes it: every other pane keeps working - the file list, the recap, the transcript, the status
+/// thread - and opening a file explains itself instead of erroring.
+/// </para>
+/// </remarks>
+public sealed class DemoModeRepositoryFileText : IRepositoryFileText
+{
+    private const string Sentence =
+        "This demo instance has no repository behind it, so there is no file content to diff. "
+        + "The list of changed files, the recap and the transcript are all real seeded data.";
+
+    /// <inheritdoc />
+    public Task<FileText?> ReadAsync(
+        Repo repo,
+        string revision,
+        string path,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<FileText?>(new FileTextUnavailableException(Sentence));
+}
+
 /// <summary>Registers demo mode (section 30.6): the kill switch and the seed data.</summary>
 public static class DemoModeServiceCollectionExtensions
 {
@@ -149,6 +183,10 @@ public static class DemoModeServiceCollectionExtensions
         // path CHARTER_EMAIL_PROVIDER=none already takes, so nothing above it changes behaviour.
         services.AddSingleton<ISmtpTransport, DemoModeSmtpTransport>();
         services.AddSingleton<IEmailProvider, NullEmailProvider>();
+
+        // Pane 3's per-file diff, for the same reason and by the same rule: AddCharterApi registers
+        // the GitHub-backed reader with TryAddScoped, so this has to be in place first to win.
+        services.AddScoped<IRepositoryFileText, DemoModeRepositoryFileText>();
 
         services.AddHostedService<Charter.Data.Demo.DemoSeedHostedService>();
 

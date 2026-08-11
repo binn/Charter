@@ -74,7 +74,7 @@ Selected via `CHARTER_RUNNER=agent|github-actions|docker`. Multiple may be enabl
 
 ### 2.3 PaaS constraints (these shape v1, not a later refactor)
 
-- **No durable local disk.** Transcripts, diffs, and artifacts go to Postgres or S3-compatible storage. Never the container filesystem.
+- **No durable local disk *on a PaaS*.** On Railway, Fly, Render or Heroku the container filesystem does not survive a deploy, so transcripts, diffs, and artifacts go to Postgres or S3-compatible storage and never to the container filesystem. This is a fact about those platforms, not about storage: a self-hoster on a VPS or a home server with a mounted volume has durable disk and may use it. `CHARTER_STORAGE_BACKEND` therefore names one of `none` (the default, and the only correct answer on a PaaS), `filesystem` (an operator asserting they have a durable volume, validated at boot by writing to it), or `s3`. The backend is **named, never inferred** from which variables happen to be set — inference means a typo silently changes what an instance does (§4.1, §4.2).
 - **The container can restart mid-session.** No in-memory orchestration state. Every session must be fully resumable from Postgres alone. This is the constraint that forces a rewrite if deferred.
 - **Postgres-backed job queue**, claimed with `SELECT ... FOR UPDATE SKIP LOCKED`. No Redis. Every additional container is a self-host support burden.
 - **Advisory locks on the dispatcher** (`pg_try_advisory_lock`) so scaling to two replicas doesn't double-dispatch.
@@ -186,10 +186,12 @@ The shim is a separate project precisely because all three backends need it: Git
 | `CHARTER_EMAIL_MAX_PER_HOUR` | no | `20` | Change spec 001 C.3 — messages per recipient per hour. Counted in two buckets, account mail and notifications, so a notification storm cannot starve an invitation |
 | `CHARTER_DEFAULT_SESSION_BUDGET_USD` | no | `5.00` | |
 | `CHARTER_DEFAULT_MONTHLY_BUDGET_USD` | no | `100.00` | |
-| `CHARTER_STORAGE_ENDPOINT` | no† | — | S3-compatible endpoint URL. MinIO, R2, B2, and Wasabi all work. |
-| `CHARTER_STORAGE_BUCKET` | no† | — | Bucket for verification artifacts and large transcripts |
-| `CHARTER_STORAGE_ACCESS_KEY` | no† | — | |
-| `CHARTER_STORAGE_SECRET_KEY` | no† | — | |
+| `CHARTER_STORAGE_BACKEND` | no | `none` | `none` \| `filesystem` \| `s3`. The switch — see † |
+| `CHARTER_STORAGE_PATH` | when `filesystem` | — | Directory on a **durable** volume. Must exist and be writable at boot |
+| `CHARTER_STORAGE_ENDPOINT` | when `s3` | — | S3-compatible endpoint URL. AWS, MinIO, R2, B2, and Wasabi all work |
+| `CHARTER_STORAGE_BUCKET` | when `s3` | — | Bucket for verification artifacts and large transcripts |
+| `CHARTER_STORAGE_ACCESS_KEY` | when `s3` | — | |
+| `CHARTER_STORAGE_SECRET_KEY` | when `s3` | — | |
 | `CHARTER_STORAGE_REGION` | no | `auto` | Some providers require a real region |
 | `CHARTER_STORAGE_FORCE_PATH_STYLE` | no | `true` | MinIO and most self-hosted gateways need path-style addressing |
 | `CHARTER_UPDATE_CHECK` | no | `true` | §28 — the only outbound call Charter initiates |
@@ -213,7 +215,21 @@ that reaches it natively (`pi`).
 
 \* At least one model credential must be resolvable at startup — either an instance-level key here or a linked `CredentialGrant` in the database. Startup validation fails if neither exists.
 
-† Object storage is optional only until something needs it. Charter starts without it, but any project type producing a `build_artifact`, `capture`, or `hil_report` (§27.1) requires it, and so does transcript offload on a PaaS with no durable disk (§2.3). When `CHARTER_STORAGE_ENDPOINT` is set, bucket and both keys become required and are validated together. When it is unset, Charter runs with artifacts confined to Postgres and refuses — with a clear message naming these variables — to onboard a repo whose project type needs artifact storage. An IPA is not a database row (§27.5).
+† **The backend is named, never inferred.** Deducing it from which variables happen to be set reads well right up until an operator types `CHARTER_STORAGE_BUCKETT`: the instance then selects a different backend, boots cleanly, and says nothing — which is the failure §4.1 exists to prevent. So `CHARTER_STORAGE_BACKEND` is the switch and everything else is the detail of the backend it names. Setting `CHARTER_STORAGE_PATH` or the bucket block while the backend is still `none` is a **blocking** `object storage` preflight failure (§30.1), not a silent no-op.
+
+Each backend is validated at boot, by the check an operator meets as a named §30.1 line:
+
+- `none` — the default. Transcripts and artifacts stay in Postgres. Correct on any PaaS (§2.3), and correct for Phase 1 generally, since a web project's verification artifact is a `hosted_preview`, which is a URL.
+- `filesystem` — `CHARTER_STORAGE_PATH` must be set, must exist, and must be writable. Charter does **not** create the directory: an absent path at boot is usually a volume that failed to mount, and creating one on the container's own disk would hide exactly that.
+- `s3` — endpoint, bucket, access key and secret key are one block; any of them missing stops the boot. Neither key is ever printed.
+
+**Reads are proxied, never linked.** A stored object comes back through `GET /api/requests/{id}/blobs/{key}`, gated on the same permission as pane 2 (§7.4). There is no presigned URL anywhere in the subsystem: a URL that authorises by possession turns an `engineer_only` artifact into a public one the moment it is pasted into a chat, with no request reaching Charter to refuse.
+
+**Untrusted key components are sanitised (§16).** A check name from a repository's `.charter/config.yml`, or a path from an agent's tool call, is reduced to a single `[A-Za-z0-9._-]` segment before it can name an object, and every read is checked against the session the caller was authorised for.
+
+**Lifecycle.** Objects are capped at 8 MiB each and keyed under the session that produced them, so deletion has a unit. Charter runs no sweeper of its own: retention is the operator's, expressed as a bucket lifecycle rule or a cron over the directory, and `docs/privacy.md` says so rather than implying an expiry that does not exist.
+
+The consumer today is transcript offload — an oversized string in an event payload moves to the store and leaves its tail, a `file_ref`, a size and a digest behind (§5, §19). The §27.1 artifact kinds that need a bucket — `build_artifact`, `capture`, `hil_report` — arrive with the project types that produce them (§23), as does the promise to refuse onboarding a repo whose project type needs storage the instance does not have.
 
 **Key length.** `CHARTER_SECRET_KEY` and `CHARTER_CREDENTIAL_KEY` require **≥32 bytes of decoded entropy**, not 32 characters. Validation base64-decodes the value when it parses as base64 and measures the decoded length, otherwise it measures UTF-8 bytes. `openssl rand -base64 32` produces a valid value. The two must differ; startup fails if they match (§20b.2).
 
@@ -450,6 +466,15 @@ in from the data model up — not a filter added to existing queries.
   review, this holds unchanged. Where either is missing, the repository is `advisory`: Charter still
   will not merge, and it says plainly that it cannot stop anyone else from doing so.
 - The runner receives a **short-TTL GitHub App installation token scoped to one repo** and cannot read the control plane's environment.
+- **The right to obtain a session's credentials is scoped to that session, not to its repository.** An
+  installation token is repo-scoped by construction — GitHub has no narrower unit — so the only place
+  session scope can be enforced is the exchange that hands one over. A shared per-repository secret
+  authenticates a *repository*; on its own it lets any run in that repository mint for any other live
+  session of it, including sessions on a different backend, and with the credential comes the callback
+  token that writes that session's transcript and reports its result. Every mint therefore requires a
+  per-session proof issued at dispatch, and is refused for a session that is terminal, has a cancel in
+  flight, or that no backend has dispatched — on every plane, control-plane HTTP and agent socket
+  alike. A credential that outlives what justified it is the same defect as one that was never scoped.
 - Pane 2 (transcript) and pane 3 (code) render **only if that user has repo read access**. Otherwise a requester toggling views becomes a permission bypass — transcripts leak file paths, env var names, and error output.
 
 ### 7.5 Approval policy
@@ -904,6 +929,21 @@ Mitigations, all of which belong in the runner contract:
 
 Repo-content injection is the harder half. The answer is unchanged: **the agent cannot merge.**
 
+### 16.3 The execution plane never names what the control plane acts on
+
+A rule about §2.1's split, and the third defect of this shape found in one day, so it is written as a rule rather than as three fixes.
+
+The runner's callback token proves **which session is speaking**. It proves nothing about what that session says. The shim holds it in the same process as an agent reading untrusted repository content, so every field of every callback body is attacker-influenced input.
+
+So: **a value that arrives from the execution plane may be displayed, but it may never be the thing the control plane addresses.** Any repository, org, branch, ref, container id, job id, run id, storage key or URL that Charter will later act on is read from the session's own aggregate, never from what a runner sent.
+
+Where a value must round-trip through the plane — `run_url` is the case, because `repository_dispatch` returns no run id — it is **validated against the session's own record on the way in, and refused when it does not match**. Refuse, do not sanitise: a reference naming another repository is a lie, not a formatting problem, and normalising it hides the event from the operator. Two further consequences:
+
+- **Validate at every recording point, or the protection is imaginary.** `run_url` reached the journal from two callbacks, and fixing one would have implied a boundary that did not exist.
+- **Validate again at the point of use.** A fix at the recording point cannot reach rows already in the database, and an upgrade does not rewrite them.
+
+§11's cancel is where the second harm of getting this wrong shows up, and it is the worse one: a cancel that acts on the wrong handle reports success while the session it was meant to stop keeps running and keeps spending. A backend confirms a cancellation only when it confirmed the run is dead — never when it could not identify the run, could not reach it, or was handed a handle it will not act on.
+
 ---
 
 ## 17. Concurrency
@@ -1055,7 +1095,11 @@ Resolved **per session**, in order, skipping anything `exhausted` or `invalid`:
 4. Org metered API key
 5. OpenRouter
 
-If everything is exhausted, the session goes to `Queued` with the earliest `exhausted_until` shown as *waiting for capacity* — it does **not** fail.
+**The §4.2 instance-level keys are tiers 4 and 5, not a sixth tier.** `ANTHROPIC_API_KEY` is an org metered API key and `OPENROUTER_API_KEY` is OpenRouter, so each is resolved as an ordinary candidate of the matching kind, sorted last within its tier — the variables are the instance's fallback, and a grant an operator linked for the organisation should win where both could serve. Nothing is written to `credential_grants` for them: the environment is the source of truth, so a row would diverge the moment the variable changed, and exhaustion or invalidity recorded against a variable is process-local state whose loss on restart costs one retried call. A key that satisfies startup validation and the §30.1 preflight check and is then not in this chain is the same defect as a variable nothing reads (§4.1).
+
+If everything is exhausted **and a provider gave a reset instant**, the session goes to `Queued` with the earliest `exhausted_until` shown as *waiting for capacity* — it does **not** fail.
+
+**Every other way of resolving nothing is a failure, and a loud one.** Nothing configured that can serve the model, every candidate `invalid` or `revoked`, an expired token, or a `429` with no reset header: none of these come back on a timer, so deferring on them is deferring forever with nothing on screen and nothing in the log. The session goes to `Failed` (§6) with the requester-facing copy that state already carries, and the actionable half — naming the environment variable to set for the model that could not be served, or the grant to fix — goes to the log and to the job's recorded error. A requester never sees an environment variable (§7.4) and no part of a key appears anywhere (§19).
 
 ### 20b.4 Exhaustion and failover
 
@@ -1524,9 +1568,11 @@ Self-hosted software that silently rots is a security liability. Charter checks 
 
 ### Mechanism
 
-- Poll the GitHub Releases API for the Charter repo, compare `tag_name` against the compiled-in build version (§24).
+- Poll the GitHub Releases API for the Charter repo, compare `tag_name` against the compiled-in build version (§24). The repository is derived from the compiled-in source URL, so a fork that rebranded checks its own releases and a build hosted anywhere but GitHub checks nothing.
 - **Daily, with jitter**, result cached in Postgres. Unauthenticated GitHub API allows 60 requests/hour per IP; a daily check is far inside that.
-- Failures — offline, air-gapped, rate-limited — degrade **silently**. Never log an error every day on an instance with no internet; that is how operators learn to ignore logs.
+- Run on the §2.3 job queue as a `JobType.UpdateCheck` row, not on a timer. The check is claimed under a lease like any other work, so one replica runs it and a restart resumes from the row. **The cache is the payload of the pending row**: completing a check enqueues the next one a day out carrying what this one found, so "when to look again" and "what we last saw" are the same durable record and no table is added for it. Duplicate rows converge — a check cancels any other pending check before arming its successor.
+- Failures — offline, air-gapped, rate-limited — degrade **silently**: the job completes, the previous result is kept, and the timestamp of the last *successful* check does not move. Never fail the job (three failures would strand the schedule terminally with nothing to re-arm it) and never log an error every day on an instance with no internet; that is how operators learn to ignore logs.
+- With `CHARTER_UPDATE_CHECK=false` nothing that can make the call is constructed, and a handler is still registered to **drain** a check left queued from when it was on — the dispatcher defers a job whose type has no handler and re-enqueues it forever, so the off switch would otherwise churn a row for the life of the instance.
 
 ### Presentation
 
@@ -1534,13 +1580,15 @@ Self-hosted software that silently rots is a security liability. Charter checks 
 - Persistent but unobtrusive: a badge in settings and a dismissible banner. Dismissal is **per version** — it returns for the next release.
 - Render the release notes inline (markdown, sanitised) with a link to the full release.
 - **Security releases are distinct.** Flag them by a marker in the release (`[SECURITY]` prefix or a `security` label), render them in a persistent, non-dismissible style, and state the severity plainly.
-- **Warn when the upgrade includes schema migrations**, so an operator knows a backup is warranted before pulling.
+- **Warn when the upgrade includes schema migrations**, so an operator knows a backup is warranted before pulling. The marker is `[MIGRATIONS]`, recognised in the release title or anywhere in its body — the same explicit, greppable convention as `[SECURITY]`, rather than a heuristic over release prose. `CHANGELOG.md` and `docs/upgrading.md` state it.
 
 ### Privacy
 
 This is the **only outbound request Charter makes on its own initiative.** It must be documented as such, in both the README and `docs/privacy.md`:
 
 > Charter checks GitHub once a day for a new release. It sends no data about your instance — it is an unauthenticated read of a public endpoint. GitHub will see the request's source IP, as with any HTTP request. Disable with `CHARTER_UPDATE_CHECK=false`.
+
+The `User-Agent` is the constant `Charter`, with **no version in it**. GitHub requires a user agent; a version string in one would tell GitHub which release each instance runs, which is the fact this section promises is never sent. The comparison against the running build happens locally, after the response arrives.
 
 Configuration:
 

@@ -271,6 +271,11 @@ public class GitHubVersionControlProviderTests
     {
         Assert.Equal("pull_request", GitHubVersionControlProvider.GitHubEventName("change_request"));
         Assert.Equal("push", GitHubVersionControlProvider.GitHubEventName("push"));
+
+        // Section 6's InReview has its own event and is lost without it.
+        Assert.Equal(
+            "pull_request_review",
+            GitHubVersionControlProvider.GitHubEventName("change_request_review"));
     }
 
     [Fact]

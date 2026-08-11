@@ -8,6 +8,7 @@ using Charter.Runners.Agent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace Charter.Tests;
 
@@ -190,13 +191,23 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
         LazyThreadSafetyMode.ExecutionAndPublication);
 
     private readonly ServiceProvider _services;
+    private readonly string _connectionString;
+    private readonly string? _schema;
 
-    private AgentPlaneFixture(ServiceProvider services, Guid orgId, string tag, TestClock clock)
+    private AgentPlaneFixture(
+        ServiceProvider services,
+        Guid orgId,
+        string tag,
+        TestClock clock,
+        string connectionString,
+        string? schema)
     {
         _services = services;
         OrgId = orgId;
         Tag = tag;
         Clock = clock;
+        _connectionString = connectionString;
+        _schema = schema;
     }
 
     public Guid OrgId { get; }
@@ -336,12 +347,27 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
         return welcome.ReadPayload<WelcomePayload>()!;
     }
 
-    /// <summary>Enqueues one agent-claimable job the way <see cref="AgentRunner"/> would.</summary>
+    /// <summary>
+    /// Enqueues one agent-claimable job the way <see cref="AgentRunner"/> would.
+    /// </summary>
+    /// <remarks>
+    /// Including the state <see cref="AgentRunner.DispatchAsync"/> is only ever called in: a live
+    /// session with its dispatch claim already in the journal, because <c>SessionCoordinator</c>
+    /// writes that claim before any backend is called. Credentials are minted only for such a session
+    /// (<see cref="SessionCredentialGuard"/>), so a job without one would be refused — correctly, and
+    /// for a reason that has nothing to do with whatever the test is about.
+    /// </remarks>
     public async Task<Guid> EnqueueClaimableAsync(
         Guid sessionId,
         IEnumerable<string>? requires = null,
-        string repo = "acme/widgets")
+        string repo = "acme/widgets",
+        bool seedSession = true)
     {
+        if (seedSession)
+        {
+            await SeedSessionAsync(repo, sessionId, dispatched: true);
+        }
+
         var payload = new AgentJobPayload
         {
             SessionId = sessionId,
@@ -374,6 +400,117 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
         });
     }
 
+    /// <summary>
+    /// Seeds the aggregate a session hangs off, and returns the session id.
+    /// </summary>
+    /// <remarks>
+    /// Needed wherever a test asserts that something was <em>not</em> written to a session: without a
+    /// real row the write would fail on a foreign key anyway, and the test would pass for a reason
+    /// that has nothing to do with the behaviour under test.
+    /// </remarks>
+    /// <param name="repoFullName">The repository the session's request was filed against.</param>
+    /// <param name="sessionId">An explicit id, for when a queue row already names one.</param>
+    /// <param name="dispatched">
+    /// Whether to write the journal's dispatch claim. True is the state every backend is called in —
+    /// <c>SessionCoordinator</c> writes the claim before calling one — and false is a session nothing
+    /// has dispatched, which may never be given credentials.
+    /// </param>
+    public Task<Guid> SeedSessionAsync(
+        string repoFullName = "acme/widgets",
+        Guid? sessionId = null,
+        bool dispatched = false) =>
+        InScopeAsync(async provider =>
+        {
+            var db = provider.GetRequiredService<CharterDbContext>();
+            var token = TestContext.Current.CancellationToken;
+            var now = Clock.GetUtcNow();
+
+            if (sessionId is { } existing && await db.Sessions.AsNoTracking().AnyAsync(row => row.Id == existing, token))
+            {
+                return existing;
+            }
+
+            var user = User.Create($"{Guid.NewGuid():N}@example.test", "Ayesha", now: now);
+
+            // One repository row per name: ux_repos_org_id_full_name is unique, and a fixture seeds
+            // several sessions against the same repository.
+            var repo = await db.Repos.FirstOrDefaultAsync(
+                row => row.OrgId == OrgId && row.FullName == repoFullName,
+                token);
+
+            if (repo is null)
+            {
+                repo = Repo.Connect(OrgId, Random.Shared.Next(1, int.MaxValue), repoFullName, now: now);
+                db.Repos.Add(repo);
+            }
+
+            var request = Request.File(OrgId, repo.Id, user.Id, "Remember the last selected vertical", now: now);
+
+            var spec = Spec.Draft(
+                request.Id,
+                1,
+                "Remember the last selected vertical",
+                "The wizard opens on the vertical you used last time.",
+                "## Approach\nPersist the selection.",
+                """["Vertical is pre-selected on return"]""",
+                now: now);
+
+            var session = Session.Queue(
+                spec.Id,
+                RunnerKind.Agent,
+                "openrouter/deepseek/deepseek-r1",
+                now: now,
+                id: sessionId);
+
+            db.Users.Add(user);
+            db.Requests.Add(request);
+            db.Specs.Add(spec);
+            db.Sessions.Add(session);
+
+            await db.SaveChangesAsync(token);
+
+            if (dispatched)
+            {
+                await MarkDispatchedAsync(provider, session.Id);
+            }
+
+            return session.Id;
+        });
+
+    /// <summary>Writes the dispatch claim <c>SessionCoordinator</c> writes before calling a backend.</summary>
+    public Task MarkDispatchedAsync(Guid sessionId)
+        => InScopeAsync(provider => MarkDispatchedAsync(provider, sessionId));
+
+    /// <summary>Moves a session, the way settlement or the cancel button would.</summary>
+    public Task MoveSessionAsync(Guid sessionId, SessionStatus? status = null, bool cancelRequested = false)
+        => InScopeAsync(async provider =>
+        {
+            var db = provider.GetRequiredService<CharterDbContext>();
+            var session = await db.Sessions.FirstAsync(
+                row => row.Id == sessionId,
+                TestContext.Current.CancellationToken);
+
+            if (status is { } moved)
+            {
+                session.TransitionTo(moved, Clock.GetUtcNow());
+            }
+
+            if (cancelRequested)
+            {
+                session.RequestCancellation(Clock.GetUtcNow());
+            }
+
+            await db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        });
+
+    private static async Task MarkDispatchedAsync(IServiceProvider provider, Guid sessionId)
+        => await provider.GetRequiredService<Charter.Orchestration.SessionJournal>().AppendAsync(
+            sessionId,
+            Charter.Orchestration.OrchestrationEventTypes.SessionDispatched,
+            """{"runner":"agent","generation":0}""",
+            $"dispatch:{sessionId:D}:0",
+            cancellationToken: TestContext.Current.CancellationToken);
+
     /// <summary>Reads a job row back, untracked.</summary>
     public Task<Job?> JobAsync(Guid jobId) =>
         InScopeAsync(async provider => await provider.GetRequiredService<CharterDbContext>()
@@ -386,7 +523,22 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
             .FirstOrDefaultAsync(agent => agent.Id == agentId, TestContext.Current.CancellationToken));
 
     /// <summary>Returns null — and the caller returns green — when no test database is configured.</summary>
-    public static async Task<AgentPlaneFixture?> CreateAsync(Action<AgentPlaneOptions>? configure = null)
+    public static Task<AgentPlaneFixture?> CreateAsync(Action<AgentPlaneOptions>? configure = null)
+        => CreateAsync(isolated: false, configure);
+
+    /// <summary>
+    /// As above, optionally in a schema of its own.
+    /// </summary>
+    /// <param name="isolated">
+    /// <see langword="true"/> to migrate a private schema and drop it on dispose. Costs one migration,
+    /// and buys a <c>jobs</c> table nobody else is enqueueing into — which a test whose subject is
+    /// <em>what a claim sweeps up</em> needs, because a job requiring no capabilities is claimable by
+    /// every worker in the suite and the shared queue makes such a test both flaky and infectious.
+    /// </param>
+    /// <param name="configure">Options overrides, as for the shared-database form.</param>
+    public static async Task<AgentPlaneFixture?> CreateAsync(
+        bool isolated,
+        Action<AgentPlaneOptions>? configure = null)
     {
         var url = Environment.GetEnvironmentVariable(DatabaseUrlVariable);
         if (string.IsNullOrWhiteSpace(url))
@@ -401,9 +553,14 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
         // claims swept away by the first sweep another test ran.
         var clock = new TestClock(DateTimeOffset.UtcNow);
 
+        var schema = isolated ? $"charter_agent_{Guid.NewGuid():N}"[..40] : null;
+        var connectionString = schema is null
+            ? DatabaseUrl.ToNpgsql(url)
+            : await CreateSchemaAsync(DatabaseUrl.ToNpgsql(url), schema);
+
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddCharterData(DatabaseUrl.ToNpgsql(url));
+        services.AddCharterData(connectionString);
 
         // PBKDF2 at production parameters is the right cost on a connect and the wrong cost in a
         // test that pairs a dozen agents. The construction under test is the same either way.
@@ -411,6 +568,11 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
         services.AddSingleton<TimeProvider>(clock);
         services.AddSingleton<IRunnerCredentialBroker, StubRunnerCredentialBroker>();
         services.AddSingleton(new RunnerSessionTokens("charter-test-secret-key-0123456789"));
+
+        // Registered by AddCharterOrchestration in the real host, and needed here for the same reason:
+        // without it, a frame handler that streams an event into the journal fails on a missing service
+        // rather than on the behaviour under test — which would let a guard pass for being unreachable.
+        services.AddScoped<Charter.Orchestration.SessionJournal>();
         services.AddCharterAgentPlane(options =>
         {
             // Shorter than Job.DefaultLease on purpose. A lease-expiry test advances the clock past
@@ -431,13 +593,34 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
         {
             var db = scope.ServiceProvider.GetRequiredService<CharterDbContext>();
 
-            await Migrated.Value;
+            if (schema is null)
+            {
+                await Migrated.Value;
+            }
+            else
+            {
+                await db.Database.MigrateAsync(TestContext.Current.CancellationToken);
+            }
 
             db.Organizations.Add(Organization.Create($"agent-plane-{tag}", id: orgId, now: clock.GetUtcNow()));
             await db.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
-        return new AgentPlaneFixture(provider, orgId, tag, clock);
+        return new AgentPlaneFixture(provider, orgId, tag, clock, connectionString, schema);
+    }
+
+    /// <summary>Creates a private schema and returns a connection string whose search path is it.</summary>
+    private static async Task<string> CreateSchemaAsync(string connectionString, string schema)
+    {
+        await using (var connection = new NpgsqlConnection(connectionString))
+        {
+            await connection.OpenAsync(TestContext.Current.CancellationToken);
+
+            await using var command = new NpgsqlCommand($"CREATE SCHEMA \"{schema}\";", connection);
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        return new NpgsqlConnectionStringBuilder(connectionString) { SearchPath = schema }.ConnectionString;
     }
 
     private static async Task MigrateAsync(DbContextOptions<CharterDbContext> options)
@@ -446,5 +629,28 @@ public sealed class AgentPlaneFixture : IAsyncDisposable
         await db.Database.MigrateAsync();
     }
 
-    public async ValueTask DisposeAsync() => await _services.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _services.DisposeAsync();
+
+        if (_schema is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var builder = new NpgsqlConnectionStringBuilder(_connectionString) { SearchPath = null };
+
+            await using var connection = new NpgsqlConnection(builder.ConnectionString);
+            await connection.OpenAsync(CancellationToken.None);
+
+            await using var command = new NpgsqlCommand($"DROP SCHEMA \"{_schema}\" CASCADE;", connection);
+            await command.ExecuteNonQueryAsync(CancellationToken.None);
+        }
+        catch (NpgsqlException)
+        {
+            // A schema that will not drop is a test-server problem, not a test failure.
+        }
+    }
 }

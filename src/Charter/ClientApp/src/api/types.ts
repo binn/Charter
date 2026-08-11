@@ -303,10 +303,10 @@ export interface ScopeEntry {
 /**
  * What the recon session found.
  *
- * **Not yet served by `GET /api/repos/{id}`** — the endpoint reports the steps and the pull request
- * but not recon's own output, so this is the frontend's half of a contract the control plane has
- * still to fill in. Absent means recon has not proposed a scope yet, and the wizard says so rather
- * than rendering an empty tree.
+ * Served by `GET /api/repos/{id}` and read back out of the `repo.scope.proposed` audit entry, so it
+ * survives the run that produced it — §9 makes this the thing an engineer *edits* before the
+ * repository is requestable. Absent means recon has not proposed a scope yet, and the wizard says so
+ * rather than rendering an empty tree.
  */
 export interface ScopeProposal {
   /** "ASP.NET Core 10", "React 19" — recon's detected stack, shown verbatim. */
@@ -380,8 +380,108 @@ export interface RepoOnboarding {
   lastSmokeTest?: SmokeTestOutcome;
   mergeGate?: MergeGate;
   proposedScope?: ScopeProposal;
-  /** The primer draft the agent wrote, for the engineer to edit before publishing (§9 step 5). */
+  /**
+   * What the primer editor opens with (§9 step 5).
+   *
+   * The published primer once there is one — you edit a page starting from the page — and before
+   * that the draft Charter scaffolded from what recon found. Absent when recon has not run and
+   * nothing is published, because there is then nothing to edit but an empty box.
+   */
   primerDraftMd?: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Repo access (§7.3 guardrail 1) — who may file against a repository         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One grant, addressed either to a person or to a whole role, never both.
+ *
+ * **The absence of a row is the refusal.** §7.3 makes repo scope deny-by-default, so this list is
+ * exactly what exists — there is no synthesised "denied" row for everybody who has no grant, because
+ * that would be a list of the whole organisation and would read as a policy rather than as the
+ * default.
+ */
+export interface RepoAccessGrant {
+  /** Absent on a role grant. */
+  memberId?: Id;
+  /** Sent with the grant so the screen can name a person rather than an opaque id. */
+  memberName?: string;
+  memberEmail?: string;
+  /** Absent on a member grant. */
+  role?: Role;
+  canRequest: boolean;
+}
+
+/** `GET /api/repos/{id}/access`. */
+export interface RepoAccess {
+  grants: RepoAccessGrant[];
+  /**
+   * §9: false until the smoke test passes, whatever the grants say. Carried beside them because an
+   * admin who has just granted access mid-onboarding needs to know why nobody can see it yet.
+   */
+  requesterVisible: boolean;
+}
+
+/** `POST /api/repos/{id}/access` — grant or withhold, one row at a time. */
+export interface RepoAccessGrantBody {
+  /** Exactly one of `memberId` and `role`. */
+  memberId?: Id;
+  role?: Role;
+  /** False writes a withholding row, which beats every granting row at the same level. */
+  canRequest: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Members, roles and the audit log (§7.1, §7.3 guardrail 5)                  */
+/* -------------------------------------------------------------------------- */
+
+/** One member of the organisation. Administrators only — this carries an email address. */
+export interface Member {
+  id: Id;
+  displayName: string;
+  email: string;
+  /** Additive, and always at least one (§7.1). */
+  roles: Role[];
+  /** §26.10: repo creation is a capability rather than a role. */
+  canCreateRepo: boolean;
+  joinedAt: Iso8601;
+  /** True for the administrator reading the screen. */
+  isYou: boolean;
+}
+
+/**
+ * `POST /api/members/{id}/roles` — add or remove one role.
+ *
+ * One verb per call rather than a whole set: a set replaces state the caller read minutes ago, and a
+ * single verb is what the audit log records (`member.role.granted`, `member.role.revoked`).
+ */
+export interface SetMemberRoleBody {
+  role: Role;
+  granted: boolean;
+}
+
+/** One thing that happened, attributable to one named human (§7.3, guardrail 5). */
+export interface AuditEntry {
+  id: Id;
+  at: Iso8601;
+  /** The dotted verb, such as `repo.scope.granted`. */
+  action: string;
+  /** The same fact as a sentence, for the person reading the screen. */
+  summary: string;
+  /** Absent for the few things Charter does itself — and that absence is the point (§7.3). */
+  actorName?: string;
+  actorEmail?: string;
+  targetType: string;
+  targetId?: Id;
+  /** Short metadata, when there is any. */
+  details?: Record<string, string>;
+}
+
+/** `GET /api/audit` — newest first. */
+export interface AuditLog {
+  entries: AuditEntry[];
+  hasMore: boolean;
 }
 
 /** `POST /api/repos` (§9 step 1). */

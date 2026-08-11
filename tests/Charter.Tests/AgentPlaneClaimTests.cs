@@ -205,6 +205,7 @@ public class AgentPlaneClaimTests
                 fixture.Options.Lease,
                 4,
                 [AgentRunner.ClaimCapability, fixture.Tag],
+                AgentRunner.ClaimCapability,
                 fixture.Clock.GetUtcNow(),
                 TestContext.Current.CancellationToken));
 
@@ -236,8 +237,8 @@ public class AgentPlaneClaimTests
                 fixture.Options.Lease,
                 8,
                 advertised,
-                fixture.Clock.GetUtcNow(),
-                TestContext.Current.CancellationToken));
+                now: fixture.Clock.GetUtcNow(),
+                cancellationToken: TestContext.Current.CancellationToken));
 
         Assert.DoesNotContain(claimed, job => job.Id == jobId);
         Assert.Equal(JobStatus.Pending, (await fixture.JobAsync(jobId))!.Status);
@@ -375,6 +376,127 @@ public class AgentPlaneClaimTests
         // make three lapsed leases a terminal failure with an unhelpful message.
         var abandoned = await RunOneAsync(fixture, agentId, AgentJobOutcomes.Abandoned, "the lease expired");
         Assert.Equal(JobStatus.Completed, abandoned.Status);
+    }
+
+    [Fact]
+    public async Task AnAgentCannotStreamEventsIntoASessionItDoesNotHold()
+    {
+        await using var fixture = await AgentPlaneFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var (agentId, _) = await fixture.PairAsync();
+
+        // Somebody else's session, real enough for the append to have succeeded — so the assertion
+        // below is about the guard and not about a foreign key.
+        var sessionId = await fixture.SeedSessionAsync();
+        var jobId = await fixture.EnqueueClaimableAsync(sessionId);
+
+        var (channel, run) = fixture.Connect(agentId);
+        await fixture.HandshakeAsync(channel);
+
+        channel.Send(Envelope.Create(
+            MessageTypes.JobEvent,
+            new JobEventPayload
+            {
+                JobId = jobId.ToString("D"),
+                Sequence = 1,
+                Kind = "log",
+                Message = "everything is fine",
+                At = fixture.Clock.GetUtcNow(),
+            },
+            fixture.Clock.GetUtcNow()));
+
+        channel.Send(Envelope.Create(
+            MessageTypes.Heartbeat,
+            new HeartbeatPayload
+            {
+                Status = "ready",
+                HeldJobIds = [],
+                AvailableSlots = 2,
+                CapabilitiesHash = "hash",
+            },
+            fixture.Clock.GetUtcNow()));
+
+        await channel.ExpectAsync(MessageTypes.HeartbeatAck);
+
+        // The job id came out of a frame the agent composed, so it is a request and not a fact. A
+        // transcript is what a requester and an engineer both read as the account of what happened,
+        // and only the worker actually holding the claim gets to write it (sections 11, 16).
+        var events = await fixture.InScopeAsync(async provider =>
+            await provider.GetRequiredService<CharterDbContext>().Events
+                .AsNoTracking()
+                .CountAsync(
+                    candidate => candidate.SessionId == sessionId,
+                    TestContext.Current.CancellationToken));
+
+        Assert.Equal(0, events);
+
+        channel.Disconnect();
+        await run;
+    }
+
+    [Fact]
+    public async Task AbandoningAJobTheAgentDoesNotHoldDoesNotDuplicateIt()
+    {
+        await using var fixture = await AgentPlaneFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var (agentId, _) = await fixture.PairAsync();
+
+        // Queued and never claimed by anybody. A lease that lapsed under a slow agent leaves the same
+        // shape, and that is the case this guards: the frame names a job the agent no longer holds.
+        var jobId = await fixture.EnqueueClaimableAsync(Guid.CreateVersion7());
+
+        var (channel, run) = fixture.Connect(agentId);
+        await fixture.HandshakeAsync(channel);
+
+        channel.Send(Envelope.Create(
+            MessageTypes.JobResult,
+            new JobResultPayload
+            {
+                JobId = jobId.ToString("D"),
+                Outcome = AgentJobOutcomes.Abandoned,
+                Error = "the lease expired",
+                FinishedAt = fixture.Clock.GetUtcNow(),
+                DurationMs = 10,
+            },
+            fixture.Clock.GetUtcNow()));
+
+        channel.Send(Envelope.Create(
+            MessageTypes.Heartbeat,
+            new HeartbeatPayload
+            {
+                Status = "ready",
+                HeldJobIds = [],
+                AvailableSlots = 2,
+                CapabilitiesHash = "hash",
+            },
+            fixture.Clock.GetUtcNow()));
+
+        await channel.ExpectAsync(MessageTypes.HeartbeatAck);
+
+        // Returning work to the queue means enqueueing an equivalent row and completing the claim. The
+        // completion is guarded by claimed_by and would have no-opped here, so acting on the frame's
+        // word would have left a second copy of a session somebody else may already be running.
+        Assert.Equal(JobStatus.Pending, (await fixture.JobAsync(jobId))!.Status);
+
+        var rows = await fixture.InScopeAsync(async provider =>
+            await provider.GetRequiredService<CharterDbContext>().Jobs
+                .AsNoTracking()
+                .CountAsync(
+                    job => job.RequiredCapabilities.Contains(fixture.Tag),
+                    TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, rows);
+
+        channel.Disconnect();
+        await run;
     }
 
     [Fact]

@@ -32,16 +32,26 @@ public sealed class BudgetOptions
 
     /// <summary>
     /// The per-session spend an organisation-default budget lets through without an approver.
+    /// <c>CHARTER_DEFAULT_SESSION_BUDGET_USD</c>.
     /// </summary>
     /// <remarks>
     /// Section 34.9: <em>org-level <c>require_approval</c> above a modest per-session threshold</em>.
     /// Modest is the point — the default exists so nobody is surprised by a four-figure month, not
     /// so every request waits on somebody.
     /// </remarks>
-    public decimal DefaultApprovalThresholdUsd { get; set; } = 5m;
+    public decimal DefaultApprovalThresholdUsd { get; set; } = 5.00m;
 
-    /// <summary>The amount an organisation-default budget is created with.</summary>
-    public decimal DefaultOrganizationAmountUsd { get; set; } = 500m;
+    /// <summary>
+    /// The amount an organisation-default budget is created with.
+    /// <c>CHARTER_DEFAULT_MONTHLY_BUDGET_USD</c>.
+    /// </summary>
+    /// <remarks>
+    /// These two are the only values here section 4.2 gives a variable to, and their defaults are
+    /// section 4.2's rather than numbers of this file's own choosing. They used to disagree — 500
+    /// here against a documented 100 — which nobody noticed, because no host projected the variables
+    /// into this record at all and the documented figure was reaching nothing.
+    /// </remarks>
+    public decimal DefaultOrganizationAmountUsd { get; set; } = 100.00m;
 
     /// <summary>
     /// The cheaper model a <c>downgrade_model</c> budget routes to when it has no repo-specific

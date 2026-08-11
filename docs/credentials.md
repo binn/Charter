@@ -33,11 +33,6 @@ cover.
 **`OpenAiCompatibleModelClient` pointed at OpenRouter is the default path**, which is why
 `CHARTER_MODEL_REFINE` and `CHARTER_MODEL_TEACH` default to `openrouter/anthropic/claude-sonnet-5`.
 
-**Neither variable is connected yet.** Both are parsed and validated and then not read by the services
-that call a model, so refinement, teaching, and the recap currently run on a hard-coded Anthropic model
-whatever you set. An instance whose only credential is an OpenRouter key will see that key resolved,
-sent to Anthropic, rejected with a `401`, and then marked invalid. Supply an `ANTHROPIC_API_KEY` until
-this is wired. `CHARTER_MODEL_BUILD` is wired and behaves as described below.
 One key reaches every model, and the model catalog and per-token prices come from OpenRouter itself
 rather than a table baked into the release. The other two clients are registered and work — set a
 `anthropic/` or `google/` identifier and Charter uses them — but nothing has to be configured to get a
@@ -75,9 +70,51 @@ OPENROUTER_API_KEY=sk-or-v1-EXAMPLEKEYNOTREAL
 At least one model credential must be resolvable at startup — either one of these or a credential
 already linked in the database. Startup fails if neither exists.
 
-**Linked accounts** are per person. A user links their own subscription or API key in Settings, and
-their requests run on it. This is what makes Charter usable in a team where people have their own
-plans, and it is what the resolution chain below is for.
+Neither variable gets a tier of its own in the chain below, because each one already *is* a tier:
+`ANTHROPIC_API_KEY` is the organisation's metered API key (tier 4) and `OPENROUTER_API_KEY` is
+OpenRouter (tier 5). Within its tier the environment key sorts last, so a credential you linked
+deliberately for the organisation is the one that serves.
+
+**Which key can serve which model matters.** An `openrouter/`-qualified identifier can only be served
+by an OpenRouter key, whatever else you have set — so an instance holding only `ANTHROPIC_API_KEY`
+with the default `CHARTER_MODEL_REFINE` resolves nothing. Either add an `OPENROUTER_API_KEY` or set
+`CHARTER_MODEL_REFINE` and `CHARTER_MODEL_TEACH` to `anthropic/` identifiers. The first-run report
+names the mismatch on its passing line, and the credentials list answers it per model.
+
+**Linked credentials** are rows, created through the API and owned by whoever created them. A member
+with the engineer or admin role links a key and it becomes available to the organisation; the
+resolution chain below is what decides when it is used. Charter stores it encrypted and never returns
+it again.
+
+```bash
+# List everything this instance can authenticate with, including the environment keys
+curl -s --cookie cookies.txt https://charter.example.com/api/credentials
+
+# Link one. `kind` is any of the kinds in the table below.
+curl -s --cookie cookies.txt -X POST https://charter.example.com/api/credentials \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"openrouter_key","secret":"sk-or-v1-YOUR-KEY"}'
+
+# Revoke one. Immediate.
+curl -s --cookie cookies.txt -X POST https://charter.example.com/api/credentials/{id}/revoke
+```
+
+| `kind` | Serves |
+|---|---|
+| `anthropic_oauth`, `anthropic_api_key` | Anthropic |
+| `openai_oauth`, `openai_api_key` | OpenAI |
+| `google_api_key` | Google Gemini |
+| `xai_api_key` | xAI / Grok |
+| `openrouter_key` | Every model on OpenRouter, and any other identifier routed through it |
+| `cursor_api_key` | `cursor-agent` builds only — never a control-plane call |
+| `custom_openai_compatible` | Any `/chat/completions` endpoint. Requires `baseUrl`. |
+
+All three routes are **engineer and administrator only**, enforced on the server, and both writes are
+audited. `POST` accepts `scope: "shared_pool"`, which returns the terms-of-service caution below
+rather than opting in silently.
+
+**There is no settings screen for this yet.** The routes work and are tested; the web app does not
+call them. Until it does, `curl` with a session cookie is the way to link a credential.
 
 ## How a credential is chosen
 
@@ -90,11 +127,25 @@ Resolved per session, in this order, skipping anything marked `exhausted` or `in
    not change when the subscription resets.
 3. **The organisation shared pool**, in `priority` order — subscription credentials whose owners have
    explicitly opted them in.
-4. **The organisation's metered API key.**
-5. **OpenRouter.**
+4. **The organisation's metered API key** — a linked grant first, then `ANTHROPIC_API_KEY`.
+5. **OpenRouter** — a linked grant first, then `OPENROUTER_API_KEY`.
 
-If everything is exhausted, the session does **not** fail. It moves to `Queued`, and the requester sees
-*waiting for capacity* with the earliest reset time. It starts on its own when capacity returns.
+If everything is exhausted **and a provider said when capacity returns**, the session does not fail. It
+waits, and the requester sees *waiting for capacity* with the earliest reset time. It starts on its own
+when capacity returns.
+
+Every other way of having no credential is a failure, and a loud one:
+
+| Situation | What happens |
+|---|---|
+| Rate limited, with a reset time | Waits, and resumes on its own |
+| Nothing configured that can serve this model | The request ends in *This turned out to be bigger than expected*, and the log and the job record name the variable to set |
+| Every candidate invalid, revoked, or expired | The same, worded as needing attention rather than a wait |
+| Rate limited with no reset header | The same — nothing is coming back on a timer, so waiting for it is waiting forever |
+
+This distinction is the difference between a request that starts by itself in twenty minutes and a
+request that sits in *Let's figure out what you need* until somebody goes looking in the container
+logs. The requester's copy never names an environment variable — that half goes to the operator.
 
 ## Exhaustion and failover
 
@@ -153,6 +204,13 @@ CHARTER_ALLOW_SHARED_POOL=true
 
 Then each owner opts their own credential in individually. That is an explicit action per credential,
 never a default and never something an admin can do on someone's behalf.
+
+**The instance switch is enforced at resolution, not only at opt-in.** While
+`CHARTER_ALLOW_SHARED_POOL` is unset or `false`, a credential already marked as pooled serves nobody
+but its owner: the shared-pool tier is skipped outright, and a session that would have used it queues
+as waiting for capacity or falls through to a metered key. Turning the switch off is therefore a
+complete stop rather than a rule about new opt-ins, which matters when the reason you are turning it
+off is that you have just read your provider's terms.
 
 Consent mechanics, because this spends someone else's quota:
 

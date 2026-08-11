@@ -1,5 +1,5 @@
-using System.Net.Sockets;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -298,17 +298,35 @@ public sealed class DockerRunner : IAgentRunner
     {
         ArgumentNullException.ThrowIfNull(cancellation);
 
-        // The external reference is the container id, but a control plane that restarted between
-        // starting the container and recording it has no reference to offer. The session label is
-        // what makes cancel work anyway (section 11: the button must actually kill the runner).
-        var containers = cancellation.ExternalReference is { Length: > 0 } reference
-            ? new[] { new DockerContainerSummary(reference, "running") }
-            : [.. await _docker.ListByLabelAsync(
-                DockerRunnerOptions.SessionLabel,
-                cancellation.SessionId.ToString("D"),
-                cancellationToken)];
+        // The session label, always, and never the external reference on its own. The reference is a
+        // container id, but it is folded from the session's events and session_started arrives from
+        // the execution plane — so acting on it unverified is a `docker kill` on any container id a
+        // sandbox cared to name, on the operator's own host. The label is written by this runner at
+        // dispatch and is the only statement about which container belongs to which session that the
+        // sandbox never touched (sections 16, 33.2).
+        var labelled = await _docker.ListByLabelAsync(
+            DockerRunnerOptions.SessionLabel,
+            cancellation.SessionId.ToString("D"),
+            cancellationToken);
 
-        if (containers.Length == 0)
+        // A control plane that restarted between starting the container and recording it has no
+        // reference to offer, which is why the label is the primary lookup rather than the fallback.
+        IReadOnlyList<DockerContainerSummary> containers =
+            cancellation.ExternalReference is { Length: > 0 } reference
+                ? [.. labelled.Where(container => string.Equals(container.Id, reference, StringComparison.Ordinal))]
+                : labelled;
+
+        // A reference that matches no container of this session is not a reason to fall back to the
+        // whole label set — it is a reason to stop, because the two disagree about what is running.
+        if (containers.Count == 0 && cancellation.ExternalReference is { Length: > 0 })
+        {
+            return RunnerCancelResult.NothingToStop(
+                "The container recorded for this session is not one of this session's containers, so "
+                + "Charter will not kill it. The session is settled here; check `docker ps` for a "
+                + "container still running against this session.");
+        }
+
+        if (containers.Count == 0)
         {
             return RunnerCancelResult.NothingToStop(
                 "No session container is running for this session, so there is nothing to stop here. "

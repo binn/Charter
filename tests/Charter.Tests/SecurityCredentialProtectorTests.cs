@@ -83,11 +83,9 @@ public class SecurityCredentialProtectorTests
         Assert.NotEqual(first, second);
 
         var firstNonce = first[
-            AesGcmCredentialProtector.NonceOffset..
-            (AesGcmCredentialProtector.NonceOffset + AesGcmCredentialProtector.NonceSize)];
+            AesGcmCredentialProtector.NonceOffset..(AesGcmCredentialProtector.NonceOffset + AesGcmCredentialProtector.NonceSize)];
         var secondNonce = second[
-            AesGcmCredentialProtector.NonceOffset..
-            (AesGcmCredentialProtector.NonceOffset + AesGcmCredentialProtector.NonceSize)];
+            AesGcmCredentialProtector.NonceOffset..(AesGcmCredentialProtector.NonceOffset + AesGcmCredentialProtector.NonceSize)];
 
         Assert.NotEqual(firstNonce, secondNonce);
         Assert.Equal(Plaintext, protector.Unprotect(first));

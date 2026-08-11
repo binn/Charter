@@ -22,9 +22,11 @@ You need:
 
 - PostgreSQL 16 or newer.
 - A GitHub App (App ID, private key, webhook secret). Charter uses it to read repositories, open pull
-  requests, and receive webhooks. Subscribe it to **Push**, **Pull request**, **Check suite**, and —
-  if your hosting platform announces preview environments by commenting on the pull request, as
-  Railway does — **Issue comment**. Anything else Charter receives is acknowledged and ignored.
+  requests, and receive webhooks. Subscribe it to **Push**, **Pull request**, **Pull request review**,
+  **Check suite**, and — if your hosting platform announces preview environments by commenting on the
+  pull request, as Railway does — **Issue comment**. Anything else Charter receives is acknowledged and
+  ignored. Without **Pull request review** a request never reaches *An engineer is checking it*; without
+  **Pull request** it never reaches *This is live*.
 - At least one model credential — an Anthropic API key, an OpenRouter key, or an account linked in the
   app after first boot.
 - Two random secrets of at least 32 bytes each:
@@ -52,10 +54,23 @@ be re-entered while a user exists. There is no default password and no open regi
 If the setup token scrolls past and you lose it, restart the container while no user exists — a new
 one is issued.
 
-**No HTTP route redeems the token yet.** The gate works, the token is generated and printed, and the
-service that redeems it is built and registered — but nothing maps an endpoint to it, and there is no
-sign-in route either. Setup mode is currently something you can observe rather than complete. See
-[getting-started.md](getting-started.md).
+### Do not deploy a demo instance
+
+`CHARTER_DEMO=true` changes this first boot: it seeds two accounts, so the instance is never in setup
+mode and no token is printed. Those accounts use a password that is published in the documentation,
+which makes a demo instance on a reachable URL an instance anyone can administer.
+
+Demo mode is for looking at Charter on your own machine. If you deploy one anyway, treat it as public
+— there is nothing valuable inside, and it can reach no model provider, code host or mail server, but
+it is still an open administrator account on a URL. And do not reuse the database afterwards: Charter
+will not seed over one that already holds an organisation or a user, so the demo accounts can only
+ever appear in a database that was empty, but nothing removes them once they are there. Start a fresh
+database for real work and claim it with a setup token. See
+[configuration.md](configuration.md#demo-mode).
+
+Redeeming the token and signing in both work over HTTP. Password sign-in is the only identity
+provider that does: the OAuth exchange is built and registered, but its callback route is not mapped.
+See [getting-started.md](getting-started.md).
 
 ## Docker Compose
 
@@ -146,8 +161,12 @@ the recommendation rather than merely the alternative. See [runners.md](runners.
 Railway and comparable platforms prohibit privileged containers and block Docker daemon access, and
 these constraints shape how Charter behaves everywhere ([spec §2.3](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)):
 
-- **No durable local disk.** Transcripts, diffs, and artifacts go to Postgres or S3-compatible storage,
-  never the container filesystem. Anything written to the container is gone on the next deploy.
+- **No durable local disk on a PaaS.** Transcripts, diffs, and artifacts go to Postgres, never the
+  container filesystem. Anything written to the container is gone on the next deploy, so leave
+  `CHARTER_STORAGE_BACKEND` at its default of `none`, or point it at an S3-compatible bucket. This is
+  a fact about these platforms rather than about Charter: a self-hoster on a VPS with a mounted
+  volume can set `CHARTER_STORAGE_BACKEND=filesystem` and use it
+  ([configuration.md](configuration.md)).
 - **The container can restart mid-session.** Charter holds no orchestration state in memory; every
   session is fully resumable from Postgres alone.
 - **The job queue is Postgres**, claimed with `SELECT ... FOR UPDATE SKIP LOCKED`. No Redis, no second
@@ -271,8 +290,10 @@ Also keep, outside the database:
   the ciphertext is intact and worthless. Store it where you store your other secrets, not only in the
   environment of the machine you are backing up.
 - `CHARTER_SECRET_KEY`. Losing it only signs everyone out.
-- Your S3 bucket, if you store verification artifacts there. Build artifacts have an `expires_at` and
-  are pruned by design, so they are usually not worth backing up.
+- Your object store, if `CHARTER_STORAGE_BACKEND` is set — the bucket, or the directory
+  `CHARTER_STORAGE_PATH` names. It holds offloaded transcript output, which is evidence about what a
+  session did rather than anything Charter needs to run. Losing it costs you the full text behind a
+  truncated transcript event, not functionality.
 
 ### What is safe to lose
 

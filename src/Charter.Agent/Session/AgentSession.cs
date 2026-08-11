@@ -73,6 +73,8 @@ public sealed class AgentSession
     private readonly HashSet<string> _running = new(StringComparer.Ordinal);
 
     private CapabilitySet _capabilities;
+    private string? _outstandingHeartbeatId;
+    private IReadOnlyList<string> _outstandingHeartbeatJobIds = [];
     private DateTimeOffset _nextHeartbeatAt;
     private DateTimeOffset _nextClaimAt;
     private DateTimeOffset _nextReprobeAt;
@@ -120,6 +122,8 @@ public sealed class AgentSession
         Phase = SessionPhase.Handshaking;
         _nextHeartbeatAt = now + HeartbeatInterval;
         _outstandingClaimId = null;
+        _outstandingHeartbeatId = null;
+        _outstandingHeartbeatJobIds = [];
 
         var hello = Envelope.Create(
             MessageTypes.Hello,
@@ -309,6 +313,8 @@ public sealed class AgentSession
     {
         Phase = SessionPhase.Handshaking;
         _outstandingClaimId = null;
+        _outstandingHeartbeatId = null;
+        _outstandingHeartbeatJobIds = [];
     }
 
     private SessionStep OnWelcome(Envelope envelope, DateTimeOffset now)
@@ -386,12 +392,31 @@ public sealed class AgentSession
             close: new SessionClose(negotiation.Message!, Fatal: false));
     }
 
+    /// <summary>
+    /// The ack. Renewals extend a lease; <em>omissions</em> end one (sections 33.3, 33.4).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The wire contract says a job absent from the ack has lost its lease, and the control plane
+    /// relies on it: <c>AgentConnection.RenewAsync</c> leaves out anything whose claim is gone — a
+    /// lapsed lease the sweep re-queued, or a job an admin cancelled — precisely so the agent stops.
+    /// Reading only the renewals turned that into a signal nothing acted on, and the local work went
+    /// on running until its own TTL happened to expire. In that window the job is claimable by another
+    /// worker, so two runners are on one session and both will try to push the same branch.
+    /// </para>
+    /// <para>
+    /// Only the jobs this agent actually reported in the heartbeat being answered are considered. A
+    /// job granted in between the heartbeat and its ack was never up for renewal, and stopping it
+    /// would kill work the plane had just handed over.
+    /// </para>
+    /// </remarks>
     private SessionStep OnHeartbeatAck(Envelope envelope, DateTimeOffset now)
     {
         var ack = envelope.ReadPayload<HeartbeatAckPayload>();
         _lastAckAt = now;
 
         var notes = new List<SessionNote>();
+        var stop = new List<JobStop>();
         var reprobe = false;
 
         if (ack is not null)
@@ -406,6 +431,19 @@ public sealed class AgentSession
                 }
             }
 
+            foreach (var jobId in Unrenewed(envelope, ack))
+            {
+                _running.Remove(jobId);
+                _leases.Release(jobId);
+
+                // Report: false, for the same reason a lapsed lease reports nothing — the claim is
+                // already somebody else's, and a result from here would contradict whoever holds it.
+                stop.Add(new JobStop(jobId, "the control plane did not renew the lease", Report: false));
+                notes.Add(new SessionNote(
+                    LogLevel.Warning,
+                    $"job {jobId}: the control plane did not renew the lease, stopping local work"));
+            }
+
             if (ack.ReprobeRequested && !_reprobeInFlight)
             {
                 _reprobeInFlight = true;
@@ -414,7 +452,29 @@ public sealed class AgentSession
             }
         }
 
-        return Step(now, notes: notes, reprobe: reprobe);
+        return Step(now, stop: stop, notes: notes, reprobe: reprobe);
+    }
+
+    /// <summary>Jobs this agent reported in the heartbeat this ack answers, and the ack left out.</summary>
+    private IReadOnlyList<string> Unrenewed(Envelope envelope, HeartbeatAckPayload ack)
+    {
+        // Matched by correlation where there is one. An uncorrelated ack is taken to answer the
+        // outstanding heartbeat, which is what it can only be; an ack for a heartbeat two beats ago is
+        // ignored rather than guessed at.
+        if (_outstandingHeartbeatId is null
+            || (envelope.CorrelationId is { Length: > 0 } correlation
+                && !string.Equals(correlation, _outstandingHeartbeatId, StringComparison.Ordinal)))
+        {
+            return [];
+        }
+
+        var reported = _outstandingHeartbeatJobIds;
+        _outstandingHeartbeatId = null;
+        _outstandingHeartbeatJobIds = [];
+
+        var renewed = ack.Leases.Select(grant => grant.JobId).ToHashSet(StringComparer.Ordinal);
+
+        return [.. reported.Where(jobId => !renewed.Contains(jobId) && _leases.Holds(jobId))];
     }
 
     private SessionStep OnJobGrant(Envelope envelope, DateTimeOffset now)
@@ -436,6 +496,21 @@ public sealed class AgentSession
 
         foreach (var job in grant.Jobs)
         {
+            // A job this agent is already running, granted a second time. Clock skew between a lease
+            // the plane thought had lapsed and one this agent still holds is enough to produce it, and
+            // starting it again would put two shims on one session on one host — both pushing the same
+            // branch, and only one of them reachable by a cancel. The lease is taken at its new expiry
+            // and the work already in flight is left alone; it is the same job.
+            if (_running.Contains(job.JobId))
+            {
+                _leases.Add(job.JobId, job.LeaseExpiresAt);
+                notes.Add(new SessionNote(
+                    LogLevel.Warning,
+                    $"job {job.JobId}: granted again while already running here; keeping the running one " +
+                    "and extending its lease"));
+                continue;
+            }
+
             // Refusing to claim on a version mismatch has to hold even if the plane grants anyway.
             if (Phase != SessionPhase.Ready)
             {
@@ -558,8 +633,11 @@ public sealed class AgentSession
         return envelope;
     }
 
-    private Envelope Heartbeat(DateTimeOffset now) =>
-        Envelope.Create(
+    private Envelope Heartbeat(DateTimeOffset now)
+    {
+        var held = _leases.HeldJobIds;
+
+        var envelope = Envelope.Create(
             MessageTypes.Heartbeat,
             new HeartbeatPayload
             {
@@ -569,11 +647,18 @@ public sealed class AgentSession
                     SessionPhase.Closed => "draining",
                     _ => _running.Count > 0 ? "busy" : "ready",
                 },
-                HeldJobIds = _leases.HeldJobIds,
+                HeldJobIds = held,
                 AvailableSlots = AvailableSlots,
                 CapabilitiesHash = _capabilities.Hash,
             },
             now);
+
+        // Remembered so the ack can be read for what it leaves out as well as what it carries.
+        _outstandingHeartbeatId = envelope.Id;
+        _outstandingHeartbeatJobIds = held;
+
+        return envelope;
+    }
 
     private Envelope Reject(JobAssignment job, string reason, DateTimeOffset now) =>
         Envelope.Create(

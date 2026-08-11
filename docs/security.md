@@ -85,6 +85,41 @@ It does not receive, and cannot read:
 - OAuth refresh tokens of any kind
 - Credentials for any repository other than the one in the job
 
+**A runner's credentials are scoped to one session, not to its repository.** This distinction is
+easy to lose and expensive to get wrong. On GitHub Actions the workflow authenticates to Charter with
+`secrets.CHARTER_SESSION_SECRET`, which is written once per repository — every workflow run in that
+repository reads the same value. Proving you are a run in a repository is therefore *not* proving
+which session you are, so the exchange requires a second factor: a per-session token minted at
+dispatch and delivered only in the dispatch for that session. A run started for one session cannot
+produce another session's, and so cannot obtain another session's repository token, another session's
+callback token, or the ability to write another session's transcript and declare it failed. The
+session token is not a credential and grants nothing on its own, which is why it is safe in a dispatch
+payload that anyone with repository read access can see, and the repository secret never appears in
+one.
+
+**Credentials are minted only while a session is genuinely running.** Every mint — the HTTP exchange
+and the Charter Agent's claim alike — is refused for a session that has ended, has had cancel pressed
+on it, or that no backend has dispatched. The credentials a session receives are short-lived by
+design, and a token issued for work that has already been called off would outlive the thing that
+justified it by up to twelve hours. The repository a token is scoped to is read from the session's own
+record rather than taken from whatever the caller named.
+
+**Nothing a runner reports about where it is running is taken at its word.** A runner tells Charter
+the URL of the run it is executing as — `run_url` — so that the status thread can link to it and so
+that pressing Cancel has something to cancel. That value originates inside the sandbox, in the same
+process as an agent reading repository content Charter does not control, so it is treated as a claim
+rather than a fact. Charter checks it against the repository the session belongs to, read from the
+session's own record, and **refuses the callback outright if the two disagree** rather than
+normalising it: a reference naming another repository is a lie, and there is nothing to sanitise.
+The credential exchange refuses to mint at all in that case, because a run that has just misreported
+where it is running is not one to lend a contribute-scoped token to. The same check runs again when a
+run is cancelled, so a reference recorded by an older version of Charter cannot be acted on either.
+Without it, cancelling one session could issue a write against **any other repository connected to
+the instance**, using the instance's own credential — and report success while the session it was
+supposed to stop kept running and kept spending. The same rule covers the other backends' handles:
+Charter will not kill a container, or cancel an agent job, that does not belong to the session being
+cancelled.
+
 **Transcript and code panes are gated on repository read access, not on user preference.** A requester
 toggling to the detailed view would otherwise be a permission bypass: transcripts leak file paths,
 environment variable names, dependency versions, and error output. The API omits engineer-only fields
@@ -96,6 +131,17 @@ review. See [charter-folder.md](charter-folder.md).
 
 **Path scope is enforced in the runner, not the UI.** A session cannot widen its own scope, because
 enforcement does not sit on the side the agent can influence.
+
+**Stored objects are proxied, not linked.** When `CHARTER_STORAGE_BACKEND` is set, offloaded
+transcript output is read back at `GET /api/requests/{id}/blobs/{key}`, behind the same repository
+read check that governs the transcript pane. Charter generates no public bucket URLs and no presigned
+links, and has no setting that would: a link that authorises whoever holds it is a permission bypass
+that never reaches Charter to be refused. Object keys built from untrusted strings — a check name out
+of a repository's `.charter/config.yml`, a file path out of an agent's tool call — are reduced to a
+single safe path segment, and every read is checked against the session the caller was authorised
+for, so a key copied from one request cannot address another's bytes. Objects are served as
+attachments with `X-Content-Type-Options: nosniff` and a content type derived from the key Charter
+chose, never from what the store reports.
 
 ## The merge gate is only as strong as your provider makes it
 
@@ -348,8 +394,13 @@ engineer's daily driver.**
 
 **Repository creation is a privilege escalation** and is gated three ways: instance opt-in
 (`CHARTER_ALLOW_REPO_CREATION=false` by default), a GitHub App scope you grant deliberately, and a
-distinct `can_create_repo` role capability. The standards repository and template repositories are
-outside every agent's write scope, always. See [standards.md](standards.md).
+distinct `can_create_repo` role capability. All three are checked together, and the refusal names
+whichever gate stopped it. The standards repository and template repositories are outside every
+agent's write scope, always. See [standards.md](standards.md).
+
+There is nothing in Charter today that creates a repository — the new-project flow of §26.4 is not
+built — so the gate protects a door with nothing behind it yet. Leave the variable off until the flow
+exists; there is no reason to grant the App the scope in the meantime.
 
 **Transcripts contain your source code.** Setting `CHARTER_LOG_INCLUDE_TRANSCRIPTS=true` exports
 transcript bodies to every enabled log sink. If any of those is a third-party SaaS, that is your code

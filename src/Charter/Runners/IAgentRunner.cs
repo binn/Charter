@@ -97,15 +97,37 @@ public sealed record RunnerDispatchResult(bool Accepted, string? ExternalReferen
 }
 
 /// <summary>A request to stop a run that is already out there (section 11).</summary>
-public sealed record RunnerCancellation(Guid SessionId, string? ExternalReference, string Reason);
+/// <param name="SessionId">The session being stopped.</param>
+/// <param name="ExternalReference">
+/// The handle to act on. <strong>Not necessarily trustworthy.</strong> It is folded from the session's
+/// event stream, and one of the events that can set it — <c>session_started</c> — arrives from the
+/// execution plane. New references are validated at the callback
+/// (<see cref="RunnerRunReference"/>), but rows written before that check existed are not, so a
+/// backend must satisfy itself the reference is this session's before acting on it.
+/// </param>
+/// <param name="Reason">Plain language, recorded on the session and shown to an engineer.</param>
+/// <param name="RepoFullName">
+/// The repository the session belongs to, read from its own aggregate by the caller. The only
+/// repository a cancel for this session may touch (sections 7.4, 16). Null when the caller could not
+/// resolve one, which a backend must treat as "cannot verify" rather than "no restriction".
+/// </param>
+public sealed record RunnerCancellation(
+    Guid SessionId,
+    string? ExternalReference,
+    string Reason,
+    string? RepoFullName = null);
 
 /// <summary>
 /// What cancelling achieved.
 /// </summary>
 /// <param name="Stopped">
-/// True when the backend confirmed the run is dead. False is not a failure: a GitHub Actions job that
-/// already finished cannot be cancelled, and the session still settles.
+/// True when the backend confirmed the run is dead, and <strong>only</strong> then. False is not
+/// always a failure — a GitHub Actions job that already finished cannot be cancelled, and the session
+/// still settles — but it is never optimism. Section 11 makes the cancel button a promise that the
+/// runner stopped spending, so a backend that could not reach the run, could not identify it, or was
+/// handed a reference it will not act on reports <see cref="NothingToStop"/> and says why.
 /// </param>
+/// <param name="Explanation">Why nothing was stopped. Required whenever <paramref name="Stopped"/> is false.</param>
 public sealed record RunnerCancelResult(bool Stopped, string? Explanation)
 {
     public static RunnerCancelResult Confirmed { get; } = new(true, null);

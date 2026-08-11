@@ -416,16 +416,37 @@ public sealed class SessionCoordinator
 
             if (runner is not null)
             {
-                var stopped = await runner.CancelAsync(
-                    new RunnerCancellation(sessionId, summary.ExternalReference, reason),
+                // The one repository this cancel may touch, read from the session's own aggregate. The
+                // external reference is folded from events and session_started arrives from the
+                // execution plane, so the backend needs a trustworthy value to check it against
+                // (sections 7.4, 16).
+                var repo = await SessionCredentialGuard.SessionRepoFullNameAsync(
+                    _db,
+                    sessionId,
                     cancellationToken);
 
-                _logger.LogInformation(
-                    "Cancellation of session {SessionId} on {Runner}: stopped={Stopped} {Explanation}",
-                    sessionId,
-                    kind,
-                    stopped.Stopped,
-                    stopped.Explanation);
+                var stopped = await runner.CancelAsync(
+                    new RunnerCancellation(sessionId, summary.ExternalReference, reason, repo),
+                    cancellationToken);
+
+                if (stopped.Stopped)
+                {
+                    _logger.LogInformation(
+                        "Cancellation of session {SessionId} on {Runner}: the run was stopped",
+                        sessionId,
+                        kind);
+                }
+                else
+                {
+                    // Section 11 promises the cancel button kills the runner. When it did not, the
+                    // session still settles here — there is nothing better to do with it — but an
+                    // operator has to be able to find out that something may still be spending.
+                    _logger.LogWarning(
+                        "Cancellation of session {SessionId} on {Runner} stopped nothing: {Explanation}",
+                        sessionId,
+                        kind,
+                        stopped.Explanation);
+                }
             }
         }
 

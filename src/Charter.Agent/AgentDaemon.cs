@@ -328,8 +328,24 @@ public sealed class AgentDaemon
         }
     }
 
+    /// <summary>
+    /// Starts one granted job, unless one of that id is already running here.
+    /// </summary>
+    /// <remarks>
+    /// The guard is not redundant with <see cref="AgentSession"/>'s. Overwriting the handle would drop
+    /// the first job's <see cref="CancellationTokenSource"/> on the floor: the shim would keep running
+    /// with nothing holding its token, so cancel, revoke and lease expiry would all reach the second
+    /// copy and none of them the first — and the first would go on to push a branch. A daemon that
+    /// cannot stop what it started is worse than one that refuses to start twice.
+    /// </remarks>
     private void StartJob(JobAssignment job, CancellationToken cancellationToken)
     {
+        if (_running.ContainsKey(job.JobId))
+        {
+            _log.Warn($"job {job.JobId}: already running on this host; ignoring the duplicate grant");
+            return;
+        }
+
         // Register every secret before anything can print it, and forget it when the job ends.
         _scrubber.Register(job.Secrets?.Values());
 
