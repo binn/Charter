@@ -126,7 +126,7 @@ jobs:
       # what lets the shim push the session branch later in the job without the
       # token ever being handed to the agent process.
       - name: Checkout target repository at base commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.event.client_payload.repo }}
           ref: ${{ github.event.client_payload.base_commit_sha }}
