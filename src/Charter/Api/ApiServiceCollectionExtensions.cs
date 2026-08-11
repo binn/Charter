@@ -1,5 +1,7 @@
+using Charter.Api.Accounts;
 using Charter.Api.Changes;
 using Charter.Api.Endpoints;
+using Charter.Api.Repos;
 using Charter.Api.Requests;
 using Charter.Api.Runners;
 using Charter.Api.Settings;
@@ -7,6 +9,8 @@ using Charter.Api.Setup;
 using Charter.Api.Viewer;
 using Charter.Hubs;
 using Charter.Notifications;
+using Charter.Onboarding;
+using Charter.Orchestration;
 using Charter.VersionControl;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
@@ -55,6 +59,14 @@ public static class ApiServiceCollectionExtensions
         // tester. TryAdd throughout in there too, so a host that already called it keeps what it has.
         services.AddCharterNotifications();
 
+        // Section 9's flow already existed with no HTTP surface at all. Called here, and TryAdd
+        // throughout in there too, so a host that already wired onboarding keeps what it has and one
+        // that only called AddCharterApi still resolves the repo routes.
+        services.AddCharterOnboarding();
+
+        services.AddScoped<AccountService>();
+        services.AddScoped<RepoOnboardingService>();
+
         services.AddScoped<RequestQueryService>();
         services.AddScoped<RequestCommandService>();
         services.AddScoped<TranscriptQueryService>();
@@ -84,6 +96,12 @@ public static class ApiServiceCollectionExtensions
             .AddJsonProtocol(options => options.PayloadSerializerOptions = CharterApiJson.CreateWritableCopy());
 
         services.AddScoped<IRequestStreamPublisher, RequestStreamPublisher>();
+
+        // Section 11's streaming rule, for the one part of the loop that had no live view of itself.
+        // `Charter.Orchestration` declares the seam in rows and this is its only implementation: it
+        // renders through `RefinementThread` and `RequestProjection`, so a frame and a refetch are the
+        // same projection rather than two that agree by convention.
+        services.AddScoped<IRefinementStream, RefinementStreamPublisher>();
 
         // Section 31: per user and per organisation, at intake.
         services.AddRateLimiter(options => CharterRateLimiting.Configure(options, limits));

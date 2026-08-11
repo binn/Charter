@@ -982,6 +982,16 @@ namespace Charter.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("credential_grant_id");
 
+                    b.Property<decimal>("EstimatedQuotaSessions")
+                        .HasPrecision(14, 4)
+                        .HasColumnType("numeric(14,4)")
+                        .HasColumnName("estimated_quota_sessions");
+
+                    b.Property<decimal>("EstimatedUsd")
+                        .HasPrecision(14, 4)
+                        .HasColumnType("numeric(14,4)")
+                        .HasColumnName("estimated_usd");
+
                     b.Property<decimal>("ImputedUsd")
                         .HasPrecision(14, 4)
                         .HasColumnType("numeric(14,4)")
@@ -1212,6 +1222,13 @@ namespace Charter.Data.Migrations
                     b.Property<DateTimeOffset>("GeneratedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("generated_at");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload")
+                        .HasDefaultValueSql("'{}'::jsonb");
 
                     b.Property<string>("RiskItems")
                         .IsRequired()

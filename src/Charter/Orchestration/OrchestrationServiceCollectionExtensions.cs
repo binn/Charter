@@ -69,6 +69,8 @@ public static class OrchestrationServiceCollectionExtensions
             return options;
         });
 
+        services.TryAddSingleton(TimeProvider.System);
+
         // The seam. Backends only ever dispatch; the work itself is Charter.DetachedRunner's.
         services.TryAddSingleton<IGitHubRepositoryDispatcher, UnconfiguredGitHubRepositoryDispatcher>();
         services.TryAddSingleton<IRunnerCredentialBroker, UnconfiguredRunnerCredentialBroker>();
@@ -84,6 +86,19 @@ public static class OrchestrationServiceCollectionExtensions
 
         services.AddScoped<SessionJournal>();
         services.AddScoped<ISessionDispatchPlanner, SessionDispatchPlanner>();
+
+        // Section 11's pane 1. Registered here rather than beside a backend because every backend's
+        // events arrive through the same callback, and a requester must never watch a silent thread
+        // for the length of a build whichever runner is doing the work.
+        services.AddScoped<SessionMilestones>();
+
+        // Section 6's first notifying state. Registered here rather than in AddCharterRunners because
+        // the runner callbacks are mapped whatever CHARTER_RUNNER says, and an agent that stops to ask
+        // a question must reach somebody on every backend. INotificationService is optional on it, so
+        // a host that wired no channels still transitions the session and simply tells nobody.
+        services.AddScoped<NeedsInputAnnouncer>();
+
+
         services.TryAddScoped<IAutoDispatchGate, AutoDispatchGate>();
         services.AddScoped<SessionCoordinator>();
 
@@ -129,7 +144,30 @@ public static class OrchestrationServiceCollectionExtensions
             services.AddCharterAgentPlane();
         }
 
-        // `docker` registers the Docker runner behind the same seam when it ships.
+        // The Compose self-host backend (section 2.2). Registered behind the same seam as the other
+        // two, and never silently: an instance whose CHARTER_RUNNER says `docker` now has a runner
+        // that either dispatches or explains itself, rather than a queue that never moves.
+        if (config.SupportsRunner(RunnerBackend.Docker))
+        {
+            services.TryAddSingleton(new DockerRunnerOptions
+            {
+                SocketPath = DockerRunnerEnvironment.SocketPath(),
+            });
+
+            services.TryAddSingleton(provider => DockerRunnerEnvironment.Resolve(
+                provider.GetRequiredService<DockerRunnerOptions>().SocketPath));
+
+            // The tokens and the broker are resolved lazily rather than required: AddCharterRunners is
+            // called before AddCharterOrchestration registers them, and a test that wires only a
+            // backend should not have to bring a signing key with it.
+            services.AddSingleton<IAgentRunner>(provider => new DockerRunner(
+                provider.GetRequiredService<IDockerEngine>(),
+                provider.GetRequiredService<DockerRunnerOptions>(),
+                provider.GetRequiredService<ILogger<DockerRunner>>(),
+                provider.GetService<RunnerSessionTokens>(),
+                provider.GetService<IRunnerCredentialBroker>()));
+        }
+
         return services;
     }
 }

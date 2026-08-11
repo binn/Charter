@@ -132,6 +132,7 @@ public sealed class RefineJobHandler : IQueuedJobHandler
     private readonly OrchestrationOptions _options;
     private readonly TimeProvider _clock;
     private readonly ILogger<RefineJobHandler> _logger;
+    private readonly IRefinementStream? _stream;
 
     public RefineJobHandler(
         CharterDbContext db,
@@ -142,7 +143,8 @@ public sealed class RefineJobHandler : IQueuedJobHandler
         IAutoDispatchGate autoDispatch,
         OrchestrationOptions options,
         TimeProvider clock,
-        ILogger<RefineJobHandler> logger)
+        ILogger<RefineJobHandler> logger,
+        IRefinementStream? stream = null)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(refiner);
@@ -163,6 +165,10 @@ public sealed class RefineJobHandler : IQueuedJobHandler
         _options = options;
         _clock = clock;
         _logger = logger;
+
+        // Optional: a host that wired the execution plane without the API — a worker replica, a test —
+        // still refines correctly and simply streams nothing. The rows are the record (section 2.3).
+        _stream = stream;
     }
 
     /// <inheritdoc />
@@ -269,10 +275,29 @@ public sealed class RefineJobHandler : IQueuedJobHandler
             return JobHandlingResult.Failed($"The refinement model could not be reached: {exception.Message}");
         }
 
-        record.AppendRequesterMessage(message, now);
-        record.AppendCharterTurn(KindOf(result.Outcome), result.Outcome.RequesterMessage, now);
+        var asked = record.AppendRequesterMessage(message, now);
+        var answered = record.AppendCharterTurn(KindOf(result.Outcome), result.Outcome.RequesterMessage, now);
 
-        return await ApplyAsync(request, record, result, now, cancellationToken);
+        var handled = await ApplyAsync(request, record, result, now, cancellationToken);
+
+        // Section 11: "do stream something — a 5–20 minute silent gap reads as broken." The rows above
+        // are the record and this is a courtesy on top of them (section 2.3), which is why it happens
+        // after the commit and why nothing it does can fail the turn.
+        if (_stream is not null)
+        {
+            await _stream.PublishAsync(
+                new RefinementTurn
+                {
+                    Request = request,
+                    Repo = repo,
+                    Conversation = record,
+                    Spec = await CurrentSpecAsync(request.Id, cancellationToken),
+                    AppendedTurnIds = [asked.Id, answered.Id],
+                },
+                cancellationToken);
+        }
+
+        return handled;
     }
 
     /// <summary>Writes what the turn produced, and moves the request to where section 6 puts it.</summary>
@@ -402,6 +427,21 @@ public sealed class RefineJobHandler : IQueuedJobHandler
 
         return started;
     }
+
+    /// <summary>
+    /// The newest specification on this request, or null while refinement has not produced one.
+    /// </summary>
+    /// <remarks>
+    /// Re-read rather than carried out of <see cref="ApplyAsync"/>, because the version the thread has
+    /// to show is the version the row says — including on the turns that produced no new one, where
+    /// a previously proposed spec is still what the requester is looking at.
+    /// </remarks>
+    private Task<Spec?> CurrentSpecAsync(Guid requestId, CancellationToken cancellationToken)
+        => _db.Specs
+            .AsNoTracking()
+            .Where(spec => spec.RequestId == requestId)
+            .OrderByDescending(spec => spec.Version)
+            .FirstOrDefaultAsync(cancellationToken);
 
     private async Task<int> NextSpecVersionAsync(Guid requestId, CancellationToken cancellationToken)
         => await _db.Specs

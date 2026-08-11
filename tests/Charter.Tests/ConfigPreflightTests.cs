@@ -1,5 +1,6 @@
 using Charter.Configuration;
 using Charter.Configuration.Preflight;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Charter.Tests;
@@ -234,6 +235,112 @@ public class ConfigPreflightTests
         Assert.Equal(PreflightStatus.Failed, result.Status);
         Assert.Contains("ANTHROPIC_API_KEY", result.Remediation!, StringComparison.Ordinal);
         Assert.Contains("OPENROUTER_API_KEY", result.Remediation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReportsEveryFailureAtOnceRatherThanTheFirst()
+    {
+        // Section 4.1's rule for configuration, applied to preflight: an operator who fixes one
+        // variable, redeploys, and is then told about the next one has been made to pay for a round
+        // trip Charter already knew about. Four things are wrong here and all four are named.
+        var valid = ConfigTestEnvironment.Valid(("ANTHROPIC_API_KEY", null));
+        var config = valid with
+        {
+            Keys = new KeyConfig
+            {
+                SecretKey = new Secret("too-short"),
+                CredentialKey = valid.Keys.CredentialKey,
+            },
+        };
+
+        var report = await Runner(config, new FakeDatabaseProbe { Connects = false }, resolves: false)
+            .RunAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            ["secret keys", "base URL", "database", "migrations", "model credential"],
+            report.Failures.Select(failure => failure.Name).ToArray());
+
+        // Every one of them carries what to change, which is the other half of section 30.1.
+        Assert.All(report.Failures, failure => Assert.False(string.IsNullOrWhiteSpace(failure.Remediation)));
+
+        var described = report.Describe();
+        Assert.All(report.Failures, failure => Assert.Contains(failure.Name, described, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StopsTheBootForTheDatabaseAndWarnsForTheBaseUrl()
+    {
+        // The deliberate split. An unreachable database is observed against the very resource that
+        // has to work, so a failure is conclusive and nothing functions without it. The public base
+        // URL is resolved by GitHub and by browsers, not by this container - split-horizon DNS and a
+        // PaaS private network both make the in-container lookup fail on a healthy instance - so it
+        // is shouted and booted through.
+        var config = ConfigTestEnvironment.Valid();
+
+        var databaseDown = await Runner(config, new FakeDatabaseProbe { Connects = false })
+            .RunAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.True(databaseDown.ShouldHalt);
+        Assert.Contains(databaseDown.BlockingFailures, failure => failure.Name == "database");
+
+        var dnsDown = await Runner(config, new FakeDatabaseProbe(), resolves: false)
+            .RunAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(dnsDown.Passed);
+        Assert.False(dnsDown.ShouldHalt);
+        Assert.Equal("base URL", Assert.Single(dnsDown.Advisories).Name);
+
+        // The operator has to be able to tell the two apart in the log without reading the source.
+        Assert.Contains("[WARN] base URL", dnsDown.Describe(), StringComparison.Ordinal);
+        Assert.Contains("[FAIL] database", databaseDown.Describe(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheHostedServiceRefusesToStartOnABlockingFailureAndNamesThemAll()
+    {
+        var config = ConfigTestEnvironment.Valid(("ANTHROPIC_API_KEY", null));
+        var probe = new FakeDatabaseProbe { Connects = false };
+
+        var service = new PreflightHostedService(
+            Runner(config, probe),
+            NullLogger<PreflightHostedService>.Instance);
+
+        var failure = await Assert.ThrowsAsync<PreflightException>(
+            () => service.StartAsync(TestContext.Current.CancellationToken));
+
+        Assert.Contains("database", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("migrations", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("model credential", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheHostedServiceStartsThroughAnAdvisoryFailure()
+    {
+        var config = ConfigTestEnvironment.Valid();
+
+        var service = new PreflightHostedService(
+            Runner(config, new FakeDatabaseProbe(), resolves: false),
+            NullLogger<PreflightHostedService>.Instance);
+
+        await service.StartAsync(TestContext.Current.CancellationToken);
+        await service.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task ARunnerStampsEachCheckSeverityOntoItsResult()
+    {
+        // The severity lives on the check, not on every return path inside it, so a check cannot
+        // report one of its several failures at the wrong severity by forgetting to say.
+        var report = await Runner(ConfigTestEnvironment.Valid(), new FakeDatabaseProbe { Connects = false })
+            .RunAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            PreflightSeverity.Advisory,
+            Assert.Single(report.Results, result => result.Name == "base URL").Severity);
+
+        Assert.All(
+            report.Results.Where(result => result.Name != "base URL"),
+            result => Assert.Equal(PreflightSeverity.Blocking, result.Severity));
     }
 
     [Fact]

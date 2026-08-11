@@ -14,6 +14,39 @@ public enum PreflightStatus
 }
 
 /// <summary>
+/// What a failing check costs: a refusal to boot, or a warning an operator should read.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Section 30.1 says never boot into a half-working state, and section 4.1 says fail fast and loud.
+/// Neither means every observation is fatal. The distinction drawn here is <em>whether the failure
+/// is proof of a broken instance</em>:
+/// </para>
+/// <list type="bullet">
+/// <item><description>
+/// <see cref="Blocking"/> — an unreachable database, an unmigrated schema, a weak or duplicated key,
+/// or no model credential anywhere. Every one of these is observed from inside the container against
+/// the resource itself, so a failure is conclusive, and nothing Charter does works without it.
+/// </description></item>
+/// <item><description>
+/// <see cref="Advisory"/> — an observation made from the wrong vantage point to be conclusive. The
+/// public base URL is resolved by GitHub and by browsers, not by this container: split-horizon DNS,
+/// a private PaaS network, or a DNS record that lands minutes after the first deploy all make the
+/// in-container lookup fail on an instance that is completely healthy. Refusing to boot on that
+/// evidence breaks working deployments, so it is logged loudly and the boot continues.
+/// </description></item>
+/// </list>
+/// </remarks>
+public enum PreflightSeverity
+{
+    /// <summary>A failure here stops the boot with a non-zero exit.</summary>
+    Blocking,
+
+    /// <summary>A failure here is logged as a warning and the boot continues.</summary>
+    Advisory,
+}
+
+/// <summary>
 /// A named pass/fail result with remediation an operator can act on.
 /// </summary>
 /// <param name="Name">Short check name, shown in the first-run results list.</param>
@@ -29,6 +62,20 @@ public sealed record PreflightResult(
     string Detail,
     string? Remediation = null)
 {
+    /// <summary>
+    /// What this result costs the boot. Stamped by <see cref="PreflightRunner"/> from the check that
+    /// produced it, so a check never has to remember to carry its own severity into every result.
+    /// </summary>
+    public PreflightSeverity Severity { get; init; } = PreflightSeverity.Blocking;
+
+    /// <summary>True when this result must stop the process from serving traffic.</summary>
+    public bool IsBlockingFailure
+        => Status == PreflightStatus.Failed && Severity == PreflightSeverity.Blocking;
+
+    /// <summary>True when this result is a failure the operator should read but may boot through.</summary>
+    public bool IsAdvisoryFailure
+        => Status == PreflightStatus.Failed && Severity == PreflightSeverity.Advisory;
+
     /// <summary>A passing result.</summary>
     public static PreflightResult Pass(string name, string detail)
         => new(name, PreflightStatus.Passed, detail);
@@ -47,6 +94,7 @@ public sealed record PreflightResult(
         var marker = Status switch
         {
             PreflightStatus.Passed => "PASS",
+            PreflightStatus.Failed when Severity == PreflightSeverity.Advisory => "WARN",
             PreflightStatus.Failed => "FAIL",
             _ => "SKIP",
         };
@@ -75,6 +123,12 @@ public interface IPreflightCheck
     /// <summary>True when running this check touches the network, the database, or the disk.</summary>
     bool RequiresIo { get; }
 
+    /// <summary>
+    /// What a failure of this check costs the boot. Blocking unless a check says otherwise, because
+    /// the safe default for a first-run check is to refuse rather than to serve a broken instance.
+    /// </summary>
+    PreflightSeverity Severity => PreflightSeverity.Blocking;
+
     /// <summary>Runs the check. Implementations report failure rather than throwing.</summary>
     ValueTask<PreflightResult> RunAsync(CancellationToken cancellationToken);
 }
@@ -89,6 +143,9 @@ public abstract class PurePreflightCheck : IPreflightCheck
 
     /// <inheritdoc />
     public bool RequiresIo => false;
+
+    /// <inheritdoc />
+    public virtual PreflightSeverity Severity => PreflightSeverity.Blocking;
 
     /// <summary>Runs the check synchronously.</summary>
     public abstract PreflightResult Run();

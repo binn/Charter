@@ -43,6 +43,28 @@ public static class ApiEnumMap
         _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown member role."),
     };
 
+    /// <summary>Section 7.1, in the other direction — an invitation names the roles it grants.</summary>
+    public static MemberRole ToDomain(this ApiRole role) => role switch
+    {
+        ApiRole.Requester => MemberRole.Requester,
+        ApiRole.Approver => MemberRole.Approver,
+        ApiRole.Engineer => MemberRole.Engineer,
+        ApiRole.Admin => MemberRole.Admin,
+        _ => throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown member role."),
+    };
+
+    /// <summary>Section 9, for the onboarding surface.</summary>
+    public static ApiRepoStatus ToApi(this RepoStatus status) => status switch
+    {
+        RepoStatus.Pending => ApiRepoStatus.Pending,
+        RepoStatus.Recon => ApiRepoStatus.Recon,
+        RepoStatus.Configuring => ApiRepoStatus.Configuring,
+        RepoStatus.SmokeTest => ApiRepoStatus.SmokeTest,
+        RepoStatus.Ready => ApiRepoStatus.Ready,
+        RepoStatus.Disabled => ApiRepoStatus.Disabled,
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown repository status."),
+    };
+
     /// <summary>Section 13.</summary>
     public static ApiTeachingLevel ToApi(this TeachingLevel level) => level switch
     {

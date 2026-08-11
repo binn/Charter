@@ -148,7 +148,7 @@ public class RecapPublishingTests
             new RecapFileChange("src/Features/Quotes/QuoteLine.razor"),
         ]);
 
-        var (body, riskItems, _) = RecapComposer.Compose(
+        var (body, riskItems, document, _) = RecapComposer.Compose(
             RecapStubs.Evidence(),
             ranked,
             new RecapPayload { WhatAndWhy = "Added a derate column to quote lines." },
@@ -160,6 +160,7 @@ public class RecapPublishingTests
             BodyMarkdown = body,
             RankedFiles = ranked,
             RiskItemsJson = riskItems,
+            Document = document,
             Usage = ModelUsage.Empty,
             Charge = ModelCharge.None,
         };

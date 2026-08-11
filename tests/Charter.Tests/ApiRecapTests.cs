@@ -237,12 +237,12 @@ public class ApiRecapTests
 
         var sessionId = Guid.CreateVersion7();
 
-        var (body, riskItems, _) = RecapComposer.Compose(
+        var (body, riskItems, recapDocument, _) = RecapComposer.Compose(
             new RecapEvidence { SessionId = sessionId, Spec = document, AutoDispatched = autoDispatched },
             RecapFileRiskRanker.Rank(files),
             payload,
             new RecapOptions());
 
-        return Recap.Generate(sessionId, body, riskItems, 1.42m);
+        return Recap.Generate(sessionId, body, riskItems, 1.42m, payloadJson: recapDocument.ToJson());
     }
 }

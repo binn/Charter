@@ -88,6 +88,17 @@ public sealed record RequestAggregate
     public Recap? Recap { get; init; }
 
     /// <summary>
+    /// What the agent stopped to ask, while the request is in <c>NeedsInput</c> (section 6).
+    /// </summary>
+    /// <remarks>
+    /// The notification carries the question, and the thread has to carry the same sentence or the
+    /// person who followed the link arrives at a card that says <em>Question for you</em> and does not
+    /// say what it is. Requester-facing free text from a model, so it is scrubbed on the way in by the
+    /// same <see cref="Charter.Notifications.RequesterSafeText"/> the email uses.
+    /// </remarks>
+    public string? OpenQuestion { get; init; }
+
+    /// <summary>
     /// Who took the session over (section 7.5), by display name.
     /// </summary>
     /// <remarks>

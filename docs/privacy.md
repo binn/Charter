@@ -31,12 +31,38 @@ future" clause.
 The accepted tradeoff is that the project gets no aggregate signal about how Charter is used. Problems
 surface only when someone opens an issue.
 
+## What ends up in your repository
+
+Separate from the above, and worth stating because it is durable in a way nothing else here is.
+
+When a session produces changes, the runner commits them **authored by the requester** — their display
+name and the email address on their Charter account, on both the author and committer fields. That is
+deliberate: [spec §7.3](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) requires every
+agent action to be attributable to a named human, and a commit is the most durable place that
+attribution can live. Charter adds no bot identity and no attribution trailers.
+
+Two consequences to know before you connect a public repository:
+
+- **A commit author is public if the repository is.** Anyone who can read the repository can read the
+  address. Users who do not want their address in a public history should hold an account whose email
+  is one they are willing to publish.
+- **Git history is not editable after the fact.** Removing an address from a merged commit means
+  rewriting history, which Charter cannot and will not do.
+
+The commit message is the specification's title and opening paragraph. Nothing about the model, the
+adapter, the session, or the tooling appears in it.
+
 ## The one outbound call
 
 Charter checks GitHub once a day for a new release, so that your instance does not quietly keep
 running a version with a known vulnerability.
 
-What that request is:
+**Not implemented yet.** `CHARTER_UPDATE_CHECK` and `CHARTER_UPDATE_CHANNEL` parse and validate, and
+nothing acts on them: no component in the current build contacts GitHub for a release. Today's
+instance therefore makes no outbound call at all beyond the ones you configure. What follows describes
+the check as designed, so that the shape of it is on the record before it ships.
+
+What that request will be:
 
 - An unauthenticated `GET` against the public GitHub Releases API for the Charter repository.
 - Sent once per day, with jitter, and the result cached in your Postgres.
@@ -53,7 +79,10 @@ Turn it off with one variable:
 CHARTER_UPDATE_CHECK=false
 ```
 
-`CHARTER_DEMO=true` also disables it, along with every other outbound call.
+`CHARTER_DEMO=true` also disables it, along with every other call Charter would make to a third
+party — model providers, GitHub, OAuth, and SMTP included. That is a demonstration mode, not a
+hardening setting: it seeds fake data and the instance cannot do real work. If you want a working
+instance that does not phone home, `CHARTER_UPDATE_CHECK=false` is the switch to use.
 
 The default is on. An operator unknowingly running a vulnerable version is a worse outcome than one
 outbound request a day — but it is your call, and it is a single flag.

@@ -50,7 +50,32 @@ public sealed record RunnerDispatch(
     RunnerPathScope PathScope,
     IReadOnlyList<string> RequiredCapabilities,
     int TimeoutMinutes,
-    string DispatchKey);
+    string DispatchKey)
+{
+    /// <summary>
+    /// The branch the runner publishes the session's work on.
+    /// </summary>
+    /// <remarks>
+    /// Sent rather than left implicit so the sandbox and the control plane cannot disagree about where
+    /// the work went. A dispatch that omits it gets the convention
+    /// <see cref="Charter.VersionControl.ChangeRequestPublisher.BranchFor"/> computes, which is what
+    /// the shim falls back to as well.
+    /// </remarks>
+    public string? Branch { get; init; }
+
+    /// <summary>
+    /// Who asked, for the authorship of the commit the runner makes (sections 7.3, 24).
+    /// </summary>
+    /// <remarks>
+    /// Not a credential and not a permission: the runner is not trusted with either. It is the named
+    /// human every action in a session has to be attributable to, carried to the one place that
+    /// outlives the session — the commit itself.
+    /// </remarks>
+    public RunnerRequester? Requester { get; init; }
+}
+
+/// <summary>The requester a session's commit is attributed to (sections 7.3, 24).</summary>
+public sealed record RunnerRequester(string DisplayName, string Email);
 
 /// <summary>What a backend reports back from a dispatch.</summary>
 /// <param name="Accepted">False when the backend refused; <paramref name="Explanation"/> says why.</param>

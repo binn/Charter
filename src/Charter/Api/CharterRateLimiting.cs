@@ -20,6 +20,31 @@ public sealed class IntakeRateLimitMetadata
 }
 
 /// <summary>
+/// Marks an endpoint as one that mints or consumes a credential, which is what the section 31
+/// limiter partitions by caller address rather than by member.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Intake is limited per user and per organisation, which needs somebody signed in. These endpoints
+/// are the ones an unauthenticated stranger can reach — sign-in, the setup token, the reset link,
+/// the invitation — so there is no member to charge and the partition has to be the caller.
+/// </para>
+/// <para>
+/// The limit here is deliberately loose, because the address is a poor identity: an office behind
+/// one NAT is one partition, and squeezing it hard would lock out a company because one person was
+/// mistyping. The tight, precise control is
+/// <see cref="Charter.Auth.Providers.ISignInThrottle"/>, which keys on the address being guessed at
+/// rather than on where the guess came from. This limiter is the outer wall: it stops a script from
+/// spending the server's PBKDF2 budget, and it stops a token being brute-forced at machine speed.
+/// </para>
+/// </remarks>
+public sealed class CredentialRateLimitMetadata
+{
+    /// <summary>The single instance every credential endpoint carries.</summary>
+    public static CredentialRateLimitMetadata Instance { get; } = new();
+}
+
+/// <summary>
 /// How much intake one person, and one organisation, may do.
 /// </summary>
 /// <remarks>
@@ -44,6 +69,18 @@ public sealed record CharterRateLimits
 
     /// <summary>How many callers to track before the limiter starts evicting idle partitions.</summary>
     public int MaxTrackedPartitions { get; init; } = 4_096;
+
+    /// <summary>
+    /// Credential attempts allowed from one address per minute — sign-in, setup, reset, invitation.
+    /// </summary>
+    /// <remarks>
+    /// Generous, because the partition is an address and a shared office is one address. Guessing
+    /// one account's password is stopped by <c>SignInThrottle</c> long before this fires.
+    /// </remarks>
+    public int PerClientCredentialPerMinute { get; init; } = 20;
+
+    /// <summary>The sustained credential ceiling for one address.</summary>
+    public int PerClientCredentialPerHour { get; init; } = 120;
 }
 
 /// <summary>
@@ -78,13 +115,28 @@ public static class CharterRateLimiting
             Fixed("o60", OrgKey, limits.PerOrgPerHour, TimeSpan.FromHours(1)));
     }
 
+    /// <summary>
+    /// The two partitions guarding the unauthenticated credential routes, likewise exposed so a test
+    /// can drive them without a server.
+    /// </summary>
+    public static PartitionedRateLimiter<HttpContext> CreateCredentialLimiter(CharterRateLimits limits)
+    {
+        ArgumentNullException.ThrowIfNull(limits);
+
+        return PartitionedRateLimiter.CreateChained(
+            Fixed("c1", ClientKey, limits.PerClientCredentialPerMinute, TimeSpan.FromMinutes(1), IsCredential),
+            Fixed("c60", ClientKey, limits.PerClientCredentialPerHour, TimeSpan.FromHours(1), IsCredential));
+    }
+
     /// <summary>Installs the limiter and the plain-language refusal (section 11).</summary>
     public static void Configure(RateLimiterOptions options, CharterRateLimits limits)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(limits);
 
-        options.GlobalLimiter = CreateIntakeLimiter(limits);
+        options.GlobalLimiter = PartitionedRateLimiter.CreateChained(
+            CreateIntakeLimiter(limits),
+            CreateCredentialLimiter(limits));
         options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
         options.OnRejected = async (context, cancellationToken) =>
@@ -125,15 +177,40 @@ public static class CharterRateLimiting
             : null;
     }
 
+    /// <summary>Whether this request is one of the credential routes (section 30.1, 30.2, 21).</summary>
+    public static bool IsCredential(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return context.GetEndpoint()?.Metadata.GetMetadata<CredentialRateLimitMetadata>() is not null;
+    }
+
+    /// <summary>
+    /// The caller, for a route nobody has signed in to yet.
+    /// </summary>
+    /// <remarks>
+    /// The remote address is a weak identity and is used here for nothing else. A request with no
+    /// address — which only happens off a real connection — lands in one shared partition rather
+    /// than escaping the limiter, because the alternative is an unlimited path.
+    /// </remarks>
+    public static string ClientKey(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        return context.Connection.RemoteIpAddress is { } address
+            ? string.Concat("client:", address.ToString())
+            : "client:unknown";
+    }
+
     private static PartitionedRateLimiter<HttpContext> Fixed(
         string dimension,
         Func<HttpContext, string?> key,
         int permitLimit,
-        TimeSpan window)
+        TimeSpan window,
+        Func<HttpContext, bool>? applies = null)
         => PartitionedRateLimiter.Create<HttpContext, string>(
             context =>
             {
-                if (!IsIntake(context) || key(context) is not { } partition)
+                if (!(applies ?? IsIntake)(context) || key(context) is not { } partition)
                 {
                     return RateLimitPartition.GetNoLimiter(string.Empty);
                 }

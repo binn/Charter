@@ -11,6 +11,11 @@ optional or pluggable.
 This page covers Docker Compose on your own machine or VPS, and the three PaaS platforms Charter is
 designed to run on: Railway, Render, and Fly. It ends with backup, restore, and shutdown behaviour.
 
+**If this is your first Charter instance, start with [getting-started.md](getting-started.md)
+instead.** It walks the whole path — bring it up, claim it, connect a repository, file a request, get a
+preview — and it says plainly which parts of that path work today. This page assumes you already know
+what you are deploying and want the platform-specific detail.
+
 ## Before you start
 
 You need:
@@ -47,6 +52,11 @@ be re-entered while a user exists. There is no default password and no open regi
 If the setup token scrolls past and you lose it, restart the container while no user exists — a new
 one is issued.
 
+**No HTTP route redeems the token yet.** The gate works, the token is generated and printed, and the
+service that redeems it is built and registered — but nothing maps an endpoint to it, and there is no
+sign-in route either. Setup mode is currently something you can observe rather than complete. See
+[getting-started.md](getting-started.md).
+
 ## Docker Compose
 
 The repository ships a `docker-compose.yml` with two services. Clone, fill in `.env`, and start:
@@ -55,8 +65,17 @@ The repository ships a `docker-compose.yml` with two services. Clone, fill in `.
 git clone https://github.com/binn/Charter.git
 cd Charter
 cp .env.example .env
-docker compose up -d
+printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> .env
+docker compose up -d --build
 ```
+
+**`.env.example` does not contain `POSTGRES_PASSWORD`, and `docker-compose.yml` requires it** — hence
+the extra line. Without it Compose refuses to render the file at all. The Compose file also builds the
+image from source rather than pulling a published one, so the first run takes a few minutes.
+
+You still need to fill in the rest of `.env` before the container will start. Charter validates every
+variable at boot and exits non-zero listing all the problems at once; a GitHub App ID, private key and
+webhook secret are required, not optional.
 
 Charter comes up on `http://localhost:8080` in personal mode.
 
@@ -74,7 +93,7 @@ services:
       CHARTER_BASE_URL: https://charter.example.com
       CHARTER_SECRET_KEY: Yb7dGq1sPz4hRk9wXn2vTc6mAe8jUf3L
       CHARTER_CREDENTIAL_KEY: Qh4tNw8bVr2kZs6yEd1pMg9xLc7uJa5F
-      CHARTER_RUNNER: docker
+      CHARTER_RUNNER: agent
       LOGGING_MODE: DEFAULT
     depends_on:
       postgres:
@@ -111,13 +130,14 @@ OAuth callbacks both depend on that URL being correct and publicly resolvable.
 
 ### Runner choice on Compose
 
-Compose deployments can use any backend. `CHARTER_RUNNER=docker` is the simplest: Charter spawns
-sibling containers through the host's Docker socket.
+Prefer `CHARTER_RUNNER=agent` and run a Charter Agent on the same host or another one. The agent dials
+outbound, so the control plane needs no privileges on the execution host and no route into it.
 
-**Mounting the Docker socket into the application container grants that container root-equivalent
-access to the host.** That is an acceptable trade on a machine dedicated to Charter, and a bad one on
-a machine that runs anything else. The alternative is `CHARTER_RUNNER=agent`, which keeps the socket on
-a separate host entirely. See [runners.md](runners.md).
+`CHARTER_RUNNER=docker` works, and spawns sibling containers through the host's Docker socket. It
+requires mounting that socket into the application container, **which grants the container
+root-equivalent access to the host** — treat the machine as dedicated to Charter if you do it.
+`charter-agent --mode docker` gets you containerised execution without that trade, which is why it is
+the recommendation rather than merely the alternative. See [runners.md](runners.md).
 
 ## PaaS platforms
 
@@ -209,15 +229,15 @@ In `fly.toml`, set the internal port to `8080`, add an HTTP health check against
 `auto_stop_machines = false`. Charter runs background hosted services — the session orchestrator and
 the queue dispatcher — and a machine that suspends on idle will not dispatch queued work.
 
-Fly can run privileged workloads, so `CHARTER_RUNNER=docker` is technically possible with a
-Docker-in-Docker setup. It is not the recommended path; a Charter Agent on a machine you control is
-simpler to reason about and faster.
+Fly can run privileged workloads, which would make a Docker-in-Docker setup possible if the `docker`
+backend existed. It does not. Run a Charter Agent on a machine you control instead — simpler to reason
+about, and faster.
 
 ## Which runner backend, by platform
 
 | Platform | Default | Why |
 |---|---|---|
-| Docker Compose on a VPS | `docker` or `agent` | The host already has Docker. `agent` keeps the socket off the app container. |
+| Docker Compose on a VPS | `agent` | Keeps the Docker socket off the application container. `docker` is not implemented. |
 | Railway | `github-actions` | Privileged containers prohibited, Docker daemon unavailable. |
 | Render | `github-actions` | Same constraint. |
 | Fly | `github-actions` | Same by default; `agent` if you have a machine to spare. |
@@ -316,6 +336,8 @@ schema migrations.
 
 ## Related
 
+- [getting-started.md](getting-started.md) — your first instance, end to end
+- [the-loop.md](the-loop.md) — what the running instance actually does
 - [configuration.md](configuration.md) — every environment variable
 - [runners.md](runners.md) — backends and the Charter Agent
 - [upgrading.md](upgrading.md) — migrations and backups before an upgrade

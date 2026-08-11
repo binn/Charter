@@ -309,6 +309,33 @@ public class ApiOmissionTests
     }
 
     [Fact]
+    public async Task TheSessionBodyARequesterGetsCarriesNoCredentialAndNoRepository()
+    {
+        // Sections 21 and 7.1, swept the same way as the request detail: a requester reaches
+        // `/api/auth/session` on every page load, so it goes through the raw-body check too.
+        var session = new SessionResponse
+        {
+            UserId = Guid.CreateVersion7().ToString(),
+            DisplayName = "Ayesha Rahman",
+            Email = "ayesha@example.com",
+            OrganizationId = Guid.CreateVersion7().ToString(),
+            Roles = [ApiRole.Requester],
+            Provider = "password",
+        };
+
+        var body = await ApiPayloads.RenderAsync(session);
+        var keys = ApiPayloads.Keys(body);
+
+        foreach (var forbidden in new[] { "password", "passwordHash", "secret", "token", "repo", "repository" })
+        {
+            Assert.DoesNotContain(forbidden, keys, StringComparer.OrdinalIgnoreCase);
+        }
+
+        // What it does carry is what the shell needs and nothing beyond it.
+        Assert.Equal(["userId", "displayName", "email", "organizationId", "roles", "provider"], [.. keys]);
+    }
+
+    [Fact]
     public async Task ARequesterStillGetsTheThingsSectionElevenPromisesThem()
     {
         var scenario = ApiScenario.Build();

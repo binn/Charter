@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Navigate, useLocation } from 'react-router';
 import { useApi } from '@/api/api-context';
+import { ApiError } from '@/api/client';
 import type { ThemePreference, UserPreferences, Viewer } from '@/api/types';
 import { ViewerContext, type ViewerContextValue } from '@/app/viewer-context';
 import { FullPageError, FullPageLoading } from '@/components/FullPageState';
@@ -23,6 +25,7 @@ function applyTheme(theme: ThemePreference): void {
 
 export function ViewerProvider({ children }: { children: ReactNode }) {
   const api = useApi();
+  const location = useLocation();
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
@@ -79,6 +82,25 @@ export function ViewerProvider({ children }: { children: ReactNode }) {
   );
 
   if (error) {
+    // §30.1: an instance with no users answers everything but `/api/setup` with 503, so this is
+    // how a fresh container ends up on the setup page rather than on a sign-in form that could not
+    // possibly work.
+    if (error instanceof ApiError && error.status === 503) {
+      return <Navigate replace to="/setup" />;
+    }
+
+    // No cookie, or an expired one. The path they were heading for is carried across so signing in
+    // puts them back where they were, and it is a same-origin path rather than a URL — a `next`
+    // that could be absolute is an open redirect.
+    if (error instanceof ApiError && error.status === 401) {
+      const next = `${location.pathname}${location.search}`;
+      const to =
+        next === '/' || next.startsWith('/sign-in')
+          ? '/sign-in'
+          : `/sign-in?next=${encodeURIComponent(next)}`;
+      return <Navigate replace to={to} />;
+    }
+
     return (
       <FullPageError
         title="Charter cannot reach your account"

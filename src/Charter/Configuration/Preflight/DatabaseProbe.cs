@@ -1,4 +1,5 @@
 using System.Globalization;
+using Charter.Data;
 using Npgsql;
 
 namespace Charter.Configuration.Preflight;
@@ -37,6 +38,24 @@ public interface IDatabaseProbe
 /// </remarks>
 public sealed class NpgsqlDatabaseProbe : IDatabaseProbe
 {
+    /// <summary>
+    /// Where EF Core's migration history actually lives, most specific first.
+    /// </summary>
+    /// <remarks>
+    /// The first entry is the only one a Charter database has ever used:
+    /// <see cref="CharterDbContext.MigrationsHistoryTable"/> renames it so the bookkeeping table
+    /// matches the rest of the snake-case schema. Looking only at EF's default
+    /// <c>__EFMigrationsHistory</c> - which is what this probe originally did - meant the "migrations
+    /// applied" check reported a fully migrated instance as never migrated, on every instance, and
+    /// nothing caught it because nothing ran the check. The EF default is kept as a fallback for a
+    /// database created before the table was renamed.
+    /// </remarks>
+    private static readonly IReadOnlyList<string> MigrationHistoryCandidates =
+    [
+        "public." + CharterDbContext.MigrationsHistoryTable,
+        "public.\"__EFMigrationsHistory\"",
+    ];
+
     private static readonly IReadOnlyList<string> CredentialTableCandidates =
     [
         "public.credential_grants",
@@ -83,13 +102,15 @@ public sealed class NpgsqlDatabaseProbe : IDatabaseProbe
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(linked.Token).ConfigureAwait(false);
 
-        const string historyTable = "public.\"__EFMigrationsHistory\"";
-        if (!await TableExistsAsync(connection, historyTable, linked.Token).ConfigureAwait(false))
+        foreach (var candidate in MigrationHistoryCandidates)
         {
-            return -1;
+            if (await TableExistsAsync(connection, candidate, linked.Token).ConfigureAwait(false))
+            {
+                return await CountAsync(connection, candidate, linked.Token).ConfigureAwait(false);
+            }
         }
 
-        return await CountAsync(connection, historyTable, linked.Token).ConfigureAwait(false);
+        return -1;
     }
 
     /// <inheritdoc />

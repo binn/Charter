@@ -53,6 +53,34 @@ public sealed class KeyStrengthPreflightCheck(CharterConfig config) : PurePrefli
     }
 }
 
+/// <summary>
+/// Whether this instance may talk to anything outside itself (sections 30.6, 19).
+/// </summary>
+/// <remarks>
+/// Not one of the five checks section 30.1 enumerates, and here anyway: demo mode changes what the
+/// instance is allowed to do, silently, and an operator reading the first-run report is exactly the
+/// person who needs to know that no model provider, code host or mail server will be contacted. A
+/// kill switch nobody can see is a kill switch nobody trusts.
+/// </remarks>
+public sealed class OutboundCallsPreflightCheck(CharterConfig config) : PurePreflightCheck
+{
+    /// <inheritdoc />
+    public override string Name => "outbound calls";
+
+    /// <inheritdoc />
+    public override PreflightResult Run()
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        return config.OutboundCallsAllowed
+            ? PreflightResult.Pass(Name, "enabled; this instance may reach model providers, GitHub and SMTP")
+            : PreflightResult.Pass(
+                Name,
+                "blocked by CHARTER_DEMO: no model provider, code host, or mail server will be " +
+                "contacted, and the instance is seeded with demonstration data (section 30.6)");
+    }
+}
+
 /// <summary>The public base URL resolves (section 30.1).</summary>
 /// <remarks>
 /// Webhook deliveries and every link Charter sends go to this host. If it does not resolve from
@@ -67,11 +95,26 @@ public sealed class BaseUrlPreflightCheck(CharterConfig config, IHostnameResolve
     /// <inheritdoc />
     public bool RequiresIo => true;
 
+    /// <summary>
+    /// Advisory, and the only check here that is. The name is resolved by GitHub and by browsers,
+    /// not by this container: split-horizon DNS, a PaaS private network, and a DNS record that
+    /// propagates minutes after the first deploy all make this lookup fail on an instance that works
+    /// perfectly from outside. A failure is a strong hint and not proof, so it is shouted rather than
+    /// fatal - unlike the database, which is observed against the very resource that has to work.
+    /// </summary>
+    public PreflightSeverity Severity => PreflightSeverity.Advisory;
+
     /// <inheritdoc />
     public async ValueTask<PreflightResult> RunAsync(CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(resolver);
+
+        if (config.DemoMode)
+        {
+            // Section 30.6: demo mode makes no outbound call, and a DNS lookup is one.
+            return PreflightResult.Skip(Name, "not run: CHARTER_DEMO makes no outbound call");
+        }
 
         var host = config.BaseUrl.Host;
         var resolved = await resolver.CanResolveAsync(host, cancellationToken).ConfigureAwait(false);
@@ -191,6 +234,13 @@ public sealed class ModelCredentialPreflightCheck(CharterConfig config, IDatabas
     {
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(probe);
+
+        if (config.DemoMode)
+        {
+            // Section 30.6 exists so someone can evaluate Charter without spending a token. Demanding
+            // a token first would defeat the only thing demo mode is for.
+            return PreflightResult.Skip(Name, "not run: CHARTER_DEMO never calls a model provider");
+        }
 
         if (config.Models.AnthropicApiKey is not null)
         {

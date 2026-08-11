@@ -20,6 +20,13 @@ public sealed record RecapResult
     public required string RiskItemsJson { get; init; }
 
     /// <summary>
+    /// The structured recap, for <see cref="Domain.Recap.Payload"/> — the same content as
+    /// <see cref="BodyMarkdown"/> before it was rendered, so the API reads it instead of parsing
+    /// section headings back out of the prose.
+    /// </summary>
+    public required RecapDocument Document { get; init; }
+
+    /// <summary>
     /// How many quality judgements <see cref="RecapVerdictGuard"/> removed from the model's answer.
     /// Non-zero is not an error — it is the guard doing the job the prompt could not guarantee.
     /// </summary>
@@ -38,9 +45,23 @@ public sealed record RecapResult
     /// </summary>
     public LedgerCategory Category => LedgerCategory.Recap;
 
-    /// <summary>Builds the persistable entity. The caller saves it.</summary>
-    public Domain.Recap ToEntity(DateTimeOffset? now = null)
-        => Domain.Recap.Generate(SessionId, BodyMarkdown, RiskItemsJson, Charge.CostUsd, now);
+    /// <summary>
+    /// Builds the persistable entity, payload and all. The caller saves it.
+    /// </summary>
+    /// <param name="bodyMarkdown">
+    /// The body as it was actually published, when the publisher appended a fallback notice to it. A
+    /// recap that reads differently in Charter from the way it reads on the change request is a
+    /// recap two people quote at each other.
+    /// </param>
+    /// <param name="now">The clock.</param>
+    public Domain.Recap ToEntity(string? bodyMarkdown = null, DateTimeOffset? now = null)
+        => Domain.Recap.Generate(
+            SessionId,
+            string.IsNullOrWhiteSpace(bodyMarkdown) ? BodyMarkdown : bodyMarkdown,
+            RiskItemsJson,
+            Charge.CostUsd,
+            now,
+            payloadJson: Document.ToJson());
 }
 
 /// <summary>The engineer recap of section 14.</summary>
@@ -131,7 +152,7 @@ public sealed class RecapGenerator : IRecapGenerator
             .ConfigureAwait(false);
 
         var payload = RecapSchema.Parse(completion.StructuredJson ?? completion.Text);
-        var (body, riskItems, verdictsRemoved) =
+        var (body, riskItems, document, verdictsRemoved) =
             RecapComposer.Compose(evidence, ranked, payload, _options);
 
         if (verdictsRemoved > 0)
@@ -160,6 +181,7 @@ public sealed class RecapGenerator : IRecapGenerator
             BodyMarkdown = body,
             RankedFiles = ranked,
             RiskItemsJson = riskItems,
+            Document = document,
             VerdictStatementsRemoved = verdictsRemoved,
             Usage = completion.Usage,
             Charge = completion.Charge,

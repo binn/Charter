@@ -121,6 +121,40 @@ already taught.
 `invitations` records the address each invitation was sent to. Both are now in your database dumps.
 Neither holds message content, and both are pruned. See [privacy.md](privacy.md).
 
+#### Columns added by the latest amendment
+
+Three columns joined `InitialCreate`. All three are additive, and none needs a backfill — but two of
+them change behaviour you will see, so drop and recreate your development database as above rather
+than assuming the old schema still works.
+
+| Column | What it holds | What you would notice |
+|---|---|---|
+| `recaps.payload` | The engineer recap as structured data — summary, deviations, what could not be verified, and the specification in full for an auto-dispatched session | Nothing, immediately. `body_md` is unchanged and is still what gets posted as a change request comment. A recap row written before this column existed stores `{}` and reads as *absent*, so a pre-existing recap keeps rendering from its prose rather than coming back empty |
+| `ledger_entries.estimated_usd` | What a budget hold predicted, kept after settlement replaces it with the actual | Estimate-versus-actual becomes measurable, which is what lets the estimator improve. Zero on rows written before budgets were enforced — that is *no estimate was recorded*, not *it was free* |
+| `ledger_entries.estimated_quota_sessions` | The same, for subscription-backed work | As above |
+
+`recaps.risk_items` gained `additions`, `deletions` and `kind` per file. Older rows do not have them
+and render as they did before: a zero count means **nobody counted**, never that nothing changed.
+
+### Budgets start enforcing on this upgrade
+
+If your instance is in **personal mode, nothing changes.** Personal mode has no budgets — one person,
+their own credentials, nothing to govern — and there are no budget rows to create.
+
+If your instance is in **organisation mode**, spend is now estimated before each session and held
+against every budget that applies to it, then settled against the actual when the session ends.
+Budgets you have not created do not exist and do not cap anything; an instance with no `budgets` rows
+behaves exactly as it did.
+
+Two things are worth knowing before you add your first budget:
+
+- **Reservations are held for two hours.** A session that starts and never finishes — a control plane
+  killed mid-run — holds its estimate against your caps until the TTL passes, at which point it stops
+  counting and is released automatically. You do not need to intervene.
+- **A model nothing can price cannot be capped in dollars.** Self-hosted and gateway models with no
+  published rates estimate zero and pass every `usd` budget. Use a `quota_sessions` budget if you need
+  a limit on those. See [budgets.md](budgets.md).
+
 ### If a migration fails
 
 Charter fails to start rather than serving traffic against a half-migrated database. The startup logs
@@ -225,6 +259,7 @@ Turn the check off with `CHARTER_UPDATE_CHECK=false`. What it does and does not 
 
 - [self-hosting.md](self-hosting.md) — backup, restore, and verifying a restore
 - [configuration.md](configuration.md) — variables referenced here
+- [budgets.md](budgets.md) — what the budget columns above are for
 - [privacy.md](privacy.md) — the update check
 - [charter-folder.md](charter-folder.md) — `.charter/` versioning and forward compatibility
 - [spec §24 and §28](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) — repository conventions and update notification

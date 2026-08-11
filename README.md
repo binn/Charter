@@ -91,14 +91,19 @@ It is *not* for letting non-engineers ship unreviewed code. It makes **asking** 
 
 ## Quick start
 
+**Read [`docs/getting-started.md`](docs/getting-started.md) first.** It walks the whole path and says plainly which parts of it work today — worth five minutes before you spend half an hour.
+
 ### Docker Compose
 
 ```bash
 git clone https://github.com/binn/Charter.git
 cd Charter
 cp .env.example .env     # fill in ANTHROPIC_API_KEY and your GitHub App details
-docker compose up
+printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> .env
+docker compose up --build
 ```
+
+`.env.example` doesn't carry `POSTGRES_PASSWORD` and the Compose file requires it, hence the extra line. A GitHub App ID, private key and webhook secret are required too — Charter validates everything at boot and exits listing all of it at once.
 
 Charter comes up on `http://localhost:8080` in **personal mode** — one user, all roles, approval gates auto-satisfied. Inviting a second person is the only thing that changes, and it needs no migration.
 
@@ -146,9 +151,9 @@ Onboarding is a wizard that ends in proof, not a config screen:
                       │  IAgentRunner
       ┌───────────────┼────────────────┐
       ▼               ▼                ▼
- GitHub Actions   Docker          Detached runner
- (default,        (VPS /          (your hardware,
-  any PaaS)       Compose)         planned)
+ Charter Agent    GitHub Actions   Docker
+ (your hardware,  (default,        (seam only,
+  outbound only)   any PaaS)        not implemented)
 ```
 
 The control plane is deliberately boring: stateless, restart-safe, Postgres-backed job queue, no Redis, no second container to babysit. Every session is fully resumable from the database, because PaaS containers restart whenever they feel like it.
@@ -186,14 +191,25 @@ Read the full threat model in [`SECURITY.md`](SECURITY.md). Report vulnerabiliti
 
 ## Status and roadmap
 
+Phase 1 is a vertical slice, not a layer: request → refinement → spec → approval → session → PR → preview → *Works / Not quite*. The whole chain is built and runs end to end in an integration test against a real Postgres. What it isn't yet is **drivable by a human**.
+
 | Phase | | |
 |---|---|---|
-| 1 | Refinement, specs, approvals | 🚧 In progress |
-| 2 | Agent execution, live sessions | Planned |
-| 3 | PRs, preview binding, engineer recap | Planned |
-| 4 | Teaching, code pane, budgets, linked accounts | Planned |
-| 4b | Org standards, project scaffolding | Planned |
-| 5 | Slack/Discord inbound, SAML, detached runners | Planned |
+| 1 | The loop: refinement, specs, approvals, sessions, change requests, preview binding | 🚧 Runs end to end in test; see caveats below |
+| 2 | Legibility: session depth, SignalR, event pane, engineer recap | Planned |
+| 3 | Control: teaching, code pane, budgets, triage rules | Planned |
+| 4 | Infrastructure: email, config in the database, 2FA, native model clients | Partly landed |
+| 5 | Reach: more VCS providers, issue sync, Slack/Discord inbound, SAML | Planned |
+
+Honest caveats on Phase 1, because pre-1.0 is pre-1.0:
+
+- **No sign-in route and no route that redeems the first-run setup token.** The identity and setup services are built, registered and tested; nothing maps an HTTP endpoint to them, so an instance can boot but cannot yet be claimed or logged into.
+- **No HTTP surface for connecting a repository.** Onboarding — recon, scope confirmation, smoke test, primer, merge-gate check — is implemented as a service with an audit trail and nothing routes to it.
+- **Nothing pushes the session branch.** No component runs a commit or push, so every clean session is recorded as *Nothing needed changing*, no PR opens, and no preview binds.
+- **The bundled web app ships against an in-memory mock.** It shows the interface; it isn't calling the API.
+- Several settings still parse and reach nothing: `CHARTER_ALLOW_SHARED_POOL`, `CHARTER_ALLOW_REPO_CREATION`, `CHARTER_LOG_INCLUDE_TRANSCRIPTS`, `CHARTER_DEFAULT_*_BUDGET_USD`, `CHARTER_UPDATE_CHECK`/`_CHANNEL` (§28 has no implementation), and the whole `CHARTER_STORAGE_*` block. `ConfigReachabilityTests` names each one with the reason and fails if a new one appears.
+
+[`docs/the-loop.md`](docs/the-loop.md) has the full picture, and [`docs/getting-started.md`](docs/getting-started.md) tells you what you can actually drive today.
 
 ---
 

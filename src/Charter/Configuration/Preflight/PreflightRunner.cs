@@ -21,6 +21,22 @@ public sealed record PreflightReport(IReadOnlyList<PreflightResult> Results)
     public IReadOnlyList<PreflightResult> Failures
         => [.. Results.Where(result => result.Status == PreflightStatus.Failed)];
 
+    /// <summary>
+    /// The failures that must stop the boot (section 30.1: never boot into a half-working state).
+    /// </summary>
+    public IReadOnlyList<PreflightResult> BlockingFailures
+        => [.. Results.Where(result => result.IsBlockingFailure)];
+
+    /// <summary>
+    /// The failures an operator should read but can boot through - see <see cref="PreflightSeverity"/>
+    /// for why the base URL is one of these and the database is not.
+    /// </summary>
+    public IReadOnlyList<PreflightResult> Advisories
+        => [.. Results.Where(result => result.IsAdvisoryFailure)];
+
+    /// <summary>True when at least one blocking check failed, so the process must not serve.</summary>
+    public bool ShouldHalt => BlockingFailures.Count > 0;
+
     /// <summary>The whole report, one line per check, for stdout on first run.</summary>
     public string Describe()
         => string.Join(Environment.NewLine, Results.Select(result => result.Describe()));
@@ -56,13 +72,20 @@ public sealed class PreflightRunner
         {
             if (scope == PreflightScope.PureOnly && check.RequiresIo)
             {
-                results.Add(PreflightResult.Skip(check.Name, "not run: this check needs I/O"));
+                results.Add(PreflightResult.Skip(check.Name, "not run: this check needs I/O") with
+                {
+                    Severity = check.Severity,
+                });
                 continue;
             }
 
             try
             {
-                results.Add(await check.RunAsync(cancellationToken).ConfigureAwait(false));
+                var result = await check.RunAsync(cancellationToken).ConfigureAwait(false);
+
+                // The check reports what it observed; the runner decides what that costs, so a check
+                // cannot forget to stamp its own severity onto one of its several return paths.
+                results.Add(result with { Severity = check.Severity });
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -74,7 +97,10 @@ public sealed class PreflightRunner
                 results.Add(PreflightResult.Fail(
                     check.Name,
                     $"the check itself failed: {ex.Message}",
-                    "this is a Charter bug or an unreachable dependency; the message above is the raw error"));
+                    "this is a Charter bug or an unreachable dependency; the message above is the raw error") with
+                {
+                    Severity = check.Severity,
+                });
             }
 #pragma warning restore CA1031
         }

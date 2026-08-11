@@ -48,21 +48,23 @@ export default defineConfig({
     siteTitle: 'Charter',
 
     nav: [
-      { text: 'Getting started', link: '/self-hosting', activeMatch: '^/(self-hosting|configuration)' },
+      { text: 'Getting started', link: '/getting-started', activeMatch: '^/(getting-started|the-loop|self-hosting|configuration)' },
       {
         text: 'Operating',
-        activeMatch: '^/(runners|credentials|upgrading|privacy)',
+        activeMatch: '^/(runners|credentials|budgets|upgrading|privacy)',
         items: [
           { text: 'Runners', link: '/runners' },
           { text: 'Model credentials', link: '/credentials' },
+          { text: 'Budgets', link: '/budgets' },
           { text: 'Upgrading', link: '/upgrading' },
           { text: 'Privacy', link: '/privacy' }
         ]
       },
       {
         text: 'Reference',
-        activeMatch: '^/(adapters|charter-folder|standards)',
+        activeMatch: '^/(api|adapters|charter-folder|standards)',
         items: [
+          { text: 'HTTP API', link: '/api' },
           { text: 'Agent adapters', link: '/adapters' },
           { text: 'The .charter/ folder', link: '/charter-folder' },
           { text: 'Organisation standards', link: '/standards' }
@@ -87,6 +89,8 @@ export default defineConfig({
         text: 'Getting started',
         collapsed: false,
         items: [
+          { text: 'First instance', link: '/getting-started' },
+          { text: 'The loop', link: '/the-loop' },
           { text: 'Self-hosting', link: '/self-hosting' },
           { text: 'Configuration', link: '/configuration' }
         ]
@@ -97,6 +101,7 @@ export default defineConfig({
         items: [
           { text: 'Runners', link: '/runners' },
           { text: 'Model credentials', link: '/credentials' },
+          { text: 'Budgets', link: '/budgets' },
           { text: 'Upgrading', link: '/upgrading' },
           { text: 'Privacy', link: '/privacy' }
         ]
@@ -105,6 +110,7 @@ export default defineConfig({
         text: 'Reference',
         collapsed: false,
         items: [
+          { text: 'HTTP API', link: '/api' },
           { text: 'Agent adapters', link: '/adapters' },
           { text: 'The .charter/ folder', link: '/charter-folder' },
           { text: 'Organisation standards', link: '/standards' }

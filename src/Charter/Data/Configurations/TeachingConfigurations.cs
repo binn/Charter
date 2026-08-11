@@ -41,6 +41,11 @@ internal sealed class RecapConfiguration : IEntityTypeConfiguration<Charter.Doma
         builder.Property(recap => recap.Id).ValueGeneratedNever();
         builder.Property(recap => recap.BodyMd).IsRequired();
         builder.Property(recap => recap.RiskItems).IsJsonb().IsRequired();
+
+        // The structured recap beside the prose. Required with an empty-object default rather than
+        // nullable: a reader that has to distinguish null from {} from "no summary" has three cases
+        // where one will do, and every one of them renders the same way.
+        builder.Property(recap => recap.Payload).IsJsonb().IsRequired().HasDefaultValueSql("'{}'::jsonb");
         builder.Property(recap => recap.CostUsd).IsMoney();
         builder.Property(recap => recap.GeneratedAt).IsRequired();
 

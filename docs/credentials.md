@@ -32,6 +32,12 @@ cover.
 
 **`OpenAiCompatibleModelClient` pointed at OpenRouter is the default path**, which is why
 `CHARTER_MODEL_REFINE` and `CHARTER_MODEL_TEACH` default to `openrouter/anthropic/claude-sonnet-5`.
+
+**Neither variable is connected yet.** Both are parsed and validated and then not read by the services
+that call a model, so refinement, teaching, and the recap currently run on a hard-coded Anthropic model
+whatever you set. An instance whose only credential is an OpenRouter key will see that key resolved,
+sent to Anthropic, rejected with a `401`, and then marked invalid. Supply an `ANTHROPIC_API_KEY` until
+this is wired. `CHARTER_MODEL_BUILD` is wired and behaves as described below.
 One key reaches every model, and the model catalog and per-token prices come from OpenRouter itself
 rather than a table baked into the release. The other two clients are registered and work — set a
 `anthropic/` or `google/` identifier and Charter uses them — but nothing has to be configured to get a

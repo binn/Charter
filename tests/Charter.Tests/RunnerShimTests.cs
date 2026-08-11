@@ -418,6 +418,12 @@ public class RunnerShimSessionTests
         DenyPaths = deny,
         RequiredCapabilities = ["linux"],
         ProbedCapabilities = ["linux", "dotnet:10.0.100"],
+
+        // These tests are about the steps before the work is published: the toolchain check, the
+        // lockfile installs, the event stream and the two guards that stop a run. The publishing step
+        // is exercised against a real git repository with a real remote in RunnerPublishTests, which
+        // is the only way to test it that is worth anything.
+        Publish = false,
     };
 
     /// <summary>One line of Claude Code's <c>stream-json</c> output, as its adapter maps it.</summary>

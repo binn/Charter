@@ -241,10 +241,14 @@ public class RecapGeneratorTests
         Assert.Equal(300, result.Usage.OutputTokens);
         Assert.Equal(0.042m, result.Charge.CostUsd);
 
-        var entity = result.ToEntity(new DateTimeOffset(2026, 8, 10, 9, 0, 0, TimeSpan.Zero));
+        var entity = result.ToEntity(now: new DateTimeOffset(2026, 8, 10, 9, 0, 0, TimeSpan.Zero));
         Assert.Equal(result.SessionId, entity.SessionId);
         Assert.Equal(0.042m, entity.CostUsd);
         Assert.Equal(result.RiskItemsJson, entity.RiskItems);
+
+        // The structured recap travels with the row, so nothing downstream has to parse the prose
+        // back into sections to serve it.
+        Assert.Equal(result.Document.ToJson(), entity.Payload);
     }
 
     [Fact]

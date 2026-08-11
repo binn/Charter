@@ -1,8 +1,11 @@
-import { NavLink } from 'react-router';
+import { useState } from 'react';
+import { NavLink, useNavigate } from 'react-router';
+import { useApi } from '@/api/api-context';
 import type { TeachingLevel } from '@/api/types';
 import { useViewer } from '@/app/viewer-context';
 import { PageHeader } from '@/components/PageHeader';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { Button } from '@/components/ui/Button';
 import { Card, SectionLabel } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { cn } from '@/lib/cn';
@@ -19,6 +22,15 @@ export function SettingsNav() {
 
   const items = [
     { to: '/settings', label: 'Preferences', icon: 'user' as const, end: true, visible: true },
+    {
+      to: '/settings/repositories',
+      label: 'Repositories',
+      icon: 'package' as const,
+      end: false,
+      // §9 is engineer work; `GET /api/repos` refuses anybody else, so this link is an affordance
+      // and not the control.
+      visible: viewer.capabilities.canReadRepos,
+    },
     {
       to: '/settings/runners',
       label: 'Runners',
@@ -86,6 +98,9 @@ const TEACHING: { value: TeachingLevel; label: string; description: string }[] =
 
 export function SettingsPage() {
   const { viewer, updatePreferences } = useViewer();
+  const api = useApi();
+  const navigate = useNavigate();
+  const [signingOut, setSigningOut] = useState(false);
 
   return (
     <>
@@ -104,6 +119,27 @@ export function SettingsPage() {
             <dt className="text-ink-subtle">Organisation</dt>
             <dd className="text-ink">{viewer.organization.name}</dd>
           </dl>
+
+          {/* The session is an HTTP-only cookie; only the server can end it, which is why this is a
+              request rather than something the page clears for itself. */}
+          <Button
+            className="mt-4"
+            disabled={signingOut}
+            onClick={() => {
+              setSigningOut(true);
+              api
+                .signOut()
+                .finally(() => {
+                  void navigate('/sign-in', { replace: true });
+                })
+                .catch(() => {
+                  setSigningOut(false);
+                });
+            }}
+            size="sm"
+          >
+            {signingOut ? 'Signing you out…' : 'Sign out'}
+          </Button>
         </Card>
 
         <Card className="px-4 py-5 sm:px-5">

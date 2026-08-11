@@ -80,6 +80,12 @@ internal sealed class LedgerEntryConfiguration : IEntityTypeConfiguration<Ledger
         builder.Property(entry => entry.Usd).IsMoney();
         builder.Property(entry => entry.QuotaSessions).IsMoney();
         builder.Property(entry => entry.ImputedUsd).IsMoney();
+
+        // What was predicted, kept after the settlement overwrote the actual over it (34.4). This is
+        // the training set for the next estimate; without it every settlement destroys the only
+        // record of the guess it was grading.
+        builder.Property(entry => entry.EstimatedUsd).IsMoney();
+        builder.Property(entry => entry.EstimatedQuotaSessions).IsMoney();
         builder.Property(entry => entry.State).HasEnumConversion();
         builder.Property(entry => entry.CreatedAt).IsRequired();
 
@@ -88,6 +94,7 @@ internal sealed class LedgerEntryConfiguration : IEntityTypeConfiguration<Ledger
         // Derived from Unit; storing it would let the denominating amount drift from the two columns
         // it is meant to summarise.
         builder.Ignore(entry => entry.Amount);
+        builder.Ignore(entry => entry.EstimateError);
 
         builder.HasOne<Organization>()
             .WithMany()

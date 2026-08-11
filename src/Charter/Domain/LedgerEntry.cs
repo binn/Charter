@@ -126,6 +126,28 @@ public sealed class LedgerEntry
     /// <summary>The amount in the entry's own unit. Derived, never stored.</summary>
     public decimal Amount => Unit == LedgerUnit.Usd ? Usd : QuotaSessions;
 
+    /// <summary>
+    /// What the estimator predicted in dollars when the hold was taken.
+    /// </summary>
+    /// <remarks>
+    /// Kept after settlement, when <see cref="Usd"/> has been overwritten with the actual. Section
+    /// 34.4: <em>estimates improve over time — store actual-versus-estimate per repo and per project
+    /// type and use the running distribution rather than a fixed heuristic</em>. Without this column
+    /// the only record of the prediction is destroyed by the settlement that would have graded it.
+    /// </remarks>
+    public decimal EstimatedUsd { get; private set; }
+
+    /// <summary>What the estimator predicted in quota when the hold was taken.</summary>
+    public decimal EstimatedQuotaSessions { get; private set; }
+
+    /// <summary>
+    /// Actual minus estimate in the entry's own unit, once settled. Positive means the estimator
+    /// under-predicted, which is the direction that lets a cap be breached.
+    /// </summary>
+    public decimal? EstimateError => State != LedgerState.Settled
+        ? null
+        : Amount - (Unit == LedgerUnit.Usd ? EstimatedUsd : EstimatedQuotaSessions);
+
     public LedgerState State { get; private set; }
 
     /// <summary>Reservations expire so a crashed orchestrator does not strand budget (section 34.4).</summary>
@@ -167,6 +189,7 @@ public sealed class LedgerEntry
             BudgetIds = budgetIds is null ? [] : [.. budgetIds.Distinct()],
             CredentialGrantId = credentialGrantId,
             ReservedUntil = DomainTime.ResolveOptional(reservedUntil),
+            EstimatedUsd = usd,
         };
     }
 
@@ -205,6 +228,8 @@ public sealed class LedgerEntry
             BudgetIds = budgetIds is null ? [] : [.. budgetIds.Distinct()],
             CredentialGrantId = credentialGrantId,
             ReservedUntil = DomainTime.ResolveOptional(reservedUntil),
+            EstimatedQuotaSessions = quotaSessions,
+            EstimatedUsd = imputedUsd,
         };
     }
 

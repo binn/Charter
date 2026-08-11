@@ -58,6 +58,16 @@ public static class AuthServiceCollectionExtensions
 
         services.AddScoped<IIdentityLinker, IdentityLinker>();
 
+        // Section 30.2's one-time reset link. Signed with CHARTER_SECRET_KEY, whose documented job is
+        // exactly this, and single-use because the signature is bound to the verifier it was minted
+        // against — so no table, and no cleanup job for one.
+        services.TryAddSingleton(provider => new PasswordResetTokens(
+            provider.GetRequiredService<CharterConfig>().Keys.SecretKey,
+            provider.GetRequiredService<TimeProvider>()));
+
+        // Section 21: the one path from a presented credential to a principal, for every provider.
+        services.AddScoped<SignInService>();
+
         services.AddScoped<IAuditWriter, AuditWriter>();
         services.AddScoped<ICharterAuthorizationService, CharterAuthorizationService>();
         services.AddScoped<IRepoScopeAdministration, RepoScopeAdministration>();

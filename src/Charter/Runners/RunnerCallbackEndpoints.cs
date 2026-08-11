@@ -172,12 +172,32 @@ public static class RunnerCallbackEndpoints
         });
     }
 
+    /// <summary>
+    /// Records one streamed event, and acts on the one kind that needs a human.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Almost every event is a line of transcript and nothing more. <c>question</c> is the exception:
+    /// section 6 makes <c>NeedsInput</c> one of exactly two states that reach a person, and an agent
+    /// that stopped to ask has blocked the whole request on somebody who does not know yet. The
+    /// announcement is deliberately downstream of the append, so the journal's idempotency key — not a
+    /// second rule here — is what makes a redelivered question notify nobody twice.
+    /// </para>
+    /// <para>
+    /// Milestone promotion runs here too, and for the same reason it sits after the append: this is
+    /// the one place every backend's events pass through, and section 11 will not accept a build that
+    /// streams nothing to pane 1 for twenty minutes. A promotion that finds the session already past
+    /// that label does nothing, so a replayed stream is still one thread.
+    /// </para>
+    /// </remarks>
     private static async Task<IResult> IngestEventAsync(
         Guid sessionId,
         RunnerEventRequest body,
         HttpContext context,
         SessionJournal journal,
+        SessionMilestones milestones,
         RunnerSessionTokens tokens,
+        NeedsInputAnnouncer needsInput,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(body);
@@ -210,7 +230,27 @@ public static class RunnerCallbackEndpoints
             key,
             cancellationToken: cancellationToken);
 
-        return Results.Json(new { seq = appended.Seq, appended = appended.Appended });
+        var asked = false;
+
+        if (appended.Appended
+            && string.Equals(body.Type, RunnerEventTypes.Question, StringComparison.Ordinal)
+            && RunnerEventTypes.ReadQuestion(payload) is { } question)
+        {
+            var announcement = await needsInput.AskAsync(sessionId, question, cancellationToken);
+            asked = announcement.Moved;
+        }
+
+        var milestone = appended.Appended
+            ? await milestones.PromoteAsync(sessionId, appended.EventId, body.Type, cancellationToken)
+            : null;
+
+        return Results.Json(new
+        {
+            seq = appended.Seq,
+            appended = appended.Appended,
+            needsInput = asked,
+            milestone = milestone?.ToString(),
+        });
     }
 
     private static async Task<IResult> ReportResultAsync(

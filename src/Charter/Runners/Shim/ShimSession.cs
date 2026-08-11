@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Charter.Adapters;
 using Charter.Domain;
 using Charter.Runners.SchemaChanges;
+using Charter.VersionControl;
 
 namespace Charter.Runners.Shim;
 
@@ -70,6 +71,12 @@ public enum ShimSessionState
     InstallFailed,
 
     /// <summary>
+    /// The agent's work could not be committed or pushed. Deliberately not the same outcome as an
+    /// agent that changed nothing: one needs an operator, the other needs nobody.
+    /// </summary>
+    PublishFailed,
+
+    /// <summary>
     /// The agent generated a destructive migration (section 15). The session halts and an engineer
     /// authors the migration by hand; the agent's intent is in the transcript.
     /// </summary>
@@ -117,6 +124,58 @@ public sealed record ShimRunRequest
 
     /// <summary>Section 16.2: opt-in, per repository, never a default.</summary>
     public bool AllowInstallScripts { get; init; }
+
+    /// <summary>
+    /// The branch the session's work is published on. Defaults to the convention
+    /// <see cref="Charter.VersionControl.ChangeRequestPublisher.BranchFor"/> computes, so a runner
+    /// that has never spoken to the control plane lands where the control plane will look.
+    /// </summary>
+    public string? Branch { get; init; }
+
+    /// <summary>The remote the session branch is pushed to.</summary>
+    public string Remote { get; init; } = "origin";
+
+    /// <summary>
+    /// Where to clone from when the workspace is not already a checkout.
+    /// </summary>
+    /// <remarks>
+    /// Only <see cref="DockerRunner"/> needs this: a workflow job and a Charter Agent both hand the
+    /// shim a checkout. Ignored when there is one.
+    /// </remarks>
+    public string? CloneUrl { get; init; }
+
+    /// <summary>The revision the session was planned against (section 17).</summary>
+    public string? BaseCommit { get; init; }
+
+    /// <summary>
+    /// The short-TTL, single-repository token git uses to clone and push (section 7.4).
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="AgentEnvironment"/> on purpose: the agent process is given the
+    /// credentials its adapter declares, and a repository write token is not one of them.
+    /// </remarks>
+    public string? GitToken { get; init; }
+
+    /// <summary>
+    /// The requester, for the commit's authorship (sections 7.3, 24). Null commits with whatever the
+    /// checkout is already configured with rather than with an identity invented in the sandbox.
+    /// </summary>
+    public ShimCommitIdentity? Requester { get; init; }
+
+    /// <summary>
+    /// False stops after the agent, leaving the work uncommitted.
+    /// </summary>
+    /// <remarks>
+    /// Only for a workspace that is deliberately not a checkout. A session that runs with this off
+    /// can never open a change request, which is the whole of the Phase 1 loop, so it is not a
+    /// setting any backend turns on.
+    /// </remarks>
+    public bool Publish { get; init; } = true;
+
+    /// <summary>Where the work lands, whether or not the dispatch spelled it out.</summary>
+    public string BranchOrConvention => string.IsNullOrWhiteSpace(Branch)
+        ? Charter.VersionControl.ChangeRequestPublisher.BranchFor(SessionId)
+        : Branch;
 
     /// <summary>
     /// Section 15's rules. Defaults to the repository's <c>.charter/policies/migrations.yml</c>, or
@@ -205,6 +264,25 @@ public sealed class ShimSession
         ShimEventTranslator translator,
         CancellationToken cancellationToken)
     {
+        // 0. A checkout to work in. A no-op for every backend that already cloned one, which is two
+        // of the three; a container that starts empty gets one here.
+        if (request.Publish
+            && await new ShimCheckout(_processes).EnsureAsync(
+                request.WorkspaceRoot,
+                request.CloneUrl,
+                request.BaseCommit,
+                request.GitToken,
+                cancellationToken) is { } problem)
+        {
+            await PublishAsync(translator, EventTypes.Error, new JsonObject
+            {
+                ["reason"] = "checkout_failed",
+                ["message"] = problem,
+            }, cancellationToken);
+
+            return new ShimResult(ShimSessionState.PublishFailed, problem);
+        }
+
         // 1. Section 32.1: never install a language runtime. Fail fast, actionably, first.
         var toolchain = ShimToolchain.Verify(
             request.RequiredCapabilities,
@@ -381,13 +459,108 @@ public sealed class ShimSession
                 agent.ExitCode);
         }
 
+        // 5. Commit, push, and say so. Without this step nothing the agent did ever leaves the
+        // sandbox: ChangeRequestPublisher reads `branch_pushed` and there is no other producer of it.
+        var published = request.Publish
+            ? await CommitAndPushAsync(request, scope, translator, prompt, cancellationToken)
+            : null;
+
+        if (published is { Outcome: ShimPublishOutcome.ScopeViolation })
+        {
+            return new ShimResult(ShimSessionState.ScopeViolation, published.Message, agent.ExitCode);
+        }
+
+        if (published is { Outcome: ShimPublishOutcome.Failed })
+        {
+            return new ShimResult(ShimSessionState.PublishFailed, published.Message);
+        }
+
         await PublishAsync(translator, EventTypes.SessionEnded, new JsonObject
         {
             ["state"] = "completed",
             ["malformed_lines"] = translator.MalformedLines,
+            ["published"] = published is { Outcome: ShimPublishOutcome.Published },
         }, CancellationToken.None);
 
-        return new ShimResult(ShimSessionState.Completed);
+        return new ShimResult(ShimSessionState.Completed, published?.Message);
+    }
+
+    /// <summary>
+    /// Publishes the session's work and reports it in the shape the control plane already reads.
+    /// </summary>
+    /// <remarks>
+    /// The three outcomes reach the transcript as three different things, because they mean three
+    /// different things to whoever reads it. Work published becomes
+    /// <see cref="ChangeRequestEventTypes.BranchPushed"/>, which is the event
+    /// <see cref="ChangeRequestPublisher"/> opens a change request off. Nothing to commit becomes
+    /// <see cref="ChangeRequestEventTypes.NoChanges"/>, section 6's <c>NoChangesNeeded</c>. A git
+    /// failure becomes an error and stops the session, so a broken credential never reads to a
+    /// requester as an agent that decided there was nothing to do.
+    /// </remarks>
+    private async Task<ShimPublishResult> CommitAndPushAsync(
+        ShimRunRequest request,
+        ShimPathScope scope,
+        ShimEventTranslator translator,
+        string spec,
+        CancellationToken cancellationToken)
+    {
+        var publisher = new ShimPublisher(_processes, scope);
+
+        var result = await publisher.PublishAsync(
+            new ShimPublishRequest
+            {
+                WorkspaceRoot = request.WorkspaceRoot,
+                Branch = request.BranchOrConvention,
+                Remote = request.Remote,
+                Author = request.Requester,
+                Message = ShimCommitMessage.Build(spec),
+            },
+            cancellationToken);
+
+        switch (result.Outcome)
+        {
+            case ShimPublishOutcome.Published:
+                await PublishAsync(translator, ChangeRequestEventTypes.BranchPushed, new JsonObject
+                {
+                    ["branch"] = result.Branch,
+                    ["revision"] = result.Revision,
+                    ["remote"] = request.Remote,
+                    ["files"] = ToArray(result.Paths),
+                    ["message"] = result.Message,
+                }, CancellationToken.None);
+                break;
+
+            case ShimPublishOutcome.NoChanges:
+                await PublishAsync(translator, ChangeRequestEventTypes.NoChanges, new JsonObject
+                {
+                    ["reason"] = "nothing_to_commit",
+                    ["message"] = result.Message,
+                }, CancellationToken.None);
+                break;
+
+            case ShimPublishOutcome.ScopeViolation:
+                await PublishAsync(translator, EventTypes.Error, new JsonObject
+                {
+                    ["reason"] = "path_scope_violation",
+                    ["stage"] = "commit",
+                    ["path"] = result.Violation?.Path,
+                    ["refusal"] = result.Violation?.Refusal.ToString(),
+                    ["pattern"] = result.Violation?.Pattern,
+                    ["message"] = result.Message,
+                }, CancellationToken.None);
+                break;
+
+            default:
+                await PublishAsync(translator, EventTypes.Error, new JsonObject
+                {
+                    ["reason"] = "publish_failed",
+                    ["branch"] = request.BranchOrConvention,
+                    ["message"] = result.Message,
+                }, CancellationToken.None);
+                break;
+        }
+
+        return result;
     }
 
     private async ValueTask PublishAsync(

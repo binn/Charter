@@ -72,7 +72,16 @@ internal static class HostCallGraph
             .GroupBy(method => method.Name, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
 
-    private static IEnumerable<MethodBase> Callees(MethodBase method)
+    /// <summary>
+    /// Every method <paramref name="method"/> calls, constructs, or takes a function pointer to.
+    /// </summary>
+    /// <remarks>
+    /// Exposed rather than private because <c>ConfigReachabilityTests</c> asks a different question
+    /// of the same IL: not "does the host call this registration" but "does anything at all read
+    /// this configuration value". Both are the same defect seen from two directions - something that
+    /// exists and is never invoked - and both want one IL walker rather than two.
+    /// </remarks>
+    public static IEnumerable<MethodBase> Callees(MethodBase method)
     {
         byte[] il;
 

@@ -28,6 +28,30 @@ public sealed record RecapRiskItem
     [JsonPropertyName("note")]
     public string? Note { get; init; }
 
+    /// <summary>
+    /// Lines added, where the source reported them.
+    /// </summary>
+    /// <remarks>
+    /// Zero means <em>nobody counted</em>, not <em>nothing changed</em>: a session whose file list
+    /// came from <c>file_write</c> events alone has no counts to report, and a made-up number in a
+    /// reviewer's file list is worse than a visibly absent one. <see cref="Counted"/> is the
+    /// difference, so a renderer can show a dash rather than <c>+0 −0</c>.
+    /// </remarks>
+    [JsonPropertyName("additions")]
+    public int Additions { get; init; }
+
+    /// <summary>Lines removed, where the source reported them.</summary>
+    [JsonPropertyName("deletions")]
+    public int Deletions { get; init; }
+
+    /// <summary>How the file arrived in the change: added, modified, deleted or renamed.</summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = "modified";
+
+    /// <summary>Whether the line counts came from a source that reported them.</summary>
+    [JsonIgnore]
+    public bool Counted => Additions > 0 || Deletions > 0;
+
     /// <summary>Position in the suggested review order, 1-based, or null if beyond the cut.</summary>
     [JsonPropertyName("review_order")]
     public int? ReviewOrder { get; init; }
@@ -55,8 +79,27 @@ public static class RecapComposer
         + "auto-dispatched, so you are the first person to read what the agent was asked to do. The "
         + "specification is reproduced in full below rather than summarised.";
 
-    /// <summary>Builds the markdown body and the risk items together, so they cannot disagree.</summary>
-    public static (string BodyMarkdown, string RiskItemsJson, int VerdictsRemoved) Compose(
+    /// <summary>What one composition produced: the prose, the ranking, and the same thing as data.</summary>
+    /// <param name="BodyMarkdown">The change request comment (section 14).</param>
+    /// <param name="RiskItemsJson">The risk-ranked file list, for <c>recaps.risk_items</c>.</param>
+    /// <param name="Document">The structured recap, for <c>recaps.payload</c>.</param>
+    /// <param name="VerdictsRemoved">Quality judgements the verdict guard removed.</param>
+    public readonly record struct RecapComposition(
+        string BodyMarkdown,
+        string RiskItemsJson,
+        RecapDocument Document,
+        int VerdictsRemoved);
+
+    /// <summary>
+    /// Builds the markdown body, the risk items and the structured payload together, so the three
+    /// cannot disagree.
+    /// </summary>
+    /// <remarks>
+    /// One pass, three outputs, from one set of scrubbed values. The alternative — composing the
+    /// markdown here and deriving the structure from it later — is the parse this exists to delete,
+    /// and it would let the API serve a sentence the verdict guard had already taken out of the body.
+    /// </remarks>
+    public static RecapComposition Compose(
         RecapEvidence evidence,
         IReadOnlyList<RecapRankedFile> rankedFiles,
         RecapPayload payload,
@@ -71,8 +114,13 @@ public static class RecapComposer
         var notes = BuildNotes(payload, ref removed);
 
         var whatAndWhy = Scrub(payload.WhatAndWhy, ref removed);
-        var deviations = RenderDeviations(payload, ref removed);
+
+        // Structured first, markdown from it. The bullets under section 2 are a rendering of these
+        // records rather than a parallel construction, so the payload and the comment cannot drift.
+        var deviations = BuildDeviations(payload, ref removed);
         var unverified = ScrubAll(payload.CouldNotVerify, ref removed);
+
+        var specMd = evidence.AutoDispatched ? RecapPromptBuilder.RenderSpec(evidence.Spec) : null;
 
         var reviewOrder = rankedFiles.Take(Math.Max(1, options.ReviewOrderLength)).ToList();
         var builder = new StringBuilder();
@@ -88,7 +136,7 @@ public static class RecapComposer
             builder.AppendLine();
             builder.AppendLine("### The specification, in full");
             builder.AppendLine();
-            builder.AppendLine(RecapPromptBuilder.RenderSpec(evidence.Spec));
+            builder.AppendLine(specMd);
             builder.AppendLine();
         }
 
@@ -113,7 +161,7 @@ public static class RecapComposer
         {
             foreach (var deviation in deviations)
             {
-                builder.Append("- ").AppendLine(deviation);
+                builder.Append("- ").AppendLine(Render(deviation));
             }
         }
 
@@ -205,9 +253,20 @@ public static class RecapComposer
 
         var riskItems = BuildRiskItems(rankedFiles, notes, reviewOrder.Count);
 
-        return (
+        var document = new RecapDocument
+        {
+            AutoDispatched = evidence.AutoDispatched,
+            SummaryMd = whatAndWhy,
+            SpecMd = specMd,
+            Deviations = deviations,
+            CouldNotVerify = unverified,
+            VerdictsRemoved = removed,
+        };
+
+        return new RecapComposition(
             builder.ToString().TrimEnd() + "\n",
             JsonSerializer.Serialize(riskItems, RiskItemJson),
+            document,
             removed);
     }
 
@@ -234,9 +293,9 @@ public static class RecapComposer
         return notes;
     }
 
-    private static IReadOnlyList<string> RenderDeviations(RecapPayload payload, ref int removed)
+    private static IReadOnlyList<RecapDocumentDeviation> BuildDeviations(RecapPayload payload, ref int removed)
     {
-        var rendered = new List<string>();
+        var built = new List<RecapDocumentDeviation>();
         foreach (var deviation in payload.Deviations ?? [])
         {
             // Each field is scrubbed before it is rendered rather than after. Removing a sentence
@@ -250,35 +309,49 @@ public static class RecapComposer
 
             var specSaid = Scrub(deviation.SpecSaid, ref removed);
             var why = Scrub(deviation.Why, ref removed);
+            var where = deviation.Where?.Trim();
 
-            var builder = new StringBuilder("**").Append(what).Append("**");
-            if (!string.IsNullOrWhiteSpace(deviation.Where))
+            built.Add(new RecapDocumentDeviation
             {
-                builder.Append(" (").Append(deviation.Where!.Trim()).Append(')');
-            }
-
-            if (specSaid.Length > 0)
-            {
-                builder.Append(" The specification asked for: ").Append(specSaid);
-                if (!specSaid.EndsWith('.'))
-                {
-                    builder.Append('.');
-                }
-            }
-
-            if (why.Length > 0)
-            {
-                builder.Append(" Reason given: ").Append(why);
-                if (!why.EndsWith('.'))
-                {
-                    builder.Append('.');
-                }
-            }
-
-            rendered.Add(builder.ToString());
+                What = what,
+                SpecSaid = specSaid.Length == 0 ? null : specSaid,
+                Why = why.Length == 0 ? null : why,
+                Where = string.IsNullOrWhiteSpace(where) ? null : where,
+            });
         }
 
-        return rendered;
+        return built;
+    }
+
+    /// <summary>One deviation as the change request comment shows it.</summary>
+    private static string Render(RecapDocumentDeviation deviation)
+    {
+        var builder = new StringBuilder("**").Append(deviation.What).Append("**");
+
+        if (deviation.Where is { Length: > 0 } where)
+        {
+            builder.Append(" (").Append(where).Append(')');
+        }
+
+        if (deviation.SpecSaid is { Length: > 0 } specSaid)
+        {
+            builder.Append(" The specification asked for: ").Append(specSaid);
+            if (!specSaid.EndsWith('.'))
+            {
+                builder.Append('.');
+            }
+        }
+
+        if (deviation.Why is { Length: > 0 } why)
+        {
+            builder.Append(" Reason given: ").Append(why);
+            if (!why.EndsWith('.'))
+            {
+                builder.Append('.');
+            }
+        }
+
+        return builder.ToString();
     }
 
     private static string Scrub(string? text, ref int removed)
@@ -319,6 +392,13 @@ public static class RecapComposer
                 Band = file.Band.ToString().ToLowerInvariant(),
                 Reasons = file.Reasons,
                 Note = notes.TryGetValue(GlobPattern.Normalise(file.Path), out var note) ? note : null,
+
+                // Section 14's file list is what a reviewer opens first, and "+184 −6" is most of
+                // what tells them how much of their afternoon it is. The counts have always been on
+                // RecapFileChange; until now they stopped at the composer and the row served zeroes.
+                Additions = file.Change.LinesAdded,
+                Deletions = file.Change.LinesRemoved,
+                Kind = file.Change.Kind.ToString().ToLowerInvariant(),
                 ReviewOrder = index < reviewOrderLength ? index + 1 : null,
             }),
         ];

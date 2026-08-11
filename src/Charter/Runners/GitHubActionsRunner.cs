@@ -43,6 +43,25 @@ public sealed record GitHubActionsClientPayload
     [JsonPropertyName("base_commit_sha")]
     public required string BaseCommitSha { get; init; }
 
+    /// <summary>The branch the workflow's shim commits and pushes the session's work on.</summary>
+    [JsonPropertyName("branch")]
+    public required string Branch { get; init; }
+
+    /// <summary>
+    /// The requester, for the authorship of that commit (sections 7.3, 24).
+    /// </summary>
+    /// <remarks>
+    /// The one piece of personal data in the payload, and it is here because it ends up in the
+    /// repository's git history either way: a commit has an author, and Charter's answer to who that
+    /// is has to be the person who asked rather than a machine account. Anyone who can read
+    /// <c>client_payload</c> can already read the repository the commit lands in.
+    /// </remarks>
+    [JsonPropertyName("requester_name")]
+    public required string RequesterName { get; init; }
+
+    [JsonPropertyName("requester_email")]
+    public required string RequesterEmail { get; init; }
+
     [JsonPropertyName("adapter")]
     public required string Adapter { get; init; }
 
@@ -237,6 +256,11 @@ public sealed class GitHubActionsRunner : IAgentRunner
             Repo = dispatch.RepoFullName,
             BaseBranch = dispatch.BaseBranch,
             BaseCommitSha = dispatch.BaseCommitSha,
+            Branch = string.IsNullOrWhiteSpace(dispatch.Branch)
+                ? Charter.VersionControl.ChangeRequestPublisher.BranchFor(dispatch.SessionId)
+                : dispatch.Branch,
+            RequesterName = dispatch.Requester?.DisplayName ?? string.Empty,
+            RequesterEmail = dispatch.Requester?.Email ?? string.Empty,
             Adapter = dispatch.AdapterId,
             Model = dispatch.Model,
             RunnerImage = string.IsNullOrWhiteSpace(dispatch.RunnerImage)

@@ -4,6 +4,7 @@ import type { RequestDetail } from '@/api/types';
 import { ApprovalsPage } from '@/pages/ApprovalsPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { ProjectsPage } from '@/pages/ProjectsPage';
+import { RepositoriesPage } from '@/pages/RepositoriesPage';
 import { RequestListPage } from '@/pages/RequestListPage';
 import { RunnersPage } from '@/pages/RunnersPage';
 import { ThreePaneView } from '@/features/panes/ThreePaneView';
@@ -55,6 +56,13 @@ describe('every list view has a designed empty state (§30.5)', () => {
 
     expect(await screen.findByText('Nothing shared with you yet')).toBeInTheDocument();
     expect(screen.getByText(/Ask them to add you/)).toBeInTheDocument();
+  });
+
+  it('repositories — says what connecting one actually does (§9)', async () => {
+    renderWithProviders(<RepositoriesPage />, createTestApi({ listRepos: () => Promise.resolve([]) }));
+
+    expect(await screen.findByText('No repositories connected')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Connect it/ })).toBeInTheDocument();
   });
 
   it('approvals — says empty is the healthy state, not a failure', async () => {

@@ -44,6 +44,110 @@ export interface InstanceInfo {
 }
 
 /* -------------------------------------------------------------------------- */
+/* First run and sign-in (§30.1, §21)                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `GET /api/setup/status` — the one thing an unclaimed instance will tell anybody.
+ *
+ * Everything else under `/api` answers 503 until an admin exists, which is why this is the first
+ * call the app makes when `/api/me` refuses it.
+ */
+export interface SetupStatus {
+  setupRequired: boolean;
+}
+
+/**
+ * `POST /api/setup/complete`.
+ *
+ * `token` is the one-time value the server wrote to **stdout** on boot. There is no endpoint that
+ * reads it back and no default password: the operator reads it from the container logs (§30.1), and
+ * saying so on the page is the difference between a two-minute setup and a filed issue.
+ */
+export interface CompleteSetupBody {
+  token: string;
+  email: string;
+  displayName: string;
+  password: string;
+  /** Optional — §30.2 asks for it again on the dashboard checklist. */
+  organizationName?: string;
+}
+
+export type AuthProviderStyle = 'credential' | 'redirect';
+
+/**
+ * One sign-in method **this instance actually has configured**.
+ *
+ * The sign-in page renders buttons from this list and from nothing else. A provider the operator
+ * never configured must never appear, because a button that leads to a misconfiguration error is
+ * worse than no button.
+ */
+export interface AuthProvider {
+  /** Stable key: `password`, `github`, `google`, … Also what labels the button. */
+  name: string;
+  style: AuthProviderStyle;
+  /** Where the browser goes for a redirect sign-in. Absent for the password form. */
+  startUrl?: string;
+}
+
+export interface AuthProviders {
+  providers: AuthProvider[];
+  /**
+   * False when this instance cannot send email, so the page says who to ask instead of offering a
+   * reset button that could never deliver anything.
+   */
+  selfServicePasswordReset: boolean;
+}
+
+export interface SignInBody {
+  email: string;
+  password: string;
+}
+
+/**
+ * What a successful sign-in, setup completion or invitation acceptance answers with — and what
+ * `GET /api/auth/session` returns.
+ *
+ * **No token appears here, and none ever will.** The session is an HTTP-only cookie the server sets
+ * on this response; the client cannot read it, does not store it, and has no way to attach it by
+ * hand. This object exists so the page can greet the right person before `GET /api/me` lands.
+ */
+export interface Session {
+  userId: Id;
+  displayName: string;
+  email: string;
+  organizationId: Id;
+  roles: Role[];
+  /** Which provider this session signed in with. */
+  provider: string;
+}
+
+/** `POST /api/auth/invitations/accept` (§30.2). Ends signed in. */
+export interface AcceptInvitationBody {
+  token: string;
+  /** What they want to be called. Ignored when the account already exists. */
+  displayName: string;
+  password: string;
+}
+
+/** `POST /api/auth/reset-password`. Sets the password; does **not** issue a session. */
+export interface ResetPasswordBody {
+  token: string;
+  password: string;
+}
+
+/**
+ * `POST /api/auth/forgot-password`.
+ *
+ * The same sentence comes back for an address with an account and for one without — anybody can type
+ * anybody's address into that form, so a different answer would be an enumeration oracle. The
+ * response carries a message and never a link.
+ */
+export interface ForgotPasswordAcknowledgement {
+  message: string;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Viewer — GET /api/me, PATCH /api/me/preferences                            */
 /* -------------------------------------------------------------------------- */
 
@@ -139,6 +243,181 @@ export interface RequestTemplateField {
   placeholder?: string;
   required: boolean;
   multiline: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Repositories — the §9 onboarding wizard                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where a repository has got to in §9. A requester never sees any of this — `GET /api/repos` is
+ * engineer and admin only, and a requester's payload is `Project`, which carries no repository.
+ */
+export type RepoStatus = 'pending' | 'recon' | 'configuring' | 'smoke_test' | 'ready' | 'disabled';
+
+export type OnboardingStepId =
+  | 'connect'
+  | 'recon'
+  | 'confirm_scope'
+  | 'smoke_test'
+  | 'primer'
+  | 'merge_gate';
+
+export interface Repo {
+  id: Id;
+  /** `owner/name`, as the provider spells it. */
+  fullName: string;
+  baseBranch: string;
+  status: RepoStatus;
+  /** §9: false until the smoke test passes. Readiness is earned, never set by hand. */
+  requesterVisible: boolean;
+  hasPrimer: boolean;
+  connectedAt: Iso8601;
+  updatedAt: Iso8601;
+}
+
+export interface OnboardingStep {
+  id: OnboardingStepId;
+  label: string;
+  done: boolean;
+  /** True for the one step the engineer should do next. */
+  current: boolean;
+}
+
+/**
+ * One file or folder recon proposed a decision about (§9 step 3).
+ *
+ * `locked` marks the deny-by-default floor — migrations, auth, CI config, infra, secrets. The server
+ * filters whatever the client sends back through that floor regardless, so these render as denied
+ * with the reason attached rather than as a toggle that would silently not take effect.
+ */
+export interface ScopeEntry {
+  path: string;
+  kind: 'file' | 'directory';
+  allowed: boolean;
+  locked?: boolean;
+  /** Why recon proposed this — "database migrations", "how people sign in". */
+  reason?: string;
+}
+
+/**
+ * What the recon session found.
+ *
+ * **Not yet served by `GET /api/repos/{id}`** — the endpoint reports the steps and the pull request
+ * but not recon's own output, so this is the frontend's half of a contract the control plane has
+ * still to fill in. Absent means recon has not proposed a scope yet, and the wizard says so rather
+ * than rendering an empty tree.
+ */
+export interface ScopeProposal {
+  /** "ASP.NET Core 10", "React 19" — recon's detected stack, shown verbatim. */
+  detectedStack: string[];
+  /** Test and build commands recon found, so the engineer can sanity-check them. */
+  commands: { label: string; command: string }[];
+  /** §9: an existing `CLAUDE.md` / `AGENTS.md` is imported and extended, never overwritten. */
+  importedFrom?: string[];
+  entries: ScopeEntry[];
+}
+
+/** One of the six integration points the smoke test proves (§9 step 4). */
+export type SmokeTestCheckpointId =
+  | 'request_filed'
+  | 'agent_ran'
+  | 'checks_passed'
+  | 'pull_request'
+  | 'preview_deployed'
+  | 'url_bound';
+
+export interface SmokeTestCheckpoint {
+  id: SmokeTestCheckpointId;
+  label: string;
+  state: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
+  /** One line, engineer-facing: what this step actually did. */
+  detail?: string;
+}
+
+/**
+ * The last smoke test.
+ *
+ * §9's point is that onboarding **ends in proof**: "nothing else validates all six integration
+ * points at once". `checkpoints` is what makes that watchable rather than a boolean — the server
+ * sends them as the run progresses. Absent, the wizard reconstructs what it can prove from
+ * `pullRequestNumber` and `previewBound` and says the rest is unknown.
+ */
+export interface SmokeTestOutcome {
+  passed: boolean;
+  at: Iso8601;
+  /** The change request the smoke test opened, when it got that far. */
+  pullRequestNumber?: number;
+  /** §18: whether the preview URL bound back to the change request. */
+  previewBound: boolean;
+  checkpoints?: SmokeTestCheckpoint[];
+  /** §9 seed data: an empty preview **warns rather than blocks**. */
+  warnings?: string[];
+}
+
+/**
+ * §7.4, the one place the trust boundary weakens: "the guarantee is only as strong as the provider
+ * makes it". `advisory` means Charter still will not merge and cannot stop anyone else from doing
+ * so, and the wizard has to say that in words rather than in a colour.
+ */
+export interface MergeGate {
+  enforcement: 'provider_enforced' | 'advisory';
+  branch: string;
+  /** Whether a protection rule covers the base branch at all. Supported is not configured. */
+  protectionConfigured: boolean;
+  requiresReview: boolean;
+  checkedAt: Iso8601;
+  /** The plain warning, when the gate is advisory. Absent when it is enforced. */
+  warning?: string;
+}
+
+/** `GET /api/repos/{id}` — where this repository is in §9. */
+export interface RepoOnboarding {
+  repo: Repo;
+  steps: OnboardingStep[];
+  /** The scope-config pull request, once recon has proposed one. */
+  scopeConfigPullRequest?: number;
+  lastSmokeTest?: SmokeTestOutcome;
+  mergeGate?: MergeGate;
+  proposedScope?: ScopeProposal;
+  /** The primer draft the agent wrote, for the engineer to edit before publishing (§9 step 5). */
+  primerDraftMd?: string;
+}
+
+/** `POST /api/repos` (§9 step 1). */
+export interface ConnectRepoBody {
+  fullName: string;
+  /** The GitHub App installation that grants access to it. */
+  installationId?: number;
+  /** Defaults to `main`. */
+  baseBranch?: string;
+}
+
+/**
+ * `POST /api/repos/{id}/scope` (§9 step 3).
+ *
+ * Sending neither list accepts what recon proposed. Whatever arrives is filtered through the
+ * deny-by-default floor server-side, so a client cannot widen scope past it.
+ */
+export interface ConfirmScopeBody {
+  allow?: string[];
+  deny?: string[];
+}
+
+/** What one onboarding step did. */
+export interface OnboardingAction {
+  status: RepoStatus;
+  /** One line, safe to show an engineer. */
+  explanation: string;
+  /** Anything odd but survivable — a refused path, an empty preview. */
+  warnings: string[];
+  pullRequestNumber?: number;
+  pullRequestUrl?: string;
+}
+
+/** `POST /api/repos/{id}/primer` (§9 step 5). */
+export interface PublishPrimerBody {
+  markdown: string;
 }
 
 /* -------------------------------------------------------------------------- */

@@ -48,6 +48,24 @@ public sealed record ShimCommandLine
     /// <summary>The image in use, for the section 32.1 message when a toolchain is missing.</summary>
     public string? RunnerImage { get; init; }
 
+    /// <summary>Where the session's work is published. Defaults to the branch convention.</summary>
+    public string? Branch { get; init; }
+
+    /// <summary>The remote the session branch is pushed to.</summary>
+    public string? Remote { get; init; }
+
+    /// <summary>Where to clone from when the workspace is not already a checkout.</summary>
+    public string? CloneUrl { get; init; }
+
+    /// <summary>The requester's display name, for the commit's authorship (sections 7.3, 24).</summary>
+    public string? RequesterName { get; init; }
+
+    /// <summary>The requester's address, for the commit's authorship.</summary>
+    public string? RequesterEmail { get; init; }
+
+    /// <summary>Present as <c>--no-publish</c>; leaves the work uncommitted in the workspace.</summary>
+    public bool NoPublish { get; init; }
+
     /// <summary>Parses the argument vector. Unknown flags are reported, never ignored.</summary>
     public static ShimCommandLine Parse(IReadOnlyList<string> arguments, ICollection<string> problems)
     {
@@ -86,9 +104,15 @@ public sealed record ShimCommandLine
                 case "--callback-url": line = line with { CallbackUrl = Value() }; break;
                 case "--workspace": line = line with { Workspace = Value() }; break;
                 case "--runner-image": line = line with { RunnerImage = Value() }; break;
+                case "--branch": line = line with { Branch = Value() }; break;
+                case "--remote": line = line with { Remote = Value() }; break;
+                case "--clone-url": line = line with { CloneUrl = Value() }; break;
+                case "--requester-name": line = line with { RequesterName = Value() }; break;
+                case "--requester-email": line = line with { RequesterEmail = Value() }; break;
                 case "--require": if (Value() is { } capability) { require.Add(capability); } break;
                 case "--stream-events": line = line with { StreamEvents = true }; break;
                 case "--allow-install-scripts": line = line with { AllowInstallScripts = true }; break;
+                case "--no-publish": line = line with { NoPublish = true }; break;
                 default:
                     problems.Add($"'{argument}' is not a flag charter-runner-shim understands.");
                     break;
@@ -138,6 +162,12 @@ public sealed record ShimCommandLine
             ProbedCapabilities = probedCapabilities,
             RunnerImage = RunnerImage,
             AllowInstallScripts = AllowInstallScripts,
+            Branch = Branch,
+            Remote = string.IsNullOrWhiteSpace(Remote) ? "origin" : Remote,
+            CloneUrl = CloneUrl,
+            BaseCommit = BaseCommit,
+            Requester = ShimCommitIdentity.TryCreate(RequesterName, RequesterEmail),
+            Publish = !NoPublish,
             AgentEnvironment = agentEnvironment,
         };
 }

@@ -644,6 +644,8 @@ public partial class InitialCreate : Migration
                 usd = table.Column<decimal>(type: "numeric(14,4)", precision: 14, scale: 4, nullable: false),
                 quota_sessions = table.Column<decimal>(type: "numeric(14,4)", precision: 14, scale: 4, nullable: false),
                 imputed_usd = table.Column<decimal>(type: "numeric(14,4)", precision: 14, scale: 4, nullable: false),
+                estimated_usd = table.Column<decimal>(type: "numeric(14,4)", precision: 14, scale: 4, nullable: false),
+                estimated_quota_sessions = table.Column<decimal>(type: "numeric(14,4)", precision: 14, scale: 4, nullable: false),
                 state = table.Column<string>(type: "text", nullable: false),
                 reserved_until = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                 credential_grant_id = table.Column<Guid>(type: "uuid", nullable: true),
@@ -714,6 +716,7 @@ public partial class InitialCreate : Migration
                 session_id = table.Column<Guid>(type: "uuid", nullable: false),
                 body_md = table.Column<string>(type: "text", nullable: false),
                 risk_items = table.Column<string>(type: "jsonb", nullable: false),
+                payload = table.Column<string>(type: "jsonb", nullable: false, defaultValueSql: "'{}'::jsonb"),
                 cost_usd = table.Column<decimal>(type: "numeric(14,4)", precision: 14, scale: 4, nullable: false),
                 generated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
             },

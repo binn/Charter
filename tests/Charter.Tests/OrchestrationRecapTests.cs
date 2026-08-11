@@ -204,6 +204,14 @@ public class OrchestrationRecapTests
                 BodyMarkdown = "## What was asked for\nThe wizard remembers the last vertical.",
                 RankedFiles = [],
                 RiskItemsJson = "[]",
+
+                // The same content as the body, before it was rendered. The handler stores it beside
+                // the prose so the API reads section 14's sections as data rather than parsing
+                // headings back out of markdown.
+                Document = new RecapDocument
+                {
+                    SummaryMd = "The wizard remembers the last vertical.",
+                },
                 Usage = new ModelUsage { InputTokens = 900, OutputTokens = 300 },
                 Charge = new ModelCharge
                 {

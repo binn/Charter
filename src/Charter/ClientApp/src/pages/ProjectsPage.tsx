@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { useApi } from '@/api/api-context';
+import { useViewer } from '@/app/viewer-context';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -21,12 +22,27 @@ import { useAsync } from '@/hooks/useAsync';
 export function ProjectsPage() {
   const api = useApi();
   const navigate = useNavigate();
+  const { viewer } = useViewer();
   const load = useCallback((signal: AbortSignal) => api.listProjects(signal), [api]);
   const state = useAsync(load);
 
   return (
     <>
       <PageHeader
+        actions={
+          // §30.2's checklist sends "connect your first repository" here, and §9 is where it
+          // actually happens. An affordance, not a permission: `GET /api/repos` refuses anyone else.
+          viewer.capabilities.canReadRepos ? (
+            <Button
+              onClick={() => {
+                void navigate('/settings/repositories');
+              }}
+            >
+              <Icon name="package" size={15} />
+              Connect a repository
+            </Button>
+          ) : undefined
+        }
         description="The things you can ask for changes to."
         title="Projects"
       />

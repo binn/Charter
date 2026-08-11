@@ -25,6 +25,15 @@ function unimplemented(name: string): never {
 export function createTestApi(partial: Partial<CharterApi> = {}, persona: MockPersona = 'engineer') {
   const base: CharterApi = {
     getInstance: () => Promise.resolve(makeInstance(NOW)),
+    getSetupStatus: () => Promise.resolve({ setupRequired: false }),
+    completeSetup: () => unimplemented('completeSetup'),
+    getAuthProviders: () =>
+      Promise.resolve({ providers: [{ name: 'password', style: 'credential' }], selfServicePasswordReset: true }),
+    signIn: () => unimplemented('signIn'),
+    signOut: () => Promise.resolve(),
+    forgotPassword: () => unimplemented('forgotPassword'),
+    resetPassword: () => unimplemented('resetPassword'),
+    acceptInvitation: () => unimplemented('acceptInvitation'),
     getViewer: () => Promise.resolve(makeViewer(persona, NOW)),
     updatePreferences: (patch) =>
       Promise.resolve({ ...makeViewer(persona, NOW).preferences, ...patch }),
@@ -49,6 +58,13 @@ export function createTestApi(partial: Partial<CharterApi> = {}, persona: MockPe
     listRunners: () => unimplemented('listRunners'),
     createPairingToken: () => unimplemented('createPairingToken'),
     revokeAgent: () => Promise.resolve(),
+    listRepos: () => Promise.resolve([]),
+    connectRepo: () => unimplemented('connectRepo'),
+    getRepoOnboarding: () => unimplemented('getRepoOnboarding'),
+    startRecon: () => unimplemented('startRecon'),
+    confirmScope: () => unimplemented('confirmScope'),
+    getSmokeTest: () => Promise.resolve(null),
+    publishPrimer: () => unimplemented('publishPrimer'),
     getSetupChecklist: () => Promise.resolve(null),
     dismissSetupChecklist: () => unimplemented('dismissSetupChecklist'),
     subscribeToRequest: () => () => {},
@@ -63,6 +79,21 @@ export function renderWithProviders(ui: ReactElement, api: CharterApi) {
       <MemoryRouter>
         <ViewerProvider>{ui}</ViewerProvider>
       </MemoryRouter>
+    </ApiProvider>,
+  );
+}
+
+/**
+ * The same tree minus `ViewerProvider`, for the pages you reach *without* a session: first run,
+ * sign-in, and the two one-time links. Those pages must not depend on a viewer — nobody has one yet
+ * — so rendering them under one would hide exactly the mistake worth catching.
+ *
+ * `route` carries the query string, because `?token=…` is the entire input to two of these pages.
+ */
+export function renderPublicPage(ui: ReactElement, api: CharterApi, route = '/') {
+  return render(
+    <ApiProvider api={api}>
+      <MemoryRouter initialEntries={[route]}>{ui}</MemoryRouter>
     </ApiProvider>,
   );
 }

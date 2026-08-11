@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json;
 using Charter.Configuration;
+using Charter.Configuration.Preflight;
 using Charter.Data;
 using Charter.Domain;
 using Charter.Hosting;
@@ -286,6 +287,76 @@ public class BootEndToEndTests
             cancellationToken);
 
         Assert.Equal(HttpStatusCode.MethodNotAllowed, pair.StatusCode);
+    }
+
+    [Fact]
+    public async Task PreflightRunsOnTheRealBootAndRefusesToServeWithoutAModelCredential()
+    {
+        var databaseUrl = System.Environment.GetEnvironmentVariable(DatabaseUrlVariable);
+        if (string.IsNullOrWhiteSpace(databaseUrl))
+        {
+            Assert.Skip($"Set {DatabaseUrlVariable} to a throwaway Postgres to run the boot tests.");
+            return;
+        }
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        await using var database = await ThrowawayDatabase.CreateAsync(databaseUrl, cancellationToken);
+
+        // Section 4.2 footnote *: at least one model credential must be resolvable at startup, and the
+        // parser cannot see the database, so this is the check that settles it. Before preflight was
+        // invoked the instance booted happily and discovered it on somebody's first request.
+        var (config, environment) = Environment(database, ("ANTHROPIC_API_KEY", null));
+
+        var failure = await Assert.ThrowsAsync<PreflightException>(
+            async () =>
+            {
+                await using var charter = await BootedCharter.StartAsync(config, environment, cancellationToken);
+            });
+
+        Assert.Contains("model credential", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("OPENROUTER_API_KEY", failure.Message, StringComparison.Ordinal);
+
+        // And the base URL, which does not resolve from here either, is not in the blocking list: it
+        // is the one advisory check, because this container is the wrong place to observe it from.
+        Assert.DoesNotContain("base URL", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ADemoInstanceBootsWithNoCredentialAndIsAlreadyPopulated()
+    {
+        var databaseUrl = System.Environment.GetEnvironmentVariable(DatabaseUrlVariable);
+        if (string.IsNullOrWhiteSpace(databaseUrl))
+        {
+            Assert.Skip($"Set {DatabaseUrlVariable} to a throwaway Postgres to run the boot tests.");
+            return;
+        }
+
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        await using var database = await ThrowawayDatabase.CreateAsync(databaseUrl, cancellationToken);
+
+        // Section 30.6: no GitHub App, no token. Demanding a model credential would defeat the point,
+        // so the check is skipped rather than satisfied with a fake one.
+        var (config, environment) = Environment(
+            database,
+            ("CHARTER_DEMO", "true"),
+            ("ANTHROPIC_API_KEY", null));
+
+        await using var charter = await BootedCharter.StartAsync(config, environment, cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, (await charter.Client.GetAsync("/health", cancellationToken)).StatusCode);
+
+        // Seeded users mean the instance is claimed, so section 30.1's gate is open and an evaluator
+        // sees the product rather than a setup token and an empty database.
+        var me = await charter.Client.GetAsync("/api/me", cancellationToken);
+        Assert.NotEqual(HttpStatusCode.ServiceUnavailable, me.StatusCode);
+
+        await using var db = Connect(database);
+
+        Assert.Equal(1, await db.Organizations.CountAsync(cancellationToken));
+        Assert.Equal(2, await db.Sessions.CountAsync(cancellationToken));
+        Assert.NotEmpty(await db.VerificationArtifacts.ToListAsync(cancellationToken));
     }
 
     /// <summary>Puts one user in the database, which is all section 30.1 needs to end setup mode.</summary>

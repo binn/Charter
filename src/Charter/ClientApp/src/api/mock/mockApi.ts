@@ -1,4 +1,4 @@
-import type { CharterApi } from '@/api/client';
+import { ApiError, type CharterApi } from '@/api/client';
 import type { MockPersona } from '@/api/mock/fixtures';
 import {
   makeInstance,
@@ -8,20 +8,61 @@ import {
   makeViewer,
   TRANSCRIPT_PAGE_SIZE,
 } from '@/api/mock/fixtures';
+import {
+  INVITATION_EXPIRED,
+  INVITATION_REFUSAL,
+  makeAuthProviders,
+  makeSession,
+  MINIMUM_PASSWORD_LENGTH,
+  MOCK_CREDENTIALS,
+  MOCK_EXPIRED_INVITATION_TOKEN,
+  MOCK_EXPIRED_RESET_TOKEN,
+  MOCK_INVITATION_TOKEN,
+  MOCK_RESET_TOKEN,
+  MOCK_SETUP_TOKEN,
+  RESET_LINK_EXPIRED,
+  RESET_LINK_REFUSAL,
+  SETUP_ALREADY_COMPLETED,
+  SETUP_TOKEN_REFUSAL,
+  SIGN_IN_ATTEMPT_LIMIT,
+  SIGN_IN_REFUSAL,
+  SIGN_IN_THROTTLED,
+} from '@/api/mock/fixtures-auth';
+import {
+  makeAdvisoryMergeGate,
+  makeEnforcedMergeGate,
+  makePrimerDraft,
+  makeRepos,
+  makeScopeProposal,
+  makeSmokeTest,
+  makeSteps,
+} from '@/api/mock/fixtures-repos';
 import { makePairingToken, makeRunners } from '@/api/mock/fixtures-runners';
 import { fileDiffFor, transcriptFor } from '@/api/mock/fixtures-session';
 import { makeSetupChecklist } from '@/api/mock/fixtures-setup';
 import type {
+  AcceptInvitationBody,
+  CompleteSetupBody,
+  ConfirmScopeBody,
+  ConnectRepoBody,
   CreateRequestBody,
   Id,
+  MergeGate,
   Milestone,
+  PublishPrimerBody,
   RefinementMessage,
+  Repo,
+  RepoOnboarding,
   RequestDetail,
   RequestStreamEvent,
   RequestSummary,
+  ResetPasswordBody,
   RunnersView,
+  ScopeProposal,
   SendRefinementMessageBody,
   SetupChecklist,
+  SignInBody,
+  SmokeTestOutcome,
   SubmitFeedbackBody,
   TranscriptPane,
   TranscriptQuery,
@@ -44,6 +85,20 @@ import type {
 
 const clone = <T>(value: T): T => structuredClone(value);
 
+/**
+ * One connected repository, mid-§9. The onboarding view is derived from these facts on every read
+ * rather than stored, so the smoke test progresses simply because time passed — which is what makes
+ * it watchable.
+ */
+interface MockRepoState {
+  repo: Repo;
+  proposedScope?: ScopeProposal;
+  primerDraftMd?: string;
+  mergeGate?: MergeGate;
+  scopeConfirmedAt?: number;
+  scopeConfigPullRequest?: number;
+}
+
 interface MockState {
   persona: MockPersona;
   now: number;
@@ -51,6 +106,14 @@ interface MockState {
   requests: RequestDetail[];
   runners: RunnersView;
   setup: SetupChecklist;
+
+  /** §30.1: true means this instance has no users and answers nothing but setup. */
+  setupRequired: boolean;
+  /** Whether a session cookie would exist. The mock owns this exactly as the server does. */
+  signedIn: boolean;
+  /** Consecutive failures, for the throttle. Reset by a success, as the real one is. */
+  failedSignIns: number;
+  repos: MockRepoState[];
 }
 
 /**
@@ -67,9 +130,26 @@ function readPersona(): MockPersona {
   return requested === 'engineer' || requested === 'new-requester' ? requested : 'requester';
 }
 
+/**
+ * Which of the three states an instance can be in when a browser arrives: claimed and signed in
+ * (the default), claimed and signed out, or never claimed at all.
+ *
+ * `?instance=setup` and `?instance=signed-out` exist so the two screens that are otherwise
+ * unreachable in development — the first-run page and the sign-in page — can be worked on. Like the
+ * persona switch above, this stands in for *the server* deciding, and it disappears with this file.
+ */
+function readInstanceState(): 'ready' | 'signed-out' | 'setup' {
+  if (typeof window === 'undefined') {
+    return 'ready';
+  }
+  const requested = new URLSearchParams(window.location.search).get('instance');
+  return requested === 'setup' || requested === 'signed-out' ? requested : 'ready';
+}
+
 function createState(): MockState {
   const now = Date.now();
   const persona = readPersona();
+  const instance = readInstanceState();
   return {
     persona,
     now,
@@ -77,6 +157,19 @@ function createState(): MockState {
     requests: makeRequests(persona, now),
     runners: makeRunners(now),
     setup: makeSetupChecklist(),
+    setupRequired: instance === 'setup',
+    signedIn: instance === 'ready',
+    failedSignIns: 0,
+    repos: makeRepos(now).map((repo) => ({
+      repo,
+      proposedScope: makeScopeProposal(),
+      primerDraftMd: makePrimerDraft(repo.fullName),
+      mergeGate:
+        repo.status === 'ready' ? makeEnforcedMergeGate(now) : makeAdvisoryMergeGate(now),
+      ...(repo.status === 'ready'
+        ? { scopeConfirmedAt: now - 3 * 60 * 60_000, scopeConfigPullRequest: 118 }
+        : {}),
+    })),
   };
 }
 
@@ -304,15 +397,192 @@ function scriptCharterReply(body: string): ScriptStep[] {
 
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Repositories (§9)                                                          */
+/* -------------------------------------------------------------------------- */
+
+function findRepo(id: Id): MockRepoState {
+  const found = mockState().repos.find((candidate) => candidate.repo.id === id);
+  if (!found) {
+    throw new ApiError(404, 'We could not find that. It may have been removed.');
+  }
+  return found;
+}
+
+/**
+ * §9's readiness rule, enforced where the server enforces it: a repository becomes requester-visible
+ * because its smoke test passed, and by no other route. There is no mock method that sets it.
+ */
+function smokeTestFor(entry: MockRepoState): SmokeTestOutcome | null {
+  if (entry.scopeConfirmedAt === undefined) {
+    return null;
+  }
+
+  const outcome = makeSmokeTest(entry.scopeConfirmedAt, Date.now());
+
+  if (outcome.passed && entry.repo.status === 'smoke_test') {
+    entry.repo = { ...entry.repo, status: 'ready', requesterVisible: true, updatedAt: new Date().toISOString() };
+  }
+
+  return outcome;
+}
+
+function describeRepo(entry: MockRepoState): RepoOnboarding {
+  const smokeTest = smokeTestFor(entry);
+
+  return {
+    repo: clone(entry.repo),
+    steps: makeSteps(entry.repo, entry.proposedScope !== undefined, smokeTest?.passed ?? false),
+    ...(entry.scopeConfigPullRequest === undefined
+      ? {}
+      : { scopeConfigPullRequest: entry.scopeConfigPullRequest }),
+    ...(smokeTest === null ? {} : { lastSmokeTest: smokeTest }),
+    ...(entry.mergeGate === undefined || !(smokeTest?.passed ?? false)
+      ? {}
+      : { mergeGate: clone(entry.mergeGate) }),
+    ...(entry.proposedScope === undefined ? {} : { proposedScope: clone(entry.proposedScope) }),
+    ...(entry.primerDraftMd === undefined || entry.repo.hasPrimer
+      ? {}
+      : { primerDraftMd: entry.primerDraftMd }),
+  };
+}
+
 export const mockApi: CharterApi = {
   async getInstance() {
     await latency(80);
     return makeInstance(mockState().now);
   },
 
-  async getViewer() {
+  /* ---- First run and sign-in (§30.1, §21) -------------------------------- */
+
+  async getSetupStatus() {
+    await latency(60);
+    return { setupRequired: mockState().setupRequired };
+  },
+
+  async completeSetup(body: CompleteSetupBody) {
+    await latency(400);
+    const state = mockState();
+
+    if (!state.setupRequired) {
+      throw new ApiError(409, SETUP_ALREADY_COMPLETED);
+    }
+    if (body.token.trim() !== MOCK_SETUP_TOKEN) {
+      // Recoverable, and it says where a correct token comes from. The form keeps what was typed.
+      throw new ApiError(400, SETUP_TOKEN_REFUSAL);
+    }
+    if (body.password.length < MINIMUM_PASSWORD_LENGTH) {
+      throw new ApiError(400, `Choose a password of at least ${MINIMUM_PASSWORD_LENGTH} characters.`);
+    }
+
+    // Exactly one admin, and setup mode ends permanently.
+    state.setupRequired = false;
+    state.signedIn = true;
+    state.viewer = {
+      ...state.viewer,
+      displayName: body.displayName,
+      email: body.email,
+      ...(body.organizationName === undefined || body.organizationName.trim() === ''
+        ? {}
+        : { organization: { ...state.viewer.organization, name: body.organizationName } }),
+    };
+
+    return makeSession(body.displayName, body.email);
+  },
+
+  async getAuthProviders() {
     await latency(80);
-    return clone(mockState().viewer);
+    return makeAuthProviders();
+  },
+
+  async signIn(body: SignInBody) {
+    await latency(320);
+    const state = mockState();
+
+    if (state.failedSignIns >= SIGN_IN_ATTEMPT_LIMIT) {
+      throw new ApiError(429, SIGN_IN_THROTTLED, 60);
+    }
+
+    const matches =
+      body.email.trim().toLowerCase() === MOCK_CREDENTIALS.email &&
+      body.password === MOCK_CREDENTIALS.password;
+
+    if (!matches) {
+      state.failedSignIns += 1;
+      // §21: an unknown address and a wrong password are the same refusal, word for word. Anything
+      // that told them apart would answer "does this person have an account here" for free.
+      throw new ApiError(401, SIGN_IN_REFUSAL);
+    }
+
+    state.failedSignIns = 0;
+    state.signedIn = true;
+    return makeSession(state.viewer.displayName, state.viewer.email);
+  },
+
+  async signOut() {
+    await latency(120);
+    mockState().signedIn = false;
+  },
+
+  async forgotPassword() {
+    await latency(200);
+    // The same sentence for an address with an account and for one without, and never a link.
+    return {
+      message:
+        'If that address has an account, a reset link is on its way. Check your spam folder if it does not arrive.',
+    };
+  },
+
+  async resetPassword(body: ResetPasswordBody) {
+    await latency(300);
+    if (body.token === MOCK_EXPIRED_RESET_TOKEN) {
+      throw new ApiError(400, RESET_LINK_EXPIRED);
+    }
+    if (body.token !== MOCK_RESET_TOKEN) {
+      throw new ApiError(400, RESET_LINK_REFUSAL);
+    }
+    if (body.password.length < MINIMUM_PASSWORD_LENGTH) {
+      throw new ApiError(400, `Choose a password of at least ${MINIMUM_PASSWORD_LENGTH} characters.`);
+    }
+    // No session: proving control of a mailbox sets a password and does not sign a browser in.
+  },
+
+  async acceptInvitation(body: AcceptInvitationBody) {
+    await latency(360);
+    const state = mockState();
+
+    if (body.token === MOCK_EXPIRED_INVITATION_TOKEN) {
+      throw new ApiError(400, INVITATION_EXPIRED);
+    }
+    if (body.token !== MOCK_INVITATION_TOKEN) {
+      throw new ApiError(400, INVITATION_REFUSAL);
+    }
+    if (body.password.length < MINIMUM_PASSWORD_LENGTH) {
+      throw new ApiError(400, `Choose a password of at least ${MINIMUM_PASSWORD_LENGTH} characters.`);
+    }
+
+    state.signedIn = true;
+    state.viewer = { ...state.viewer, displayName: body.displayName };
+    return makeSession(body.displayName, state.viewer.email);
+  },
+
+  async getViewer(): Promise<Viewer> {
+    await latency(80);
+    const state = mockState();
+
+    // The mock stands in for the server, so the two refusals the app routes on come from here: an
+    // unclaimed instance answers 503 for everything but setup, and a browser with no cookie gets 401.
+    if (state.setupRequired) {
+      throw new ApiError(
+        503,
+        'This instance has no users. Read the one-time setup token from the container logs and complete setup at /setup.',
+      );
+    }
+    if (!state.signedIn) {
+      throw new ApiError(401, 'Sign in again and we will bring you back here.');
+    }
+
+    return clone(state.viewer);
   },
 
   async updatePreferences(patch: Partial<UserPreferences>) {
@@ -671,6 +941,107 @@ export const mockApi: CharterApi = {
     mockState().runners = {
       ...mockState().runners,
       agents: mockState().runners.agents.filter((agent) => agent.id !== agentId),
+    };
+  },
+
+  /* ---- Repo onboarding (§9) ----------------------------------------------- */
+
+  async listRepos() {
+    await latency();
+    if (!mockState().viewer.capabilities.canReadRepos) {
+      throw new ApiError(403, 'Connecting repositories is an engineer or administrator action.');
+    }
+    return mockState().repos.map((entry) => clone(entry.repo));
+  },
+
+  async connectRepo(body: ConnectRepoBody) {
+    await latency(500);
+    const now = Date.now();
+    const repo: Repo = {
+      id: `repo-${Math.random().toString(36).slice(2, 8)}`,
+      fullName: body.fullName,
+      baseBranch: body.baseBranch === undefined || body.baseBranch === '' ? 'main' : body.baseBranch,
+      // §9: connecting is step one of six. Nothing is requestable yet, and nobody is scoped to it.
+      status: 'pending',
+      requesterVisible: false,
+      hasPrimer: false,
+      connectedAt: new Date(now).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+    };
+
+    mockState().repos = [{ repo }, ...mockState().repos];
+    return clone(repo);
+  },
+
+  async getRepoOnboarding(id) {
+    await latency(140);
+    return describeRepo(findRepo(id));
+  },
+
+  async startRecon(id) {
+    await latency(600);
+    const entry = findRepo(id);
+    entry.repo = { ...entry.repo, status: 'configuring', updatedAt: new Date().toISOString() };
+    entry.proposedScope = makeScopeProposal();
+    entry.primerDraftMd = makePrimerDraft(entry.repo.fullName);
+    entry.mergeGate = makeAdvisoryMergeGate(Date.now());
+
+    return {
+      status: entry.repo.status,
+      explanation:
+        'Recon read the repository without writing to it, and has proposed what Charter may and may not touch.',
+      warnings: ['An existing AGENTS.md was imported and extended rather than replaced.'],
+    };
+  },
+
+  async confirmScope(id, body: ConfirmScopeBody) {
+    await latency(520);
+    const entry = findRepo(id);
+
+    if (entry.proposedScope) {
+      const allow = new Set(body.allow ?? []);
+      const deny = new Set(body.deny ?? []);
+      entry.proposedScope = {
+        ...entry.proposedScope,
+        entries: entry.proposedScope.entries.map((scope) =>
+          // The deny-by-default floor is applied here because the server applies it there: a client
+          // cannot widen scope past it, whatever it sends.
+          scope.locked === true
+            ? { ...scope, allowed: false }
+            : { ...scope, allowed: allow.has(scope.path) ? true : deny.has(scope.path) ? false : scope.allowed },
+        ),
+      };
+    }
+
+    entry.scopeConfirmedAt = Date.now();
+    entry.scopeConfigPullRequest = 127;
+    entry.repo = { ...entry.repo, status: 'smoke_test', updatedAt: new Date().toISOString() };
+
+    return {
+      status: entry.repo.status,
+      explanation:
+        'The scope config is open as a pull request, and the smoke test has been queued against it.',
+      warnings: [],
+      pullRequestNumber: 127,
+      pullRequestUrl: 'https://github.com/northbeam/quote-tool/pull/127',
+    };
+  },
+
+  async getSmokeTest(id) {
+    await latency(110);
+    return smokeTestFor(findRepo(id));
+  },
+
+  async publishPrimer(id, body: PublishPrimerBody) {
+    await latency(400);
+    const entry = findRepo(id);
+    entry.repo = { ...entry.repo, hasPrimer: true, updatedAt: new Date().toISOString() };
+    entry.primerDraftMd = body.markdown;
+
+    return {
+      status: entry.repo.status,
+      explanation: 'The primer is published. New requesters will read it once, before their first request.',
+      warnings: [],
     };
   },
 

@@ -25,6 +25,9 @@ RUN npm ci --ignore-scripts
 COPY src/Charter/ClientApp/ ./
 
 # vite.config.ts writes to ../wwwroot, so the output lands at /src/wwwroot.
+# The SPA falls back to its in-repo mock unless this is set, so a built image would otherwise
+# ship a UI that never talks to the server it is bundled into.
+ENV VITE_CHARTER_LIVE_API=true
 RUN npm run build
 
 

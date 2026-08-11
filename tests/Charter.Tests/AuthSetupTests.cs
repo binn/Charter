@@ -282,6 +282,103 @@ public class AuthSetupIntegrationTests
     }
 
     [Fact]
+    public async Task TheTokenCreatesExactlyOneAdminAndNotTwo()
+    {
+        // The route redeeming this is the one unauthenticated endpoint that creates an
+        // administrator, so "exactly one" is checked against the rows rather than against the store.
+        await using var fixture = await SetupFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var token = fixture.Tokens.Issue();
+
+        Assert.IsType<SetupResult.Completed>(await fixture.Service.CompleteAsync(
+            new SetupRequest
+            {
+                Token = token.Value,
+                Email = fixture.Email,
+                DisplayName = "First Admin",
+                Password = new Secret("a-long-enough-password"),
+            },
+            TestContext.Current.CancellationToken));
+
+        // A second redemption of the same value, racing or replayed, creates nothing. Three separate
+        // things refuse it; this asserts the outcome all three exist for.
+        var second = Assert.IsType<SetupResult.Rejected>(await fixture.Service.CompleteAsync(
+            new SetupRequest
+            {
+                Token = token.Value,
+                Email = "second@example.com",
+                DisplayName = "Second Admin",
+                Password = new Secret("a-long-enough-password"),
+            },
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(SetupRejection.AlreadyCompleted, second.Reason);
+
+        Assert.Equal(1, await fixture.Db.Users.CountAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1, await fixture.Db.Members.CountAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1, await fixture.Db.Organizations.CountAsync(TestContext.Current.CancellationToken));
+
+        // And the token itself is gone, so a restart is what it takes to get another.
+        Assert.Null(fixture.Tokens.Current);
+        Assert.Equal(SetupTokenRejection.AlreadyUsed, fixture.Tokens.TryConsume(token.Value));
+    }
+
+    [Fact]
+    public async Task SetupModeCannotBeReEnteredOnARunningProcess()
+    {
+        // Section 30.1: setup mode ends permanently. Deleting every user would still not reopen it
+        // here, which is the conservative direction to be wrong in — and it is the difference
+        // between a bad afternoon and a stranger claiming the instance.
+        await using var fixture = await SetupFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var token = fixture.Tokens.Issue();
+
+        Assert.IsType<SetupResult.Completed>(await fixture.Service.CompleteAsync(
+            new SetupRequest
+            {
+                Token = token.Value,
+                Email = fixture.Email,
+                DisplayName = "First Admin",
+                Password = new Secret("a-long-enough-password"),
+            },
+            TestContext.Current.CancellationToken));
+
+        Assert.True(fixture.State.IsCompleted);
+
+        await fixture.Db.Identities.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await fixture.Db.AuditLogs.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await fixture.Db.Members.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+        await fixture.Db.Users.ExecuteDeleteAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(await fixture.Db.Users.AnyAsync(TestContext.Current.CancellationToken));
+
+        // Zero users, and setup is still over: the latch, not the row count, is what decides.
+        Assert.False(await fixture.Mode.IsSetupRequiredAsync(TestContext.Current.CancellationToken));
+
+        // And even a freshly issued token cannot claim the instance a second time on this process.
+        var refused = Assert.IsType<SetupResult.Rejected>(await fixture.Service.CompleteAsync(
+            new SetupRequest
+            {
+                Token = fixture.Tokens.Issue().Value,
+                Email = "usurper@example.com",
+                DisplayName = "Usurper",
+                Password = new Secret("a-long-enough-password"),
+            },
+            TestContext.Current.CancellationToken));
+
+        Assert.Equal(SetupRejection.AlreadyCompleted, refused.Reason);
+        Assert.False(await fixture.Db.Users.AnyAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task AShortPasswordIsRefusedBeforeTheTokenIsSpent()
     {
         await using var fixture = await SetupFixture.CreateAsync();

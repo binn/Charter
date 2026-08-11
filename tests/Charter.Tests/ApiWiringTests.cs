@@ -186,6 +186,20 @@ public class ApiWiringTests
         // Admin settings → Email (change spec 001 part C.3).
         { "GET", "/api/settings/email" },
         { "POST", "/api/settings/email/test" },
+
+        // Section 9's wizard, which had no HTTP surface at all until now. Listed here with the rest
+        // so a rename breaks a test rather than the onboarding screen.
+        { "GET", "/api/repos/" },
+        { "POST", "/api/repos/" },
+        { "GET", "/api/repos/{id}" },
+        { "POST", "/api/repos/{id}/recon" },
+        { "POST", "/api/repos/{id}/scope" },
+        { "GET", "/api/repos/{id}/smoke-test" },
+        { "POST", "/api/repos/{id}/primer" },
+
+        // Section 7.3, guardrail 1: the only way a repository stops being requestable by nobody.
+        { "GET", "/api/repos/{id}/access" },
+        { "POST", "/api/repos/{id}/access" },
     };
 
     [Theory]

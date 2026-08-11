@@ -83,6 +83,19 @@ public sealed class OrchestrationOptions
     public Uri SpecUrlFor(Guid sessionId)
         => new(BaseUrl, $"/api/runners/sessions/{sessionId:D}/spec");
 
+    /// <summary>
+    /// The status thread of one request (section 11), for the link in a notification.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the same shape <c>DeploymentOptions.ThreadUrlFor</c> builds. Both notifying states
+    /// of section 6 send somebody to the same page, and a second spelling of that path is how the two
+    /// emails end up disagreeing about where the thread lives.
+    /// </remarks>
+    public Uri ThreadUrlFor(Guid requestId) => new(BaseUrl, $"/requests/{requestId:D}");
+
+    /// <summary>Where a recipient changes their channel preference (section 22).</summary>
+    public Uri NotificationSettingsUrl => new(BaseUrl, "/settings/notifications");
+
     /// <summary>Folds a name into the 64-bit key <c>pg_try_advisory_lock</c> takes.</summary>
     public static long AdvisoryKey(string name)
     {

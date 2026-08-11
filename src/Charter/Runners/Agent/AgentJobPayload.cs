@@ -41,6 +41,17 @@ public sealed record AgentJobPayload
     [JsonPropertyName("base_commit_sha")]
     public string? BaseCommitSha { get; init; }
 
+    /// <summary>The branch the shim commits and pushes the session's work on.</summary>
+    [JsonPropertyName("branch")]
+    public string? Branch { get; init; }
+
+    /// <summary>The requester, for the authorship of that commit (sections 7.3, 24).</summary>
+    [JsonPropertyName("requester_name")]
+    public string? RequesterName { get; init; }
+
+    [JsonPropertyName("requester_email")]
+    public string? RequesterEmail { get; init; }
+
     [JsonPropertyName("adapter")]
     public string? AdapterId { get; init; }
 
@@ -102,6 +113,11 @@ public sealed record AgentJobPayload
             CloneUrl = cloneUrl ?? $"https://github.com/{dispatch.RepoFullName}.git",
             BaseBranch = dispatch.BaseBranch,
             BaseCommitSha = dispatch.BaseCommitSha,
+            Branch = string.IsNullOrWhiteSpace(dispatch.Branch)
+                ? VersionControl.ChangeRequestPublisher.BranchFor(dispatch.SessionId)
+                : dispatch.Branch,
+            RequesterName = dispatch.Requester?.DisplayName,
+            RequesterEmail = dispatch.Requester?.Email,
             AdapterId = dispatch.AdapterId,
             Model = dispatch.Model,
             RunnerImage = dispatch.RunnerImage,
@@ -243,6 +259,19 @@ public static class AgentJobAssignmentBuilder
         if (payload.RunnerImage is { Length: > 0 } image)
         {
             arguments.AddRange(["--runner-image", image]);
+        }
+
+        if (payload.Branch is { Length: > 0 } head)
+        {
+            arguments.AddRange(["--branch", head]);
+        }
+
+        // Sections 7.3 and 24: the commit is attributed to the person who asked, and to nothing else.
+        if (payload.RequesterName is { Length: > 0 } requesterName
+            && payload.RequesterEmail is { Length: > 0 } requesterEmail)
+        {
+            arguments.AddRange(
+                ["--requester-name", requesterName, "--requester-email", requesterEmail]);
         }
 
         foreach (var capability in required)

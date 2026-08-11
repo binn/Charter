@@ -422,13 +422,19 @@ public sealed class ApiScenario
             CouldNotVerify = ["No test covers two tabs picking different verticals."],
         };
 
-        var (body, riskItems, _) = RecapComposer.Compose(
+        var (body, riskItems, recapDocument, _) = RecapComposer.Compose(
             new RecapEvidence { SessionId = sessionId, Spec = document, AutoDispatched = false },
             ranked,
             payload,
             new RecapOptions());
 
-        return Charter.Domain.Recap.Generate(sessionId, body, riskItems, CostUsd, at);
+        return Charter.Domain.Recap.Generate(
+            sessionId,
+            body,
+            riskItems,
+            CostUsd,
+            at,
+            payloadJson: recapDocument.ToJson());
     }
 
     /// <summary>What section 7.4 says this member may be shown, via the real policy.</summary>

@@ -2,6 +2,7 @@ using Charter.Adapters;
 using Charter.Api;
 using Charter.Auth;
 using Charter.Configuration;
+using Charter.Configuration.Preflight;
 using Charter.Data;
 using Charter.Deployments;
 using Charter.Diagnostics;
@@ -134,12 +135,32 @@ public static class CharterHost
         services.AddCharterConfig(config);
         services.AddCharterPreflight();
         services.AddCharterData(config.Database.ConnectionString.Reveal());
+
+        // Section 30.6, and it has to be here rather than lower down. Its email registrations must
+        // beat the TryAdds inside AddCharterNotifications (reached from AddCharterApi), and its
+        // seeder has to be registered before AddCharterAuth's so that setup mode sees a populated
+        // database rather than printing a setup token nobody will use. On an instance without
+        // CHARTER_DEMO this call registers nothing at all.
+        services.AddCharterDemoMode(config);
+
         services.AddCharterAuth();
         services.AddCharterGitHub();
         services.AddCharterDeployments(DeploymentOptions.Parse(read));
         services.AddCharterOnboarding();
         services.AddCharterApi();
+
+        // Before AddCharterModels and the three control-plane subsystems below it: every one of them
+        // registers its own options record with TryAdd, so the projection of CHARTER_MODEL_REFINE and
+        // CHARTER_MODEL_TEACH has to be registered first to win. Without this call those two
+        // variables parse, validate, and reach nothing (sections 4.2, 20b).
+        services.AddCharterModelSelection(config);
+
         services.AddCharterModels();
+
+        // After AddCharterData and AddCharterModels: the estimator reads the ledger for what similar
+        // work in this repository actually cost, and IModelPriceCatalog for what the selected model
+        // costs (sections 34.4, 20b.6).
+        services.AddCharterBudgets();
         services.AddCharterRefinement();
         services.AddCharterRecap();
         services.AddCharterTeaching();
@@ -192,8 +213,17 @@ public static class CharterHost
 
     /// <summary>Applies pending EF Core migrations (section 2.3).</summary>
     /// <remarks>
+    /// <para>
     /// A PaaS offers no pre-deploy hook, so boot is the only place these can run, and serving against
     /// a stale schema is worse than failing to start.
+    /// </para>
+    /// <para>
+    /// This runs before the host starts, and therefore before the section 30.1 preflight checks. That
+    /// ordering is deliberate - "migrations applied" is a question about work this step does - but it
+    /// means an unreachable database surfaces here first, as a raw Npgsql stack trace, rather than as
+    /// the named check with remediation that section 30.1 promises. The catch below restores the
+    /// promise: same failure, same exit code, a sentence an operator can act on.
+    /// </para>
     /// </remarks>
     public static async Task MigrateAsync(WebApplication app, CancellationToken cancellationToken = default)
     {
@@ -202,13 +232,28 @@ public static class CharterHost
         await using var scope = app.Services.CreateAsyncScope();
 
         var database = scope.ServiceProvider.GetRequiredService<CharterDbContext>();
-        var pending = (await database.Database.GetPendingMigrationsAsync(cancellationToken)).ToArray();
+        var config = scope.ServiceProvider.GetRequiredService<CharterConfig>();
 
-        if (pending.Length > 0)
+        try
         {
-            Log.Information("Applying {Count} pending migration(s): {Migrations}", pending.Length, pending);
-            await database.Database.MigrateAsync(cancellationToken);
-            Log.Information("Migrations applied");
+            var pending = (await database.Database.GetPendingMigrationsAsync(cancellationToken)).ToArray();
+
+            if (pending.Length > 0)
+            {
+                Log.Information("Applying {Count} pending migration(s): {Migrations}", pending.Length, pending);
+                await database.Database.MigrateAsync(cancellationToken);
+                Log.Information("Migrations applied");
+            }
+        }
+        catch (Exception ex) when (ex is NpgsqlException or TimeoutException)
+        {
+            throw new PreflightException(
+                "Charter cannot start. Preflight found the following blocking problems (section 30.1):"
+                + Environment.NewLine
+                + $"  [FAIL] database: cannot reach {config.Database.Host}:{config.Database.Port} to apply "
+                + $"migrations: {ex.Message} -> check DATABASE_URL, that Postgres is running, that this "
+                + "container can reach it, and that the database role may create tables",
+                ex);
         }
     }
 

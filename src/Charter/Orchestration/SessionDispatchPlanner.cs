@@ -148,7 +148,39 @@ public sealed class SessionDispatchPlanner : ISessionDispatchPlanner
             scope,
             [],
             payload.TimeoutMinutes ?? _options.DefaultTimeoutMinutes,
-            DispatchKeyFor(session.Id));
+            DispatchKeyFor(session.Id))
+        {
+            // Sent explicitly so the sandbox and ChangeRequestPublisher cannot disagree about where
+            // the work went, even though both can compute the same convention unaided.
+            Branch = ChangeRequestPublisher.BranchFor(session.Id),
+            Requester = await ResolveRequesterAsync(session, cancellationToken),
+        };
+    }
+
+    /// <summary>
+    /// The person who asked, for the authorship of the commit the runner makes (sections 7.3, 24).
+    /// </summary>
+    /// <remarks>
+    /// Best-effort. A session whose requester has since been removed still builds; the runner commits
+    /// with the checkout's own configuration rather than refusing, because a missing display name is
+    /// not a reason to strand somebody's request.
+    /// </remarks>
+    private async Task<RunnerRequester?> ResolveRequesterAsync(
+        Session session,
+        CancellationToken cancellationToken)
+    {
+        var requester = await (from spec in _db.Specs.AsNoTracking()
+                               where spec.Id == session.SpecId
+                               join request in _db.Requests.AsNoTracking() on spec.RequestId equals request.Id
+                               join user in _db.Users.AsNoTracking() on request.RequesterId equals user.Id
+                               select new { user.DisplayName, user.Email })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return requester is null || string.IsNullOrWhiteSpace(requester.Email)
+            ? null
+            : new RunnerRequester(
+                string.IsNullOrWhiteSpace(requester.DisplayName) ? requester.Email : requester.DisplayName,
+                requester.Email);
     }
 
     /// <summary>

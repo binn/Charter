@@ -4,6 +4,7 @@ using Charter.Auth.Authorization;
 using Charter.Data;
 using Charter.Domain;
 using Charter.Hubs;
+using Charter.Runners;
 using Microsoft.EntityFrameworkCore;
 
 namespace Charter.Api.Requests;
@@ -57,6 +58,7 @@ public sealed class RequestCommandService
     private readonly IRequestStreamPublisher stream;
     private readonly JobQueue jobs;
     private readonly TimeProvider clock;
+    private readonly NeedsInputAnnouncer? needsInput;
 
     public RequestCommandService(
         CharterDbContext database,
@@ -64,7 +66,8 @@ public sealed class RequestCommandService
         RequestQueryService queries,
         IRequestStreamPublisher stream,
         JobQueue jobs,
-        TimeProvider clock)
+        TimeProvider clock,
+        NeedsInputAnnouncer? needsInput = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(authorization);
@@ -79,6 +82,11 @@ public sealed class RequestCommandService
         this.stream = stream;
         this.jobs = jobs;
         this.clock = clock;
+
+        // Optional for the same reason the auto-dispatch gate is optional on SessionCoordinator: a
+        // host that wired the API without the execution plane still serves every read path, and the
+        // one command that needs it refuses rather than failing to resolve.
+        this.needsInput = needsInput;
     }
 
     /// <summary>The longest raw request intake accepts. Long enough for a paragraph, not a novel.</summary>
@@ -179,6 +187,15 @@ public sealed class RequestCommandService
             return CommandOutcome.Forbidden("only the person who filed this request can reply to it");
         }
 
+        // Section 11: one thread per request, forever. The box the requester types into is the same
+        // box whether Charter is still working out what they need or an agent has stopped mid-build to
+        // ask them something, so a reply that arrives while the request is in NeedsInput is an answer
+        // to the agent rather than a refusal.
+        if (request.Status == RequestStatus.NeedsInput)
+        {
+            return await AnswerQuestionAsync(view, text ?? body.ChoiceId ?? string.Empty, cancellationToken);
+        }
+
         if (request.Status is not (RequestStatus.Draft or RequestStatus.Refining or RequestStatus.Rejected))
         {
             return CommandOutcome.Conflict("this request has moved past the point where it can be changed by replying");
@@ -202,6 +219,101 @@ public sealed class RequestCommandService
         await stream.PublishAsync(request.Id, RequestStreamEvents.CharterThinking(thinking: true), cancellationToken);
 
         return CommandOutcome.Ok();
+    }
+
+    /// <summary>
+    /// Section 6's other half of <c>Running ⇄ NeedsInput</c>: the requester answered.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>NeedsInput</c> is one of only two states that notify, and the whole reason it notifies is
+    /// that Charter is blocked on this one person. So the answer has to actually unblock it — move the
+    /// session back to <c>Running</c> and queue the dispatch that resumes it — rather than being filed
+    /// as another line of conversation beside a session that stays stopped.
+    /// </para>
+    /// <para>
+    /// The transition and the queue row are <see cref="NeedsInputAnnouncer"/>'s, not written here, so
+    /// the state machine has one implementation whichever surface the answer arrives on.
+    /// </para>
+    /// </remarks>
+    private async Task<CommandOutcome> AnswerQuestionAsync(
+        RequestView view,
+        string answer,
+        CancellationToken cancellationToken)
+    {
+        if (needsInput is null)
+        {
+            return CommandOutcome.Conflict("this request is waiting on an answer that cannot be delivered here");
+        }
+
+        if (view.Aggregate.Session is not { } snapshot)
+        {
+            return CommandOutcome.Conflict("there is nothing running to answer");
+        }
+
+        if (!await needsInput.AnswerAsync(snapshot.Id, answer, cancellationToken))
+        {
+            return CommandOutcome.Conflict("this question has already been answered");
+        }
+
+        var request = view.Aggregate.Request;
+
+        await EchoAnswerAsync(view, answer, cancellationToken);
+
+        await stream.PublishAsync(
+            request.Id,
+            RequestStreamEvents.Status(ApiRequestStatus.Running),
+            cancellationToken);
+
+        return CommandOutcome.Ok();
+    }
+
+    /// <summary>
+    /// Puts the answer back into the thread, so a reload shows what they typed.
+    /// </summary>
+    /// <remarks>
+    /// Section 11 keeps one thread per request forever, and the box a requester answers a mid-build
+    /// question in is the same box they refined in. Without this the answer would leave no trace on
+    /// any surface the requester has: the agent gets it, the transcript records it, and the person who
+    /// typed it watches their sentence disappear. The frame is looked up in
+    /// <see cref="RefinementThread.Derive"/>'s own output rather than constructed, so it is the same
+    /// message a refetch returns.
+    /// </remarks>
+    private async Task EchoAnswerAsync(RequestView view, string answer, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(answer))
+        {
+            return;
+        }
+
+        var request = view.Aggregate.Request;
+
+        var conversation = await database.Conversations
+            .Include(row => row.Turns)
+            .Where(row => row.RequestId == request.Id)
+            .OrderBy(row => row.StartedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (conversation is null)
+        {
+            return;
+        }
+
+        var turn = conversation.AppendRequesterMessage(answer, clock.GetUtcNow());
+        await database.SaveChangesAsync(cancellationToken);
+
+        var id = turn.Id.ToString("N");
+        var message = RefinementThread
+            .Derive(request, view.Aggregate.Spec, conversation)
+            .FirstOrDefault(candidate => string.Equals(candidate.Id, id, StringComparison.Ordinal));
+
+        if (message is not null)
+        {
+            await stream.PublishAsync(
+                request.Id,
+                RequestStreamEvents.RefinementMessage(message),
+                cancellationToken);
+        }
     }
 
     /// <summary>
@@ -246,13 +358,20 @@ public sealed class RequestCommandService
         var now = clock.GetUtcNow();
         spec.Approve(member.UserId, now);
         request.TransitionTo(RequestStatus.Queued, now);
-        await database.SaveChangesAsync(cancellationToken);
 
-        await jobs.EnqueueAsync(
+        // One transaction, and it has to be one. Approval used to save the status and then enqueue
+        // separately, which left a window — small, but section 2.3 says the container dies in exactly
+        // these windows — where a spec was approved, the thread said "building this now", and nothing
+        // existed to dispatch it. `JobQueue` shares this `CharterDbContext`, so the job is staged in
+        // the same change tracker as the transition and one `SaveChangesAsync` commits both or
+        // neither. The orchestrator's recovery sweep still covers this (§2.3, belt and braces), but it
+        // is now the second line of defence rather than the only one.
+        database.Jobs.Add(Job.Enqueue(
             JobType.Build,
             JsonSerializer.Serialize(new { requestId = request.Id, specId = spec.Id }, CharterApiJson.Options),
-            now: now,
-            cancellationToken: cancellationToken);
+            now: now));
+
+        await database.SaveChangesAsync(cancellationToken);
 
         await stream.PublishAsync(
             request.Id,
@@ -372,6 +491,7 @@ public sealed class RequestCommandService
 
         var now = clock.GetUtcNow();
         var specId = view.Aggregate.Spec?.Id;
+        var sessionId = view.Aggregate.Session?.Id;
 
         // The verdict is a row before it is a job. A queue payload is a work item that gets claimed,
         // retried and eventually completed away; "did this work" is a fact about the thread, and
@@ -380,23 +500,27 @@ public sealed class RequestCommandService
             requestId,
             member.UserId,
             verdict.ToDomain(),
-            view.Aggregate.Session?.Id,
+            sessionId,
             note,
             now));
 
         await database.SaveChangesAsync(cancellationToken);
 
+        // The two verdicts write two different jobs and therefore two different payloads. "Not quite"
+        // is a rebuild, and section 11 says it becomes a *new* session on the same spec — so it names
+        // the specification and the verdict, and deliberately not the session it is replacing. "Works"
+        // asks for the engineer recap of the session that worked, and that session id is already in
+        // hand here; sending it spares `RecapJobHandler` a lookup it only does because this call site
+        // used to withhold what it knew.
         await jobs.EnqueueAsync(
             verdict == ApiFeedbackVerdict.NotQuite ? JobType.Build : JobType.Recap,
-            JsonSerializer.Serialize(
-                new
-                {
-                    requestId,
-                    specId,
-                    verdict = verdict == ApiFeedbackVerdict.Works ? "works" : "not_quite",
-                    note,
-                },
-                CharterApiJson.Options),
+            verdict == ApiFeedbackVerdict.NotQuite
+                ? JsonSerializer.Serialize(
+                    new { requestId, specId, verdict = "not_quite", note },
+                    CharterApiJson.Options)
+                : JsonSerializer.Serialize(
+                    new { requestId, sessionId, specId, verdict = "works", note },
+                    CharterApiJson.Options),
             now: now,
             cancellationToken: cancellationToken);
 

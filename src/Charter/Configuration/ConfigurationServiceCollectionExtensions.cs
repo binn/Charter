@@ -1,5 +1,6 @@
 using Charter.Configuration.Preflight;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Charter.Configuration;
 
@@ -51,12 +52,21 @@ public static class ConfigurationServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Registers the section 30.1 preflight checks and the runner that reports them.
+    /// Registers the section 30.1 preflight checks, the runner that reports them, and the startup
+    /// hook that actually runs them.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Requires <see cref="AddCharterConfig"/> to have run. The checks that need I/O resolve
     /// <see cref="IDatabaseProbe"/> and <see cref="IHostnameResolver"/>, both replaceable, so the
     /// first-run report can be exercised in a test without a live Postgres or a DNS server.
+    /// </para>
+    /// <para>
+    /// <see cref="PreflightHostedService"/> is what makes this more than a library. For a while the
+    /// checks were registered, built and unit-tested while nothing in the running application ever
+    /// asked them anything - the same defect class as a configuration variable that parses and is
+    /// then ignored, and worse, because the operator believed the instance had been checked.
+    /// </para>
     /// </remarks>
     public static IServiceCollection AddCharterPreflight(this IServiceCollection services)
     {
@@ -68,6 +78,8 @@ public static class ConfigurationServiceCollectionExtensions
 
         services.AddSingleton<IPreflightCheck>(provider =>
             new KeyStrengthPreflightCheck(provider.GetRequiredService<CharterConfig>()));
+        services.AddSingleton<IPreflightCheck>(provider =>
+            new OutboundCallsPreflightCheck(provider.GetRequiredService<CharterConfig>()));
         services.AddSingleton<IPreflightCheck>(provider =>
             new BaseUrlPreflightCheck(
                 provider.GetRequiredService<CharterConfig>(),
@@ -85,6 +97,13 @@ public static class ConfigurationServiceCollectionExtensions
 
         services.AddSingleton(provider =>
             new PreflightRunner(provider.GetServices<IPreflightCheck>()));
+
+        // Inserted at the front rather than appended. Hosted services start in registration order,
+        // and the ASP.NET Core server is itself one of them, registered while the WebApplicationBuilder
+        // is constructed - which is before this method runs. Appending would let Kestrel bind a socket
+        // and serve requests before preflight had decided whether the instance works, which is the
+        // half-working boot section 30.1 forbids.
+        services.Insert(0, ServiceDescriptor.Singleton<IHostedService, PreflightHostedService>());
 
         return services;
     }

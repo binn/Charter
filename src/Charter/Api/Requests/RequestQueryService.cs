@@ -3,6 +3,8 @@ using Charter.Api.Projects;
 using Charter.Auth.Authorization;
 using Charter.Data;
 using Charter.Domain;
+using Charter.Notifications;
+using Charter.Runners;
 using Charter.VersionControl;
 using Microsoft.EntityFrameworkCore;
 
@@ -259,6 +261,13 @@ public sealed class RequestQueryService
                 .OrderByDescending(row => row.GeneratedAt)
                 .FirstOrDefaultAsync(cancellationToken);
 
+        // Section 6: the question the agent stopped to ask. Read only in the one state it can exist
+        // in, and from the transcript rather than a column — the event is already the durable record
+        // of it (section 2.3), and pane 1 showing it is not the same permission as pane 2.
+        var openQuestion = session is not null && request.Status == RequestStatus.NeedsInput
+            ? await LoadOpenQuestionAsync(session.Id, cancellationToken)
+            : null;
+
         // Section 7.5: who took it over. The session row records that it happened; the audit log is
         // what attributes it to a named human, which is what guardrail 5 of section 7.3 is for.
         var handedOffBy = session is { Status: SessionStatus.HandedOff }
@@ -311,8 +320,32 @@ public sealed class RequestQueryService
                 ChangedPaths = changedPaths,
                 Recap = recap,
                 HandedOffByName = handedOffBy,
+                OpenQuestion = openQuestion,
             },
             visibility);
+    }
+
+    /// <summary>The newest unanswered question on a session, cleaned for a requester.</summary>
+    /// <remarks>
+    /// Newest wins because section 11 keeps one thread: an agent that asked twice is waiting on the
+    /// second question, and showing the first would have the requester answer something already
+    /// settled.
+    /// </remarks>
+    private async Task<string?> LoadOpenQuestionAsync(Guid sessionId, CancellationToken cancellationToken)
+    {
+        var payload = await database.Events
+            .AsNoTracking()
+            .Where(row => row.SessionId == sessionId && row.Type == RunnerEventTypes.Question)
+            .OrderByDescending(row => row.Seq)
+            .Select(row => row.Payload)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (payload is null || RunnerEventTypes.ReadQuestion(payload) is not { } question)
+        {
+            return null;
+        }
+
+        return RequesterSafeText.Scrub(question) is { Length: > 0 } scrubbed ? scrubbed : null;
     }
 
     /// <summary>The spend gate queue (section 7.5): specs waiting, that this member may approve.</summary>
@@ -531,7 +564,15 @@ public sealed class RequestQueryService
     /// translate from an <see cref="IReadOnlyList{T}"/> property, so the filter runs in memory over
     /// the organisation's members. Organisations are small; this is not the query to optimise.
     /// </remarks>
-    private async Task<string?> ResolveApproverNameAsync(Guid orgId, CancellationToken cancellationToken)
+    /// <summary>
+    /// Section 6's <em>Waiting on {approver} to approve</em>, by display name and never an id.
+    /// </summary>
+    /// <remarks>
+    /// Public because <see cref="RefinementStreamPublisher"/> has to put the same name on a live
+    /// status frame that the detail body carries, and a second lookup written beside it would be a
+    /// second answer to the same question.
+    /// </remarks>
+    public async Task<string?> ResolveApproverNameAsync(Guid orgId, CancellationToken cancellationToken = default)
     {
         var members = await database.Members
             .AsNoTracking()

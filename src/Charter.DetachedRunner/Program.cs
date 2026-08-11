@@ -17,6 +17,10 @@
 //      and stream each event to the control plane as it happens - a five to twenty minute silent gap
 //      reads as broken (spec sections 11, 12b).
 //   4. Refuse, and stop the run, on any write outside the path scope.
+//   5. Stage what the agent changed, check every staged path against the scope again - this time
+//      against what is really about to be committed, not against what the agent said it wrote -
+//      commit it as the requester, push the session branch, and report `branch_pushed` so the
+//      control plane can open a change request off it (spec sections 2.2, 6, 7.3).
 
 using Charter.Adapters;
 using Charter.Runners.Shim;
@@ -30,6 +34,8 @@ if (args.Length == 0 || args.Contains("--help") || args.Contains("-h"))
     Console.WriteLine("    --repo <owner/name> --base-branch <branch> --base-commit <sha> \\");
     Console.WriteLine("    --spec-url <url> --callback-url <url> [--workspace <dir>] [--stream-events]");
     Console.WriteLine("    [--require <capability>]... [--runner-image <image>] [--allow-install-scripts]");
+    Console.WriteLine("    [--branch <branch>] [--remote <remote>] [--clone-url <url>] [--no-publish]");
+    Console.WriteLine("    [--requester-name <name>] [--requester-email <address>]");
     Console.WriteLine();
     Console.WriteLine("Reads CHARTER_PATH_SCOPE (JSON) for the path scope and CHARTER_EVENT_TOKEN for the");
     Console.WriteLine("bearer token minted by the control plane's credential exchange.");
@@ -88,7 +94,12 @@ var request = command.ToRunRequest(
     allow,
     deny,
     probed,
-    AgentEnvironment(catalog, command.Adapter!));
+    AgentEnvironment(catalog, command.Adapter!)) with
+{
+    // Section 7.4: the short-TTL, single-repository token the credential exchange returned. Git uses
+    // it to clone and to push; it is deliberately not part of the agent process's environment.
+    GitToken = Environment.GetEnvironmentVariable("GITHUB_TOKEN"),
+};
 
 var session = new ShimSession(catalog, processes, sink, new HttpShimSpecSource(http));
 var result = await session.RunAsync(request, cancellation.Token);
@@ -102,6 +113,7 @@ return result.State switch
     ShimSessionState.ToolchainMissing => 4,
     ShimSessionState.ScopeViolation => 5,
     ShimSessionState.InstallFailed => 6,
+    ShimSessionState.PublishFailed => 7,
     _ => 1,
 };
 

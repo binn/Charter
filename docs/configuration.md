@@ -43,7 +43,7 @@ Use a different value for each. They are not interchangeable.
 | `CHARTER_SECRET_KEY` | yes | — | At least 32 bytes. Signs cookies and tokens. |
 | `PORT` | no | `8080` | The single HTTP port. PaaS platforms set this for you. |
 | `CHARTER_MODE` | no | `personal` | `personal` or `organization`. Personal mode is an organisation with one member holding every role and approval gates auto-satisfied — not a separate code path. |
-| `CHARTER_DEMO` | no | `false` | Seeds a fake organisation, repo, and completed sessions, and disables all outbound calls. For evaluating Charter without connecting a GitHub App or spending a token. |
+| `CHARTER_DEMO` | no | `false` | Seeds a demonstration organisation, repository and completed sessions, and blocks every outbound call. See [Demo mode](#demo-mode). |
 
 ## Database
 
@@ -235,6 +235,10 @@ Charter refuses an impossible pairing when you assemble it, not when the session
 `OPENROUTER_API_KEY`. The defaults assume the OpenRouter key because one key covers every model,
 which is what makes it the cheaper starting point.
 
+**The engineer recap follows `CHARTER_MODEL_TEACH`.** Section 4.2 gives the recap no variable of its
+own. It is a control-plane summary of a finished session, which is what a walkthrough is, so it runs
+on the teaching model rather than on a name you cannot move.
+
 ## GitHub
 
 | Variable | Required | Default | Notes |
@@ -255,6 +259,7 @@ base64 -i charter-app.2026-08-10.private-key.pem | tr -d '\n'
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `CHARTER_RUNNER` | no | `github-actions` | `agent`, `github-actions`, or `docker`. Comma-separate to enable several at once; the dispatcher then routes each session by capability match. |
+| `CHARTER_DOCKER_SOCKET` | no | `/var/run/docker.sock` | Only read when `CHARTER_RUNNER` includes `docker`. A unix socket path — Charter will not talk to a Docker daemon over TCP. A `unix://` `DOCKER_HOST` is honoured when this is unset. |
 
 Every backend, what it can run, and how to register a Charter Agent are in [runners.md](runners.md).
 
@@ -401,9 +406,65 @@ pass, then exits non-zero. Among the checks:
 - `LOGGING_MODE`, `CHARTER_MODE`, `CHARTER_RUNNER`, and `CHARTER_UPDATE_CHANNEL` hold recognised values.
 - OAuth provider pairs are complete — an ID without a secret is an error, not a silently disabled provider.
 
-Separately, first-run preflight checks report on database reachability, applied migrations, whether
-`CHARTER_BASE_URL` resolves, and whether at least one model credential actually works
-([spec §30.1](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)). Preflight failures name the failing check and what to change.
+## Preflight checks
+
+After configuration parses and migrations have run, Charter runs the first-run checks of
+[spec §30.1](https://github.com/binn/Charter/blob/master/agent-docs/spec.md) and prints the whole
+list before it serves anything:
+
+```
+[PASS] secret keys: both keys carry at least 32 bytes and differ
+[PASS] outbound calls: enabled; this instance may reach model providers, GitHub and SMTP
+[WARN] base URL: charter.example.com does not resolve from this container -> set CHARTER_BASE_URL to …
+[PASS] database: connected to charter at db.internal:5432
+[PASS] migrations: 1 migration(s) applied
+[PASS] model credential: OPENROUTER_API_KEY is set as an instance-level credential
+```
+
+Every check runs, so one boot tells you everything that is wrong rather than the first thing.
+
+**`FAIL` stops the boot. `WARN` does not.** The split is about whether the observation is proof:
+
+| Check | On failure | Why |
+|---|---|---|
+| secret keys | stops the boot | Nothing signs correctly, and the value is checked directly. |
+| database | stops the boot | Observed against the resource itself. Nothing works without it. |
+| migrations | stops the boot | Serving against a stale schema fails later, on somebody's request. |
+| model credential | stops the boot | Spec §4.2: at least one must be resolvable at startup. Skipped in demo mode. |
+| base URL | warns and continues | The name is resolved by GitHub and by browsers, not by this container. Split-horizon DNS, a PaaS private network, or a record that propagates after the first deploy all fail this lookup on an instance that works. |
+
+A stopped boot exits non-zero with every blocking failure named, the same contract as configuration
+validation.
+
+## Demo mode
+
+`CHARTER_DEMO=true` turns the instance into a populated, disconnected demonstration of itself. It
+exists so you can see what Charter does before you create a GitHub App or spend a token
+([spec §30.6](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)).
+
+```bash
+CHARTER_DEMO=true docker compose up
+```
+
+Two things change, both decided once at startup:
+
+**Seed data.** On first boot against an empty database Charter writes a demonstration organisation, a
+connected repository that finished onboarding, two completed sessions with their transcripts,
+milestones, verification artifacts and engineer recaps, and one request still in refinement. Seeding
+is skipped — with a log line saying so — if the database already holds an organisation, so it is safe
+to leave the variable set across restarts and it will never touch a real instance.
+
+**No outbound calls.** Every HTTP request through Charter's client factory is refused before it opens
+a socket: model providers, the OpenRouter price catalog, the GitHub App, OAuth token exchange, the
+Railway API, preview reachability probes. SMTP is refused too, and email degrades exactly as
+`CHARTER_EMAIL_PROVIDER=none` does. The daily update check does not run.
+
+What is *not* blocked: Postgres, and your own Seq or OTLP collector if you configured one. Those are
+your infrastructure, addressed by your configuration; the promise is that evaluating Charter costs no
+token and needs no GitHub App, not that the container may not reach your log server.
+
+Because the demo data includes users, the instance is not in setup mode and no setup token is printed.
+Do not point `CHARTER_DEMO=true` at a database you care about.
 
 ## Related
 

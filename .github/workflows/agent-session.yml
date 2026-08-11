@@ -10,11 +10,12 @@ on:
   repository_dispatch:
     types: [charter-session]
 
-# Minimum viable scope. The workflow deliberately does NOT rely on GITHUB_TOKEN
-# for repository writes: pushing the session branch uses the short-TTL,
-# single-repo GitHub App installation token minted by the control plane
-# (spec section 7.4). `contents: read` is only what actions/checkout needs to fetch the
-# base commit before that token is available.
+# Minimum viable scope, and it is deliberately not enough to push with. The
+# session branch is pushed by the shim using the short-TTL, single-repo GitHub
+# App installation token the credential-exchange step below returns, which
+# `actions/checkout` persists into the checkout's git config (spec section 7.4).
+# GITHUB_TOKEN is never used for a repository write, so `contents: read` is all
+# this workflow's own identity ever needs.
 permissions:
   contents: read
 
@@ -49,6 +50,13 @@ jobs:
       CHARTER_ADAPTER: ${{ github.event.client_payload.adapter }}
       CHARTER_MODEL: ${{ github.event.client_payload.model }}
       CHARTER_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      # Where the session's work is published, and who the commit is attributed
+      # to. Charter has no machine author: every commit names the person who
+      # asked for the change (spec sections 7.3, 24).
+      CHARTER_BRANCH: ${{ github.event.client_payload.branch }}
+      CHARTER_REQUESTER_NAME: ${{ github.event.client_payload.requester_name }}
+      CHARTER_REQUESTER_EMAIL: ${{ github.event.client_payload.requester_email }}
 
     steps:
       # ---------------------------------------------------------------------
@@ -112,6 +120,11 @@ jobs:
       # Checked out at the exact base commit the session was planned against
       # (spec section 17 records base_commit_sha per session, and staleness is computed
       # from it).
+      #
+      # `persist-credentials: true` is load-bearing rather than incidental: it
+      # writes the installation token into this checkout's git config, which is
+      # what lets the shim push the session branch later in the job without the
+      # token ever being handed to the agent process.
       - name: Checkout target repository at base commit
         uses: actions/checkout@v4
         with:
@@ -141,11 +154,28 @@ jobs:
           restore-keys: |
             charter-npm-${{ github.event.client_payload.repo }}-
 
-      # The shim is baked into the runner image (spec section 32.1). It resolves the
-      # adapter YAML (spec section 12b), invokes the agent CLI in headless mode, parses
-      # its streaming output, and POSTs each mapped event to
-      # ${CHARTER_CALLBACK_URL}/events as it happens -- a silent gap of five to
-      # twenty minutes reads as broken (spec section 11).
+      # The shim is baked into the runner image (spec section 32.1). It is the whole
+      # of the session, and this workflow deliberately has no step of its own
+      # after it: the shim resolves the adapter YAML (spec section 12b), invokes the
+      # agent CLI in headless mode, parses its streaming output and POSTs each
+      # mapped event to ${CHARTER_CALLBACK_URL}/events as it happens -- a silent
+      # gap of five to twenty minutes reads as broken (spec section 11) -- and then
+      # publishes the result:
+      #
+      #   * It stages what changed and checks EVERY staged path against the path
+      #     scope. Enforcement is in the runner, not the UI, and it is enforced on
+      #     what is about to be committed rather than only on what the agent said
+      #     it wrote (spec section 7.3). An out-of-scope path fails the session; nothing
+      #     is committed and nothing is pushed.
+      #   * It commits as the requester -- never as a bot, a tool or a model, and
+      #     with no attribution trailers (spec section 24).
+      #   * It pushes $CHARTER_BRANCH using the installation token persisted into
+      #     the checkout above, and POSTs a `branch_pushed` event carrying the
+      #     branch and the resulting revision. That event is what the control
+      #     plane opens a change request from.
+      #   * A session that changed nothing POSTs `no_changes` instead and exits 0.
+      #     That is `NoChangesNeeded` (spec section 6) -- a real outcome, and never to be
+      #     confused with a push that failed.
       - name: Run agent session
         id: agent
         env:
@@ -163,6 +193,9 @@ jobs:
             --repo "$CHARTER_TARGET_REPO" \
             --base-branch "$CHARTER_BASE_BRANCH" \
             --base-commit "$CHARTER_BASE_COMMIT_SHA" \
+            --branch "$CHARTER_BRANCH" \
+            --requester-name "$CHARTER_REQUESTER_NAME" \
+            --requester-email "$CHARTER_REQUESTER_EMAIL" \
             --spec-url "$CHARTER_SPEC_URL" \
             --callback-url "$CHARTER_CALLBACK_URL" \
             --stream-events

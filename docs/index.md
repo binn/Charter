@@ -14,11 +14,11 @@ hero:
     alt: ''
   actions:
     - theme: brand
-      text: Self-host Charter
-      link: /self-hosting
+      text: Get started
+      link: /getting-started
     - theme: alt
-      text: Configuration reference
-      link: /configuration
+      text: How the loop works
+      link: /the-loop
     - theme: alt
       text: View on GitHub
       link: https://github.com/binn/Charter
@@ -58,19 +58,25 @@ features:
 
 Charter is **pre-1.0 and under active development**. Expect breaking changes between releases, read
 the release notes before upgrading, and take a backup before any upgrade that touches the database.
-Phase 1 — refinement, specs, and approvals — is in progress; agent execution, preview environments,
-and the engineer recap are planned. The
-[README](https://github.com/binn/Charter/blob/master/README.md) tracks where each phase stands.
+
+Phase 1 — the whole loop from a typed request to a preview link — is largely built and is exercised end
+to end by an integration test. It is **not yet drivable from a browser**: there is no sign-in route, no
+route that redeems the first-run setup token, and no HTTP surface for connecting a repository. The
+session branch is also never pushed, so no pull request opens and no preview binds on a real instance.
+[Getting started](/getting-started) lists exactly what works today, and [the loop](/the-loop) explains
+where it stops and why.
 
 Documentation describes the design as specified, and some of it runs ahead of what is implemented
-today. Where a capability degrades or does not work at all for a project type, the relevant page says
-so rather than glossing over it.
+today. Where a capability degrades or does not work at all, the relevant page says so rather than
+glossing over it.
 
 ## Where to start
 
-If you are standing an instance up, read [Self-hosting](/self-hosting) then
-[Configuration](/configuration). If you are deciding whether Charter is safe to point at your code,
-start with the [threat model](/security) and [Privacy](/privacy).
+If you are standing an instance up, read [Getting started](/getting-started), then
+[Self-hosting](/self-hosting) and [Configuration](/configuration) for platform detail. If you are
+deciding whether Charter is safe to point at your code, start with [the loop](/the-loop), the
+[threat model](/security) and [Privacy](/privacy). If you are integrating with it, the
+[HTTP API](/api) is the surface.
 
 Charter is licensed [AGPL-3.0-only](https://github.com/binn/Charter/blob/master/LICENSE). The name
 and the mark are not covered by that licence — see

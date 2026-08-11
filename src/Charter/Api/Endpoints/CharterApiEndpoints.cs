@@ -43,6 +43,14 @@ public static class CharterApiEndpoints
             // stack trace.
             .AddEndpointFilter<PlainLanguageFailureFilter>();
 
+        // Sections 30.1, 30.2 and 21: the routes a human uses to get in at all. Mapped from here so
+        // there is one call the host makes, but in their own groups — most of them are anonymous by
+        // necessity and must not inherit this group's RequireAuthorization.
+        endpoints.MapCharterAuthEndpoints();
+
+        // Section 9: connect, recon, confirm scope, smoke test, primer.
+        endpoints.MapCharterOnboardingEndpoints();
+
         MapViewer(api);
         MapProjects(api);
         MapRequests(api);

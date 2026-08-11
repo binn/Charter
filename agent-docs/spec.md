@@ -301,7 +301,14 @@ ChangeRequest     session_id, number, url, head_sha, head_branch, state, is_stal
 Deployment        change_request_id, provider, url, state, reported_at
 
 Walkthrough       session_id, level, body_md, generated_at, cost_usd
-Recap             session_id, body_md, risk_items (jsonb), generated_at, cost_usd
+Recap             session_id, body_md, risk_items (jsonb), payload (jsonb),
+                  generated_at, cost_usd
+                  -- body_md is the prose posted as a change request comment (§14). payload is the
+                  -- same content structured — summary, deviations, what could not be verified, and
+                  -- the spec in full for an auto-dispatched session — so a reader serves it without
+                  -- parsing section headings back out of the markdown. risk_items carries the
+                  -- ranked file list including per-file line counts; zero counts mean "nobody
+                  -- counted", never "nothing changed". Default '{}' for a row written without one
 ConceptLedger     user_id, concept, first_explained_at, last_referenced_at, times_referenced
                   -- last_referenced_at orders the capped injection window of §13: the prompt gets
                   -- the most-recent N concepts, so without the column teaching re-explains what it
@@ -322,8 +329,13 @@ Invitation        org_id, email, token_hash, roles[], invited_by_user_id,
 LedgerEntry       org_id, user_id, session_id, budget_ids[],
                   category(build|teach|refine|recap|recon|scaffold|chat),
                   unit(usd|quota_sessions), amount, imputed_usd,
+                  estimated_usd, estimated_quota_sessions,
                   state(reserved|settled|released), reserved_until,
-                  credential_grant_id, created_at
+                  credential_grant_id, created_at, settled_at
+                  -- amount is derived from unit, never stored, so the denominating figure cannot
+                  -- drift from the two per-unit columns. estimated_* is what §34.4 held before the
+                  -- work ran and survives the settlement that overwrites the actual over it; without
+                  -- it every settlement destroys the only record of the guess it was grading
 AuditLog          org_id, actor_user_id, action, target_type, target_id,
                   metadata (jsonb), created_at
 Job               id, type, payload, status, claimed_at, claimed_by, attempts

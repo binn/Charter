@@ -63,14 +63,27 @@ public static class RecapEventReader
 
     private static readonly string[] TextKeys = ["text", "message", "content", "summary", "command", "output"];
 
+    private static readonly string[] AdditionKeys = ["additions", "lines_added", "linesAdded", "insertions"];
+
+    private static readonly string[] DeletionKeys = ["deletions", "lines_removed", "linesRemoved", "lines_deleted"];
+
     /// <summary>
     /// Best-effort extraction of the files a session wrote, from its <c>file_write</c> events.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Adapters are data, not code (section 12b), so an event payload is whatever the agent's own
     /// CLI emitted and there is no single field name to read. This looks for the shapes the shipped
     /// adapters produce and skips anything it cannot understand rather than guessing. A caller that
     /// has the provider's own comparison (section 17) should prefer it and pass those paths instead.
+    /// </para>
+    /// <para>
+    /// Line counts are read only where the agent reported them outright. They are accumulated across
+    /// every write to the same file, because an agent that edits one file four times has changed
+    /// four runs of lines in it. Where nothing reported a count the file keeps zeroes, which the
+    /// recap renders as absent rather than as <em>nothing changed</em> — a made-up number in a
+    /// reviewer's file list is worse than a visibly missing one.
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<RecapFileChange> ReadFileChanges(IEnumerable<Event> events)
     {
@@ -86,15 +99,37 @@ public static class RecapEventReader
                 continue;
             }
 
-            foreach (var path in ExtractPaths(@event.Payload))
+            var paths = ExtractPaths(@event.Payload)
+                .Select(GlobPattern.Normalise)
+                .Where(static path => path.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            // A count is attributed only when the event names exactly one file. Spreading one
+            // "+42" across three paths would invent two of the three numbers.
+            var (added, removed) = paths.Count == 1
+                ? ExtractCounts(@event.Payload)
+                : (0, 0);
+
+            foreach (var normalised in paths)
             {
-                var normalised = GlobPattern.Normalise(path);
-                if (normalised.Length == 0 || seen.ContainsKey(normalised))
+                if (seen.TryGetValue(normalised, out var existing))
                 {
+                    seen[normalised] = existing with
+                    {
+                        LinesAdded = existing.LinesAdded + added,
+                        LinesRemoved = existing.LinesRemoved + removed,
+                    };
+
                     continue;
                 }
 
-                seen[normalised] = new RecapFileChange(normalised);
+                seen[normalised] = new RecapFileChange(normalised)
+                {
+                    LinesAdded = added,
+                    LinesRemoved = removed,
+                };
+
                 order.Add(normalised);
             }
         }
@@ -202,6 +237,78 @@ public static class RecapEventReader
         catch (JsonException)
         {
             return payload;
+        }
+    }
+
+    /// <summary>
+    /// The line counts an agent reported for a write, or zeroes when it reported none.
+    /// </summary>
+    /// <remarks>
+    /// Only counts the agent stated are used. Deriving them from an <c>old_string</c>/<c>new_string</c>
+    /// pair would be a diff of a fragment rather than of the file, and a plausible-looking wrong
+    /// number is exactly what section 14's file list must not contain.
+    /// </remarks>
+    private static (int Added, int Removed) ExtractCounts(string payload)
+    {
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(payload);
+        }
+        catch (JsonException)
+        {
+            return (0, 0);
+        }
+
+        using (document)
+        {
+            return (
+                FindCount(document.RootElement, AdditionKeys, depth: 0) ?? 0,
+                FindCount(document.RootElement, DeletionKeys, depth: 0) ?? 0);
+        }
+    }
+
+    private static int? FindCount(JsonElement element, string[] keys, int depth)
+    {
+        if (depth > 6)
+        {
+            return null;
+        }
+
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (keys.Contains(property.Name, StringComparer.Ordinal)
+                        && property.Value.ValueKind == JsonValueKind.Number
+                        && property.Value.TryGetInt32(out var count)
+                        && count >= 0)
+                    {
+                        return count;
+                    }
+
+                    if (FindCount(property.Value, keys, depth + 1) is { } nested)
+                    {
+                        return nested;
+                    }
+                }
+
+                return null;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (FindCount(item, keys, depth + 1) is { } nested)
+                    {
+                        return nested;
+                    }
+                }
+
+                return null;
+
+            default:
+                return null;
         }
     }
 

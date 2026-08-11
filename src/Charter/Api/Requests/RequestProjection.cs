@@ -214,7 +214,15 @@ public static class RequestProjection
 
         // Section 10b: a conversation stops taking replies once the spec is approved or the work has
         // been dispatched. Promotion never rewinds, so this is a function of the state machine.
-        var canReply = status is RequestStatus.Draft or RequestStatus.Refining or RequestStatus.Rejected;
+        //
+        // `NeedsInput` is the one exception, and it is not a loosening of that rule. Section 6 makes
+        // it one of exactly two states that notify, and the entire reason it notifies is that Charter
+        // is blocked on this person answering — a thread that emails somebody a question and then
+        // hands them a disabled box has asked for something it will not accept.
+        var canReply = status is RequestStatus.Draft
+            or RequestStatus.Refining
+            or RequestStatus.Rejected
+            or RequestStatus.NeedsInput;
 
         return new RefinementThreadResponse
         {
@@ -353,12 +361,17 @@ public static class RequestProjection
             Kind = kind,
             Label = RequestPresentation.StatusLabel(request.Status, aggregate.AwaitingApprovalFrom),
 
-            // The one outcome whose label is not the whole story. "Nothing needed changing" invites
+            // Two outcomes whose label is not the whole story. "Nothing needed changing" invites
             // exactly one question, and section 6 says answer it here rather than leave the requester
-            // to guess whether something broke.
-            Detail = request.Status == RequestStatus.NoChangesNeeded
-                ? RequestPresentation.NoChangesSummary
-                : null,
+            // to guess whether something broke. "Question for you" is worse without its detail: the
+            // notification quotes the question, so a thread that only said a question existed would
+            // send somebody to a card less informative than the email that brought them.
+            Detail = request.Status switch
+            {
+                RequestStatus.NoChangesNeeded => RequestPresentation.NoChangesSummary,
+                RequestStatus.NeedsInput => aggregate.OpenQuestion,
+                _ => null,
+            },
             OccurredAt = at,
             State = state,
         };

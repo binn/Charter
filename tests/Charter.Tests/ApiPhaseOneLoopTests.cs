@@ -575,14 +575,29 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
             VersionControlRegistry,
             TimeProvider.System);
 
+    /// <summary>Every frame the API and the refine handler published, in order.</summary>
+    public RecordingStreamPublisher Stream { get; } = new();
+
     public RequestCommandService Commands()
         => new(
             Db,
             new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
             Queries(),
-            new SilentStreamPublisher(),
+            Stream,
             new JobQueue(Db),
-            TimeProvider.System);
+            TimeProvider.System,
+            NeedsInput());
+
+    /// <summary>Section 6's first notifying state, over this world's clock and notification sink.</summary>
+    public NeedsInputAnnouncer NeedsInput()
+        => new(
+            Db,
+            new SessionJournal(Db),
+            new JobQueue(Db),
+            Orchestration,
+            TimeProvider.System,
+            NullLogger<NeedsInputAnnouncer>.Instance,
+            Notifications);
 
     public SessionCoordinator Coordinator()
         => new(
@@ -633,6 +648,13 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
         services.AddSingleton<IModelClientFactory>(new RefinementStubClientFactory(ModelClient));
         services.AddSingleton<ICredentialResolver>(new AlwaysResolvesCredential());
         services.AddScoped<ISpecRefiner, SpecRefiner>();
+
+        // Section 11's streaming rule. The seam is `Charter.Orchestration`'s and its implementation is
+        // the API's, which is the whole point: the frames below come out of `RefinementThread` and
+        // `RequestProjection`, so this test can compare them against a reload rather than a script.
+        services.AddSingleton<IRequestStreamPublisher>(Stream);
+        services.AddScoped<RequestQueryService>();
+        services.AddScoped<IRefinementStream, RefinementStreamPublisher>();
 
         services.AddScoped<IQueuedJobHandler, BuildJobHandler>();
         services.AddScoped<IQueuedJobHandler, RefineJobHandler>();
@@ -742,7 +764,7 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
     }
 
     /// <summary>What the refiner asked, read back out of the conversation it wrote.</summary>
-    private async Task<IReadOnlyList<string>> ClarifyingQuestionsAsync(
+    public async Task<IReadOnlyList<string>> ClarifyingQuestionsAsync(
         Guid requestId,
         CancellationToken cancellationToken)
     {
@@ -877,19 +899,64 @@ internal sealed class PhaseOneWorld : IAsyncDisposable
         }
     }
 
-    /// <summary>SignalR is a courtesy on top of the rows, never the record (section 2.3).</summary>
-    private sealed class SilentStreamPublisher : IRequestStreamPublisher
-    {
-        public Task PublishAsync(
-            Guid requestId,
-            RequestStreamEvent frame,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
+}
 
-        public Task PublishAsync(
-            Guid requestId,
-            RequestStreamEvent requesterFrame,
-            RequestStreamEvent engineerFrame,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
+/// <summary>
+/// Every frame Charter put on the wire, per audience, so a test can read them back.
+/// </summary>
+/// <remarks>
+/// SignalR is a courtesy on top of the rows and never the record (section 2.3), so this records
+/// rather than asserts: what the frames have to satisfy is that they agree with a reload, which is a
+/// comparison against the projection rather than against a script written here.
+/// </remarks>
+internal sealed class RecordingStreamPublisher : IRequestStreamPublisher
+{
+    /// <summary>One frame, and which of section 7.4's two audiences it went to.</summary>
+    public sealed record StreamFrame(Guid RequestId, RequestStreamEvent Frame, bool Engineer);
+
+    private readonly List<StreamFrame> _sent = [];
+
+    public IReadOnlyList<StreamFrame> Frames => _sent;
+
+    /// <summary>
+    /// Makes every publish throw, the way an unreachable hub does.
+    /// </summary>
+    /// <remarks>
+    /// Section 2.3 makes the rows the record and the stream a courtesy on top of them, and the only
+    /// way to check that claim is to break the courtesy and see the rows survive.
+    /// </remarks>
+    public bool FailEverything { get; set; }
+
+    /// <summary>The frames a requester — somebody with no repository read — actually received.</summary>
+    public IEnumerable<RequestStreamEvent> RequesterFrames
+        => _sent.Where(entry => !entry.Engineer).Select(entry => entry.Frame);
+
+    public IEnumerable<T> RequesterFramesOf<T>()
+        where T : RequestStreamEvent => RequesterFrames.OfType<T>();
+
+    public void Clear() => _sent.Clear();
+
+    public Task PublishAsync(
+        Guid requestId,
+        RequestStreamEvent frame,
+        CancellationToken cancellationToken = default)
+        => PublishAsync(requestId, frame, frame, cancellationToken);
+
+    public Task PublishAsync(
+        Guid requestId,
+        RequestStreamEvent requesterFrame,
+        RequestStreamEvent engineerFrame,
+        CancellationToken cancellationToken = default)
+    {
+        if (FailEverything)
+        {
+            throw new InvalidOperationException("The hub is unreachable.");
+        }
+
+        _sent.Add(new StreamFrame(requestId, requesterFrame, Engineer: false));
+        _sent.Add(new StreamFrame(requestId, engineerFrame, Engineer: true));
+
+        return Task.CompletedTask;
     }
 }
 

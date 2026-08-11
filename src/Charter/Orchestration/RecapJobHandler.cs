@@ -228,13 +228,9 @@ public sealed class RecapJobHandler : IQueuedJobHandler
 
         // The body that is stored is the body that was published, fallback notice and all. A recap
         // that reads differently in Charter from the way it reads on the change request is a recap
-        // two people quote at each other.
-        _db.Recaps.Add(Domain.Recap.Generate(
-            id,
-            publication.BodyMarkdown,
-            result.RiskItemsJson,
-            result.Charge.CostUsd,
-            now));
+        // two people quote at each other. `ToEntity` carries the structured payload across with it,
+        // so the API reads section 14's sections as data instead of parsing headings back out.
+        _db.Recaps.Add(result.ToEntity(publication.BodyMarkdown, now));
 
         Settle(request, id, result, now);
 

@@ -23,8 +23,30 @@ public static class AuditActions
     /// <summary>An additional provider identity was attached to an existing user.</summary>
     public const string IdentityLinked = "auth.identity.linked";
 
+    /// <summary>A person signed out. The other half of a session's story.</summary>
+    public const string SignedOut = "auth.signed_out";
+
     /// <summary>A password was changed. The value is never recorded, only the fact.</summary>
     public const string PasswordChanged = "auth.password.changed";
+
+    /// <summary>
+    /// A one-time password-reset link was minted for somebody.
+    /// </summary>
+    /// <remarks>
+    /// Written whether an administrator asked for it or the person did, because "who could have
+    /// reset this account's password, and when" is the question this row exists to answer. It never
+    /// carries the link.
+    /// </remarks>
+    public const string PasswordResetRequested = "auth.password.reset_requested";
+
+    /// <summary>An admin invited somebody to the organisation (section 30.2).</summary>
+    public const string MemberInvited = "member.invited";
+
+    /// <summary>An admin withdrew an invitation nobody had spent.</summary>
+    public const string MemberInviteRevoked = "member.invite.revoked";
+
+    /// <summary>An invitation was redeemed and the account created (section 30.2).</summary>
+    public const string MemberInviteAccepted = "member.invite.accepted";
 
     /// <summary>Somebody became able to file against a repository who previously could not.</summary>
     public const string RepoScopeGranted = "repo.scope.granted";

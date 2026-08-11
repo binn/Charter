@@ -29,6 +29,10 @@ CHARTER_RUNNER=agent,github-actions
 | **GitHub Actions** | `github-actions` | A `repository_dispatch` event triggers a workflow in the target repository; events stream back to a Charter webhook. |
 | **Docker** | `docker` | The control plane uses a local Docker socket to spawn sibling containers. |
 
+Note that `charter-agent --mode docker` is a different thing: that is the Charter Agent spawning
+containers through the socket on *its* host, which is still the recommended way to get containerised
+execution on a machine that is not the one running the control plane.
+
 ### Charter Agent — the primary backend
 
 Use this unless you have a reason not to. It is required for anything that is not a plain Linux web
@@ -69,11 +73,24 @@ volumes, so it sits between the other two on speed.
 **Mounting the Docker socket into the Charter container grants that container root-equivalent access to
 the host.** Treat the machine as dedicated to Charter.
 
-Charter also supports pointing `DockerRunner` at a remote Docker daemon over TCP.
-**Do not do this.** A network-reachable Docker API is root-equivalent access to that host and a
-permanent target, and mTLS does not change what an attacker gets once they are through it. The support
-exists for completeness. If you need to run jobs on a different machine, run a Charter Agent there
-instead — it gives you the same thing with an outbound connection and no exposed daemon.
+Charter looks for the socket at `/var/run/docker.sock`. Set `CHARTER_DOCKER_SOCKET` to override it, or
+set `DOCKER_HOST` to a `unix://` URL and Charter will honour that instead.
+
+**Only a unix socket.** Charter will not talk to a Docker daemon over TCP, even with mTLS: a
+network-reachable Docker API is root-equivalent access to that host and a permanent target. If you need
+to run jobs on a different machine, run a Charter Agent there — it gives you the same thing with an
+outbound connection and no exposed daemon.
+
+Two limitations worth knowing before you choose this backend:
+
+- **Capabilities are declared, not probed.** [Spec §32.2](https://github.com/binn/Charter/blob/master/agent-docs/spec.md)
+  has runners probe and report what they have, and this backend cannot: the machine that will run the
+  work is a container that does not exist until a session is dispatched to it. It advertises
+  `linux, docker, dotnet:10, node:22` — what the default `charter-runner-fullstack` image carries. A
+  Charter Agent probes properly.
+- **No socket means no runner, and Charter says so.** An instance configured for `docker` on a host
+  with no reachable daemon registers a backend that describes itself as offline, so a session that
+  cannot be routed is explained on the request rather than left in a queue nobody is watching.
 
 ## Which project types need which backend
 
@@ -239,6 +256,42 @@ outbound-only connections possible.
   automatically.
 - Claims are filtered by capability, so an agent only ever sees jobs it can actually run.
 - Concurrency is limited per agent and defaults conservatively.
+
+## What a session does, in order
+
+All three backends run the same program — `charter-runner-shim`, baked into the runner image. Only how
+it is started differs: a workflow step, a sibling container, or a child process of `charter-agent`.
+
+0. **Get a checkout**, if the backend did not already provide one. GitHub Actions runs
+   `actions/checkout` at the base commit and the Charter Agent clones into the job's directory; a
+   Docker container starts empty, so the shim clones for itself at the exact base commit.
+1. **Verify the toolchain.** A session never installs a language runtime. If the image lacks something
+   the session declared, it stops here with a message naming an image that has it.
+2. **Install dependencies from lockfiles only** — `npm ci --ignore-scripts`, `dotnet restore
+   --locked-mode`. Install scripts are off unless the repository opted in.
+3. **Run the agent CLI** and stream every mapped event back as it happens.
+4. **Refuse any write outside the path scope**, and stop the run.
+5. **Publish the work.** Everything changed is staged and every staged path is checked against the path
+   scope again — this time against what is actually about to be committed, not against what the agent
+   said it wrote. Then it commits, pushes the session branch, and reports the branch and revision. The
+   control plane opens the change request from that report.
+
+Three things about step 5 are worth stating plainly:
+
+- **The commit is authored by the requester.** The person who asked for the change is the author and
+  the committer. Charter adds no machine account, no bot identity, and no attribution trailers; the
+  commit message describes the change and nothing else. That Charter produced it is recorded on the
+  change request, in words.
+- **A session that changed nothing is not a failure.** It reports "no changes", the request ends as
+  *Nothing needed changing*, and no change request is opened. A push that could not happen is a
+  different outcome and fails the session loudly — the two are never conflated.
+- **An out-of-scope path fails the session and commits nothing at all**, including the parts of the
+  work that were in scope. A session that wrote where it was told it could not is not a session whose
+  output should be reviewed piecemeal.
+
+The push uses the short-TTL, single-repository token the runner exchanged its session secret for. On
+GitHub Actions that token is the one `actions/checkout` persisted into the checkout, which is why
+`GITHUB_TOKEN` needs no write permission in the shipped workflow.
 
 ## Runner images and caching
 
