@@ -1,4 +1,5 @@
 using Charter.Data;
+using Charter.Deployments;
 using Charter.Domain;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,17 @@ public enum DeploymentBindingOutcome
 
     /// <summary>The body did not name a state Charter understands.</summary>
     Invalid,
+
+    /// <summary>
+    /// The URL is not one Charter will store, fetch, or put in front of a requester
+    /// (<see cref="Charter.Deployments.PreviewUrlPolicy"/>).
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="Invalid"/> because the two have different consequences. An
+    /// unrecognised state is a caller that did not say anything; a refused URL is a preview that will
+    /// not be arriving, and the requester's card has to say so rather than spin.
+    /// </remarks>
+    UnsafeUrl,
 }
 
 /// <summary>The result of one deployment report.</summary>
@@ -43,12 +55,17 @@ public sealed record DeploymentBindingResult(DeploymentBindingOutcome Outcome, s
 /// port of the Railway path.
 /// </para>
 /// <para>
-/// The commit SHA <em>is</em> the authorisation. A report for a SHA that no pull request in this
-/// instance carries is refused, so the endpoint cannot be used to enumerate anything or to attach a
-/// URL to work it does not name. An operator who wants more than that can put the deployment webhook
-/// behind their own gateway; Charter does not invent a second secret for it, because a shared secret
-/// pasted into four hosting providers is not obviously better than an unguessable 40-character key
-/// that already exists.
+/// The commit SHA is <em>not</em> the authorisation, and used to be. It is authored by the execution
+/// plane and legitimately known to anybody who can see the pull request, so admission is a per-instance
+/// secret checked at the endpoint (<see cref="Charter.Deployments.DeploymentWebhookAuthentication"/>).
+/// What the SHA still does here is bind: it says which change request a report is about, and a report
+/// naming a commit no change request carries is refused.
+/// </para>
+/// <para>
+/// <strong>This is the one gate every preview URL passes.</strong> Both ingestion paths of section 18
+/// reach it, so validating here — before a URL is written rather than at each place one is read —
+/// means a third consumer added later cannot be the one that forgot. See
+/// <see cref="Charter.Deployments.PreviewUrlPolicy"/> for what is refused and why.
 /// </para>
 /// </remarks>
 public sealed class DeploymentBinder
@@ -56,8 +73,13 @@ public sealed class DeploymentBinder
     private readonly CharterDbContext _database;
     private readonly TimeProvider _clock;
     private readonly ILogger<DeploymentBinder> _logger;
+    private readonly PreviewUrlPolicy _urls;
 
-    public DeploymentBinder(CharterDbContext database, TimeProvider clock, ILogger<DeploymentBinder> logger)
+    public DeploymentBinder(
+        CharterDbContext database,
+        TimeProvider clock,
+        ILogger<DeploymentBinder> logger,
+        PreviewUrlPolicy? urls = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(clock);
@@ -66,6 +88,7 @@ public sealed class DeploymentBinder
         _database = database;
         _clock = clock;
         _logger = logger;
+        _urls = urls ?? PreviewUrlPolicy.Default;
     }
 
     /// <summary>Records a deployment report against the pull request with this head SHA.</summary>
@@ -117,6 +140,33 @@ public sealed class DeploymentBinder
 
         var now = _clock.GetUtcNow();
 
+        // The gate. A report with no URL has nothing to check — a platform saying "building" names no
+        // link — but every URL that arrives, in any state, is checked before it is written.
+        var url = report.Url;
+        var refusal = (string?)null;
+
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            var verdict = await _urls.ValidateAsync(url, cancellationToken);
+
+            if (!verdict.Allowed)
+            {
+                // Refuse, do not sanitise (section 16.3). The URL is dropped and the deployment is
+                // recorded as failed, so the requester's card settles on section 27.7's designed
+                // failure rather than waiting forever for a preview that is never coming.
+                _logger.LogWarning(
+                    "Refused the preview url '{Url}' reported by {Provider} for pull request {Number}: {Reason}",
+                    url,
+                    provider,
+                    changeRequest.Number,
+                    verdict.Reason);
+
+                refusal = verdict.Reason;
+                url = null;
+                state = DeploymentState.Failed;
+            }
+        }
+
         // Deployment.Report lower-cases the provider, so match on the same spelling rather than
         // asking the database to fold case for us.
         var providerKey = provider.ToLowerInvariant();
@@ -128,14 +178,19 @@ public sealed class DeploymentBinder
 
         if (existing is null)
         {
-            _database.Deployments.Add(Deployment.Report(changeRequest.Id, provider, state, report.Url, now));
+            _database.Deployments.Add(Deployment.Report(changeRequest.Id, provider, state, url, now));
         }
         else
         {
-            existing.Update(state, report.Url, now);
+            existing.Update(state, url, now);
         }
 
         await _database.SaveChangesAsync(cancellationToken);
+
+        if (refusal is not null)
+        {
+            return new DeploymentBindingResult(DeploymentBindingOutcome.UnsafeUrl, refusal);
+        }
 
         _logger.LogInformation(
             "Preview for pull request {Number} is {State} (provider {Provider})",

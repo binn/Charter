@@ -20,17 +20,24 @@ Treat the test count as a regression net, not as evidence. See *How the last def
 
 ## Verified green as of the last commit
 
-- `dotnet build Charter.sln` — 0 warnings, 0 errors (warnings-as-errors is on)
-- `dotnet test Charter.sln` — 2425 passed, 0 failed, 0 skipped
-- `npm run test` in `ClientApp` — 159 passed across 19 files; typecheck, lint, and build clean
-- Boots in 6 configurations: Development and Production × `CHARTER_RUNNER` of
-  `github-actions` / `agent` / `docker`. Roughly 4s each, preflight runs, zero fatals,
-  `GET /api/setup/status` returns 200
+- `dotnet build Charter.sln --no-incremental` — 0 warnings, 0 errors (warnings-as-errors is on)
+- `dotnet test Charter.sln` — 2821 passed, 0 failed, 0 skipped
+- `npm run test` in `ClientApp` — 194 passed across 21 files; typecheck and build clean, one
+  pre-existing lint warning
+- `dotnet format Charter.sln --verify-no-changes` — clean
+- A real boot with `CHARTER_DEMO=true`: both seeded accounts sign in, an engineer-only endpoint
+  answers 403 to the requester and 200 to the admin, and preflight explains every check it ran
 - The VitePress docs site builds with no dead links
-- History is clean: every commit authored by the maintainer, no attribution trailers
-  (`git log --format='%B' | grep -iE 'co-authored|generated with|authored by'` returns nothing)
+- History is clean: every commit authored by the maintainer, no attribution trailers. Scan with
+  `git log --format='%B' | grep -inE '^(co-authored-by|signed-off-by|generated with)'` — anchor it to
+  the line start, or it matches ordinary prose in a commit body and reports a false positive.
 
-Known red: `dotnet format --verify-no-changes` fails repo-wide. Pre-existing, never triaged.
+**Run the suite with nothing else touching the tree.** Concurrent `dotnet build` / `dotnet test` runs
+against one `obj/` and `bin/` produce results read from assemblies that do not match the source — a
+composition test failed twice naming an entry the file no longer contained, with fresh timestamps, and
+passed after a forced rebuild. Tests that look flaky under parallel agents are usually this, or a
+shared Postgres; `AgentPlaneFixture.CreateAsync(isolated: true)` gives a private schema when it is the
+database.
 
 ## What works end to end
 
@@ -53,29 +60,54 @@ along. The pieces that took the longest to get right, and that you should not ca
   tree-shaking — the mock shipped in the production bundle until this was fixed. The `Dockerfile`
   sets `VITE_CHARTER_LIVE_API=true` before `npm run build`. Both halves are load-bearing.
 
+## The pattern worth knowing before you change anything
+
+Six defects in one sweep had a single shape: **a value the execution plane supplied was trusted, then
+used to address something.** The rule they violated is now written down as **spec §16.3** — read it
+before touching any code that consumes a runner event, a shim callback, or a webhook body.
+
+The instances found and closed: a repository-derived secret authenticating the credential exchange
+(so any workflow in a repo could mint for any other live session in it); a `run_url` the shim reported
+being parsed for a repository name and used to cancel runs in *other* repositories; a job-claim filter
+where the empty capability set is a subset of everything, letting a daemon eat control-plane jobs
+including the control plane's own build rows; a pushed branch name taken at the runner's word, which
+could advance `main` instead of the session branch; a `file_write` path that `..` could walk out of;
+check output spliced unescaped into a pull request body; and an unauthenticated deployment webhook
+whose URL became both a repeating server-side fetch with no SSRF filter and a preview button shown to
+a requester under Charter's own promise that the link is safe.
+
+Two lessons from that sweep are worth more than the list. First, **the agent is untrusted, so
+everything it can influence is untrusted input** — including fields that look like plumbing. Second,
+one of these was *pinned by a passing test*: `TheBranchTheRunnerReportedWinsOverTheConvention`
+asserted the vulnerable behaviour as intended design. A green test is not evidence that behaviour is
+correct; it is evidence somebody once believed it was.
+
 ## What is not done
 
 Grouped by how much it would mislead someone who trusted the docs.
 
 ### Settings accepted and ignored
 
-Tracked in `ConfigReachabilityTests.AcceptedAndIgnored`, which fails when a new one appears. §4.1
-says Charter never accepts configuration it ignores, so each entry has exactly two honest endings:
-wire it, or refuse it at startup. Shortening that list is real work; the list itself is the map.
+**The list is empty.** Every `CHARTER_*` variable Charter accepts now reaches something that reads it.
+`ConfigReachabilityTests` guards this in both directions: it fails when a new value stops being
+consumed, and it fails when an entry claims a value is ignored after somebody quietly wired it up.
+That second guard exists because the list only ever grew — a stale entry went on asserting a value was
+dead, and the next reader believed it.
 
 ### Unreachable states and missing paths
 
-- `InReview` and `Merged` (§6) — no merge webhook, so a requester is never told their change shipped
 - `steering` is claimed by no adapter; answers to `NeedsInput` never reach a running agent
-- Migration classification (§15) runs, but confirm a destructive change actually halts a session
-- The shim runs no build or test step, so §27.1 verification artifacts do not exist
+- Auto-rebase (§17) is not implemented — staleness is detected and reported, but a rebase needs a
+  checkout, which needs a runner, which means a new job type and shim mode end to end
 - Refinement deferral is silent — no "waiting for capacity" frame reaches the requester
-
-### Optimistic frontend types
-
-The SPA types `proposedScope`, `checkpoints`, and `primerDraftMd`; no endpoint returns them.
-`GET`/`POST /api/repos/{id}/access` exist with no UI, and role administration has an audit verb with
-no writer.
+- `ICredentialResolver.ReportSuccessAsync` is called by nothing, so a credential's `last_used_at`
+  never advances. Wiring it needs a `ModelCompletion` that `RefinementResult` does not carry; the
+  honest fix threads it through the refiner rather than fabricating one to satisfy the signature
+- §27.1 verification artifacts (`build_artifact`, `capture`, `hil_report`) have no producer. They
+  arrive with the project types that emit them, which is why object storage is wired to transcript
+  offload instead — an abstraction with no caller is the defect this sweep existed to remove
+- OAuth sign-in is built and registered but its callback route is not mapped, so password is the only
+  usable identity provider
 
 ### Unverified against reality
 
@@ -84,6 +116,11 @@ no writer.
 - `GitHubActionsRunner` needs a real `IGitHubRepositoryDispatcher`
 - Charter Agent's pre-clone must carry a pushable credential or the push fails
 - Recap evidence comes from the transcript rather than the provider's `CompareAsync`
+- S3 storage is verified against a real MinIO container only. R2, B2 and Wasabi are untested
+- Charter only tracks change requests it opened itself; one a human opens carrying the same work is
+  invisible to it, so it never reaches `InReview` or `Merged`
+- The GitHub App must be subscribed to **Pull request** and **Pull request review** or those two
+  states never arrive, however correct the code is
 
 ## How the last defects were found
 

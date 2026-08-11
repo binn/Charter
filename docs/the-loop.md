@@ -237,17 +237,22 @@ Charter was told.
 ## 7. The preview
 
 Charter does not create preview environments. It binds whatever your platform created back to the
-change request, keyed on the head commit SHA. Three paths exist, and the first needs no configuration
-at all:
+change request, keyed on the head commit SHA. Three paths exist:
 
 | Path | Enabled by | Notes |
 |---|---|---|
-| Generic webhook | always on | `POST /api/deployments/{prSha}` with `{ url, state, provider }`. See [api.md](api.md). |
+| Generic webhook | `CHARTER_DEPLOYMENT_WEBHOOK_SECRET` | `POST /api/deployments/{prSha}` with `{ url, state, provider }`, carrying the secret. Refused without it — the head commit SHA says which change request a report is about, and is public, so it is not the credential. See [api.md](api.md). |
 | Change request comment | `CHARTER_DEPLOYMENT_PROVIDER=railway` | Reads comments from Railway's bot accounts only, caps the body it will parse, and runs its regex under a timeout. Fragile but universal. |
 | Provider polling | `CHARTER_DEPLOYMENT_PROVIDER=railway` | A background loop asks Railway directly, about once a minute per change request. |
 
 `CHARTER_DEPLOYMENT_PROVIDER=none` is the default and a first-class configuration, not a broken one: it
 means webhook-only, with no polling, no comment parsing, and no teardown.
+
+Whichever path reports it, the URL is checked before Charter stores it: `http(s)` only, no credentials
+in the link, and no host that resolves to loopback, link-local or a private address. Charter fetches
+that URL from inside its own container for the reachability dot and shows it to a requester as a link
+it vouches for, so a URL it cannot check becomes an honest failure on the card instead of a button.
+See [security.md](security.md#preview-urls-are-validated-before-charter-stores-fetches-or-shows-one).
 
 A `ready` report writes a verification artifact, probes the URL for reachability, and moves both the
 session and the request to `PreviewReady`. The requester is notified **once** — a later reconcile pass

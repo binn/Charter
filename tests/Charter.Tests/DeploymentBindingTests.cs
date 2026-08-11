@@ -79,6 +79,155 @@ public class DeploymentBindingTests
         Assert.Null(await fixture.PreviewAsync());
     }
 
+    [Theory]
+    [InlineData("http://127.0.0.1:8080/")]
+    [InlineData("http://169.254.169.254/latest/meta-data/")]
+    [InlineData("http://10.0.0.5/")]
+    [InlineData("https://admin:hunter2@preview.example.com/")]
+    [InlineData("file:///etc/passwd")]
+    public async Task AReportNamingAUrlCharterWillNotVouchForIsRefusedAndNothingIsStored(string url)
+    {
+        await using var fixture = await DeploymentFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        var ingestor = fixture.Ingestor(Options(), handler: Reachable());
+
+        var result = await ingestor.ReportAsync(
+            DeploymentScenario.HeadSha,
+            new DeploymentWebhookRequest(url, "ready", "render"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(DeploymentBindingOutcome.UnsafeUrl, result.Outcome);
+
+        // Refuse, do not sanitise (section 16.3). The URL is not stored anywhere, so no later consumer
+        // can pick it up — the whole reason the check is at the write path rather than at each read.
+        var deployment = await fixture.Db.Deployments
+            .AsNoTracking()
+            .SingleAsync(TestContext.Current.CancellationToken);
+
+        Assert.Null(deployment.Url);
+        Assert.Equal(DeploymentState.Failed, deployment.State);
+    }
+
+    [Fact]
+    public async Task AHostnameThatResolvesInsideTheNetworkIsRefusedToo()
+    {
+        await using var fixture = await DeploymentFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        // The case no rule about the URL text can catch: it reads like every other preview link.
+        fixture.Resolver.Map("preview.northbeam.example", "169.254.169.254");
+
+        var result = await fixture.Ingestor(Options(), handler: Reachable()).ReportAsync(
+            DeploymentScenario.HeadSha,
+            new DeploymentWebhookRequest("https://preview.northbeam.example/", "ready", "render"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(DeploymentBindingOutcome.UnsafeUrl, result.Outcome);
+    }
+
+    [Fact]
+    public async Task ARefusedUrlLeavesTheRequesterWithAnHonestCardRatherThanASpinnerOrALink()
+    {
+        await using var fixture = await DeploymentFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        await fixture.Ingestor(Options(), handler: Reachable()).ReportAsync(
+            DeploymentScenario.HeadSha,
+            new DeploymentWebhookRequest("http://169.254.169.254/", "ready", "render"),
+            TestContext.Current.CancellationToken);
+
+        var artifact = await fixture.PreviewAsync();
+
+        // Section 11: failure has dignity. The card settles on the designed failed state — no button,
+        // no "Nothing you do here touches the real one" above a link Charter never checked, and no
+        // skeleton spinning forever on a preview that is not coming.
+        Assert.NotNull(artifact);
+        Assert.Equal(VerificationArtifactState.Failed, artifact.State);
+        Assert.Null(artifact.Url);
+    }
+
+    [Fact]
+    public async Task ACommentNamingAnAddressInsideTheNetworkIsRefusedOnTheSamePath()
+    {
+        await using var fixture = await DeploymentFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        // Anybody who can comment on a change request can write this one. Both ingestion paths run
+        // through the same binder, which is what makes one gate enough.
+        var options = new DeploymentOptions
+        {
+            Provider = DeploymentProviderKind.Railway,
+            PreviewTtl = TimeSpan.FromHours(8),
+            Railway = new RailwayOptions
+            {
+                Token = Charter.Configuration.Secret.From("railway-token")!,
+                ProjectId = "proj_123",
+                BaseEnvironment = "staging",
+                ApiUrl = new Uri(RailwayOptions.DefaultApiUrl),
+            },
+        };
+
+        var railway = new RailwayDeploymentProvider(
+            new StubHttpClientFactory(new StubHttpMessageHandler()),
+            options,
+            fixture.Clock,
+            new RecordingLogger<RailwayDeploymentProvider>());
+
+        var result = await fixture.Ingestor(options, new DeploymentProviderRegistry([railway]), Reachable())
+            .IngestCommentAsync(
+                DeploymentScenario.RepoFullName,
+                DeploymentScenario.Number,
+                new DeploymentComment("railway[bot]", "✅ Deploy successful — http://169.254.169.254/"),
+                TestContext.Current.CancellationToken);
+
+        Assert.Equal(DeploymentBindingOutcome.UnsafeUrl, result.Outcome);
+        Assert.Null((await fixture.PreviewAsync())?.Url);
+    }
+
+    [Fact]
+    public async Task ARowWrittenBeforeTheCheckExistedIsStillRefusedWhenTheCardIsPublished()
+    {
+        await using var fixture = await DeploymentFixture.CreateAsync();
+        if (fixture is null)
+        {
+            return;
+        }
+
+        // Section 16.3: a fix at the recording point cannot reach rows already in the database, and an
+        // upgrade does not rewrite them. This is such a row — written straight to the table, the way an
+        // older Charter wrote it — and the point of use has to refuse it on its own.
+        fixture.Db.Deployments.Add(Deployment.Report(
+            fixture.Scenario.ChangeRequest.Id,
+            "render",
+            DeploymentState.Ready,
+            "http://169.254.169.254/latest/meta-data/",
+            fixture.Clock.Now));
+
+        await fixture.Db.SaveChangesAsync(TestContext.Current.CancellationToken);
+        fixture.Db.ChangeTracker.Clear();
+
+        await fixture.Ingestor(Options(), handler: Reachable())
+            .PublishAsync(DeploymentScenario.HeadSha, TestContext.Current.CancellationToken);
+
+        var artifact = await fixture.PreviewAsync();
+
+        Assert.Equal(VerificationArtifactState.Failed, artifact?.State);
+        Assert.Null(artifact?.Url);
+    }
+
     [Fact]
     public async Task ARedeployPutsTheCardBackToPendingRatherThanLeavingADeadLinkUp()
     {

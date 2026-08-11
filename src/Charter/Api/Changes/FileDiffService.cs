@@ -191,18 +191,42 @@ public sealed class FileDiffService
         {
             if (RequestPresentation.TranscriptPath(EventTypes.FileWrite, payload) is { } path)
             {
-                paths.Add(Normalise(path));
+                Add(paths, path);
             }
         }
 
         foreach (var item in RecapProjection.RiskItems(recap?.RiskItems))
         {
-            paths.Add(Normalise(item.Path));
+            Add(paths, item.Path);
         }
 
         return paths;
     }
 
-    private static string Normalise(string? path)
-        => path is null ? string.Empty : path.Replace('\\', '/').Trim().TrimStart('/');
+    /// <summary>
+    /// Adds a path the change claims to have touched, unless it is not a path in this repository.
+    /// </summary>
+    /// <remarks>
+    /// A refused path is left out of the allowlist entirely rather than added as an empty entry, so it can
+    /// never match a request — and so an operator reading this code cannot mistake the set for one that
+    /// contains a blank.
+    /// </remarks>
+    private static void Add(HashSet<string> paths, string? path)
+    {
+        if (Normalise(path) is { Length: > 0 } normalised)
+        {
+            paths.Add(normalised);
+        }
+    }
+
+    /// <summary>
+    /// The path as a repository-relative path, or empty when it is not one (section 16.3).
+    /// </summary>
+    /// <remarks>
+    /// Applied to both sides of the comparison: to the path the reader asked for, and to every path the
+    /// allowlist is built from. The allowlist is populated from the execution plane's own <c>file_write</c>
+    /// events, so checking only one side would let a poisoned transcript match itself.
+    /// <see cref="RepositoryPath"/> says at length why this refuses rather than rewrites.
+    /// </remarks>
+    private static string Normalise(string? path) => RepositoryPath.Normalise(path);
 }

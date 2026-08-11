@@ -3,6 +3,7 @@ import type { VerificationArtifact } from '@/api/types';
 import {
   artifactStateStyle,
   effectiveState,
+  isDisplayablePreviewUrl,
   orderArtifacts,
   primaryActionFor,
 } from '@/features/artifact/artifact-presentation';
@@ -122,5 +123,62 @@ describe('orderArtifacts', () => {
       preview({ id: 'primary', primary: true }),
     ]);
     expect(ordered.map((artifact) => artifact.id)).toEqual(['primary', 'secondary']);
+  });
+});
+
+describe('isDisplayablePreviewUrl', () => {
+  /**
+   * The last gate before a URL somebody else chose becomes a button under Charter's own promise
+   * that the preview is safe to click (§16.3, §27.7). The server refuses these before it stores one
+   * and again before it renders one; this is the same structural rule in the browser, because a row
+   * written before those checks existed is still a row the card has to handle.
+   */
+  it.each([
+    'https://pr-142.preview.example.test/quotes/new',
+    'http://myapp-pr-142.onrender.com',
+    // A self-hoster's preview genuinely lives here, and the requester's browser is on that network.
+    'http://10.0.4.12:3000/',
+  ])('offers %s', (url) => {
+    expect(isDisplayablePreviewUrl(url)).toBe(true);
+  });
+
+  it.each([
+    'http://127.0.0.1:8080/',
+    'http://localhost:3000/',
+    'http://charter.localhost/',
+    'http://[::1]:8080/',
+    // Where every cloud provider parks instance metadata.
+    'http://169.254.169.254/latest/meta-data/',
+    'http://[fe80::1]/',
+    // A link that reads as one host and authenticates to another.
+    'https://admin:hunter2@preview.example.test/',
+    'javascript:alert(1)',
+    'file:///etc/passwd',
+    'not a url at all',
+    '',
+  ])('withholds %s', (url) => {
+    expect(isDisplayablePreviewUrl(url)).toBe(false);
+  });
+});
+
+describe('primaryActionFor — a URL Charter cannot vouch for', () => {
+  it('offers no button, no copy and no QR code', () => {
+    const action = primaryActionFor(
+      preview({ payload: { url: 'http://169.254.169.254/', displayUrl: '169.254.169.254', reachability: 'unknown' } }),
+      'ready',
+    );
+
+    expect(action.behaviour).toBe('none');
+    expect(action.href).toBeUndefined();
+    expect(action.qrValue).toBeUndefined();
+  });
+
+  it('offers nothing for an empty URL either, which is what the API sends once it has withheld one', () => {
+    const action = primaryActionFor(
+      preview({ payload: { url: '', displayUrl: '', reachability: 'unknown' } }),
+      'ready',
+    );
+
+    expect(action.behaviour).toBe('none');
   });
 });

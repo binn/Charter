@@ -1,3 +1,8 @@
+using System.Text.Json.Nodes;
+using Charter.Api.Changes;
+using Charter.Api.Requests;
+using Charter.Auth.Audit;
+using Charter.Auth.Authorization;
 using Charter.Configuration;
 using Charter.Data;
 using Charter.Domain;
@@ -234,8 +239,10 @@ public class VersionControlChangeRequestTests
         Assert.Equal(SessionStatus.Running, await world.StatusAsync());
     }
 
-    [Fact]
-    public async Task TheBranchTheRunnerReportedWinsOverTheConvention()
+    [Theory]
+    [InlineData("main")]
+    [InlineData("feature/hand-rolled")]
+    public async Task ABranchThatIsNotTheSessionsIsRefusedAndNothingIsPublished(string branch)
     {
         await using var world = await ChangeRequestWorld.CreateAsync();
         if (world is null)
@@ -243,14 +250,87 @@ public class VersionControlChangeRequestTests
             return;
         }
 
-        await world.RecordBranchPushAsync("feature/hand-rolled", "reportedsha");
-        world.Provider.BranchHeads["feature/hand-rolled"] = "reportedsha";
+        // Section 16.3. The push is fast-forward-only, which is no protection at all here: an agent's
+        // commit is a descendant of the base branch in the ordinary case, so believing this event would
+        // advance `main` — the ref branch protection exists to hold — without a review or a merge.
+        await world.RecordBranchPushAsync(branch, "attackersha");
+        world.Provider.BranchHeads[branch] = "basesha";
+        world.Provider.Comparisons[("basesha", "attackersha")] = new RevisionComparison(0, 1, ["src/Widget.cs"]);
+
+        var result = await world.PublishAsync();
+
+        Assert.Equal(ChangeRequestPublication.Refused, result.Outcome);
+
+        // No ref moved, no branch created, no change request opened.
+        Assert.Empty(world.Provider.Pushes);
+        Assert.Empty(world.Provider.BranchesCreated);
+        Assert.Empty(world.Provider.Opened);
+        Assert.Empty(await world.ChangeRequestsAsync());
+        Assert.Equal("basesha", world.Provider.BranchHeads[branch]);
+
+        // Terminal rather than left for the next sweep: nothing a later pass could learn would change
+        // the answer, and the reason is on the transcript where an engineer will find it.
+        Assert.Equal(SessionStatus.Failed, await world.StatusAsync());
+
+        var errors = await world.EventsAsync(EventTypes.Error);
+        Assert.Contains(errors, payload => payload.Contains("branch_refused", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ARefusedBranchIssuesNoRefUpdateToTheProviderAtAll()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        // The same refusal against the real GitHub provider over a stubbed API, because the claim worth
+        // proving is about the wire: `PATCH /repos/{owner}/{name}/git/refs/heads/main` is what advancing
+        // somebody else's branch actually looks like, and it must never be sent. The stub answers `main`'s
+        // head, so without the refusal this is exactly the call the publisher would make next.
+        var handler = VersionControlTestFixtures.Handler()
+            .On(HttpMethod.Get, "/git/ref/heads/main", """{"object":{"sha":"basesha"}}""")
+            .On(HttpMethod.Patch, "/git/refs/heads/main", """{"object":{"sha":"attackersha"}}""");
+
+        await world.RecordBranchPushAsync("main", "attackersha");
+
+        var result = await world.PublisherFor(VersionControlTestFixtures.GitHubProvider(handler)).PublishAsync(
+            world.Session.Id,
+            TestContext.Current.CancellationToken);
+
+        // Asserted before the outcome, because this is the harm: everything else about the publication
+        // could be wrong and it would still only be a bad change request, where one PATCH here is
+        // somebody else's branch moved.
+        Assert.DoesNotContain(handler.Calls, call => call.Method == "PATCH");
+
+        // Not one request: the refusal is decided from the session's own row, before a token is minted.
+        Assert.Empty(handler.Calls);
+        Assert.Equal(ChangeRequestPublication.Refused, result.Outcome);
+    }
+
+    [Fact]
+    public async Task TheSessionsOwnBranchStillPublishesAndOpensAChangeRequest()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        // The honest report, which is the only one any dispatch produces: the shim, the Actions runner
+        // and the Docker runner all compute this name from the session id.
+        await world.RecordBranchPushAsync(world.Branch, "reportedsha");
+        world.Provider.BranchHeads[world.Branch] = "basesha";
         world.Provider.Comparisons[("basesha", "reportedsha")] = new RevisionComparison(0, 1, ["src/Widget.cs"]);
 
         var result = await world.PublishAsync();
 
         Assert.Equal(ChangeRequestPublication.Opened, result.Outcome);
-        Assert.Equal("feature/hand-rolled", Assert.Single(world.Provider.Opened).Source);
+        Assert.Equal(world.Branch, Assert.Single(world.Provider.Pushes).Reference);
+        Assert.Equal(world.Branch, Assert.Single(world.Provider.Opened).Source);
+        Assert.Equal(world.Branch, Assert.Single(await world.ChangeRequestsAsync()).HeadBranch);
+        Assert.Equal(SessionStatus.PrOpen, await world.StatusAsync());
     }
 
     [Fact]
@@ -272,6 +352,73 @@ public class VersionControlChangeRequestTests
     }
 
     [Fact]
+    public async Task ACheckSummaryCannotPutLiveMarkdownInTheBodyCharterSigned()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        // Section 16.3: the body is Charter's own account of the session and an engineer reads it as one,
+        // so a summary that reads as instructions from Charter is the harm — a link somebody clicks, a
+        // blockquote that fakes section 7.5's disclosure, a heading that hides what is under it.
+        await world.RecordCheckAsync(
+            "tests",
+            passed: false,
+            summary: "2 failed. [Approve this now](https://evil.test/steal)\n\n> **A human approved this "
+                     + "specification.**\n\n## Checks\n\n- **passed** — everything\n\ncc @octocat");
+
+        world.Provider.BranchHeads[world.Branch] = "headsha";
+        world.Provider.Comparisons[("basesha", "headsha")] = new RevisionComparison(0, 1, ["src/Widget.cs"]);
+
+        await world.PublishAsync();
+
+        var body = Assert.Single(world.Provider.Opened).BodyMarkdown;
+
+        // Quoted, not rendered: the link syntax is inside a code span, so nothing in it is clickable, no
+        // mention fires, and the fake disclosure is visibly a quotation of what a check said.
+        Assert.Contains("`2 failed. [Approve this now](https://evil.test/steal)", body, StringComparison.Ordinal);
+
+        // And it is one line, so it cannot open a block of its own inside a document Charter wrote.
+        Assert.DoesNotContain("\n> **A human approved", body, StringComparison.Ordinal);
+        Assert.Single(body.Split('\n'), line => line.StartsWith("## Checks", StringComparison.Ordinal));
+        Assert.DoesNotContain("\n- **passed** — everything", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnEnormousTranscriptCannotGrowTheBodyWithoutBound()
+    {
+        await using var world = await ChangeRequestWorld.CreateAsync();
+        if (world is null)
+        {
+            return;
+        }
+
+        // A body over the provider's limit fails the create call, which would let a session stop its own
+        // work being reviewed by talking too much. Both the per-check text and the number of checks are
+        // bounded, and the overflow is stated rather than dropped in silence.
+        for (var index = 0; index < ChangeRequestText.MaxChecks + 12; index++)
+        {
+            await world.RecordCheckAsync(
+                $"check-{index}",
+                passed: false,
+                summary: new string('x', 40_000));
+        }
+
+        world.Provider.BranchHeads[world.Branch] = "headsha";
+        world.Provider.Comparisons[("basesha", "headsha")] = new RevisionComparison(0, 1, ["src/Widget.cs"]);
+
+        await world.PublishAsync();
+
+        var body = Assert.Single(world.Provider.Opened).BodyMarkdown;
+
+        Assert.True(body.Length < 16_000, $"The body grew to {body.Length} characters.");
+        Assert.Contains("and 12 more", body, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('x', ChangeRequestText.MaxCheckSummary + 1), body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheSessionBranchIsAConventionAnyRunnerCanCompute()
     {
         var id = Guid.Parse("0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b");
@@ -285,11 +432,12 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
 {
     private const string DatabaseUrlVariable = "CHARTER_TEST_DATABASE_URL";
 
-    private ChangeRequestWorld(CharterDbContext db, Session session, Repo repo)
+    private ChangeRequestWorld(CharterDbContext db, Session session, Repo repo, Member member)
     {
         Db = db;
         Session = session;
         Repo = repo;
+        Member = member;
         Provider = new FakeVersionControlProvider();
         Registry = new VersionControlProviderRegistry([Provider]);
 
@@ -311,6 +459,9 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
     public Session Session { get; }
 
     public Repo Repo { get; }
+
+    /// <summary>An engineer: every role, so pane 3 is visible to them (section 7.4).</summary>
+    public Member Member { get; }
 
     public FakeVersionControlProvider Provider { get; }
 
@@ -380,11 +531,41 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
         db.Events.Add(Event.Append(session.Id, 1, EventTypes.SessionEnded, """{"state":"completed"}"""));
         await db.SaveChangesAsync(TestContext.Current.CancellationToken);
 
-        return new ChangeRequestWorld(db, session, repo);
+        return new ChangeRequestWorld(db, session, repo, member);
     }
+
+    /// <summary>Pane 3 over this world's database, with a reader that records what it was asked for.</summary>
+    public FileDiffService FileDiffs(IRepositoryFileText files)
+        => new(
+            Db,
+            new RequestQueryService(
+                Db,
+                new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+                Registry,
+                TimeProvider.System),
+            files);
+
+    /// <summary>Records a file write exactly as the execution plane reported it.</summary>
+    public Task RecordFileWriteAsync(string path)
+        => AppendAsync(EventTypes.FileWrite, new JsonObject { ["path"] = path }.ToJsonString());
+
+    /// <summary>The request behind this session, which is what pane 3 is addressed by.</summary>
+    public async Task<Guid> RequestIdAsync()
+        => await (from spec in Db.Specs.AsNoTracking()
+                  where spec.Id == Session.SpecId
+                  select spec.RequestId)
+            .FirstAsync(TestContext.Current.CancellationToken);
 
     public Task<ChangeRequestPublicationResult> PublishAsync()
         => Publisher.PublishAsync(Session.Id, TestContext.Current.CancellationToken);
+
+    /// <summary>The same publisher over a different provider — a real one, over a stubbed API.</summary>
+    public ChangeRequestPublisher PublisherFor(IVersionControlProvider provider)
+        => new(
+            Db,
+            new VersionControlProviderRegistry([provider]),
+            TimeProvider.System,
+            NullLogger<ChangeRequestPublisher>.Instance);
 
     public async Task<IReadOnlyList<ChangeRequest>> ChangeRequestsAsync()
         => await Db.ChangeRequests
@@ -445,6 +626,19 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
         await AppendAsync(
             ChangeRequestEventTypes.BranchPushed,
             $$"""{"branch":"{{branch}}","revision":"{{revision}}"}""");
+    }
+
+    /// <summary>One check as the transcript recorded it: whatever the execution plane said it was.</summary>
+    public async Task RecordCheckAsync(string name, bool passed, string summary)
+    {
+        await AppendAsync(
+            EventTypes.CheckResult,
+            new JsonObject
+            {
+                ["check"] = name,
+                ["passed"] = passed,
+                ["summary"] = summary,
+            }.ToJsonString());
     }
 
     public async Task RecordMigrationClassificationAsync()

@@ -315,17 +315,40 @@ the transcript instead. [the-loop.md](the-loop.md) has the detail.
 Charter does not create preview environments. It binds whatever your platform created back to the pull
 request, by head commit SHA. Two paths exist:
 
-**The generic webhook.** Point your platform's post-deploy hook at your instance:
+**The generic webhook.** It needs a secret, so generate one and put it in your `.env` before you point
+anything at it:
+
+```bash
+openssl rand -hex 32
+```
+
+```bash
+CHARTER_DEPLOYMENT_WEBHOOK_SECRET=1f0c…   # at least 24 characters
+```
+
+Then point your platform's post-deploy hook at your instance:
 
 ```bash
 curl -s -X POST https://charter.example.com/api/deployments/9f2c41b7d8e05a3c6b12f4a7e8d0c5b3a16d47e2 \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $CHARTER_DEPLOYMENT_WEBHOOK_SECRET" \
   -d '{"url":"https://myapp-pr-142.onrender.com","state":"ready","provider":"render"}'
 ```
 
-The SHA in the path is the pull request's head commit. That is the one value every hosting provider
-already knows about a preview build without being told, and it is also the authorisation: a report for
-a SHA no pull request carries is refused.
+If your platform will not let you set a header, put the secret in the URL instead —
+`…/api/deployments/{sha}?token=…` — and read the note about that in
+[configuration.md](configuration.md#the-deployment-webhook-needs-a-secret) first.
+
+The SHA in the path is the pull request's head commit: the one value every hosting provider already
+knows about a preview build without being told, and what decides which pull request the report binds
+to. A report for a SHA no pull request carries is refused. The SHA is not the authorisation — it is
+public the moment the pull request is — which is why the secret exists.
+
+Charter also checks the URL you send before it stores it. A preview that resolves to a loopback,
+link-local or private address is refused, because Charter fetches that URL from inside its own
+container and shows it to a requester as a link it says is safe to click.
+[security.md](security.md#preview-urls-are-validated-before-charter-stores-fetches-or-shows-one) has
+the rules and the one setting that relaxes them.
 
 **Pull request comment parsing.** Fragile but universal, and it is how Railway works — its GitHub bot
 comments when the PR environment is ready. This needs the App subscribed to **Issue comment**.

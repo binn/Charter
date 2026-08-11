@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using Charter.Configuration;
 using Charter.Data;
@@ -39,6 +40,46 @@ internal sealed class RecordingLogger<T> : ILogger<T>
         public void Dispose()
         {
         }
+    }
+}
+
+/// <summary>DNS, decided by the test rather than by the internet.</summary>
+/// <remarks>
+/// Everything resolves to a documentation address in TEST-NET-3 unless a test says otherwise, which
+/// is a public address and therefore the boring case. A test that cares names its own answer — the
+/// interesting one being a perfectly ordinary hostname that resolves to <c>169.254.169.254</c>.
+/// </remarks>
+internal sealed class StubPreviewHostResolver : IPreviewHostResolver
+{
+    /// <summary>What an unmapped name resolves to: a routable, public address.</summary>
+    public static readonly IPAddress Public = IPAddress.Parse("203.0.113.10");
+
+    private readonly Dictionary<string, IPAddress[]> _answers = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Every host this resolver was asked about, in order.</summary>
+    public List<string> Asked { get; } = [];
+
+    /// <summary>Points <paramref name="host"/> at <paramref name="addresses"/>.</summary>
+    public StubPreviewHostResolver Map(string host, params string[] addresses)
+    {
+        _answers[host] = [.. addresses.Select(IPAddress.Parse)];
+        return this;
+    }
+
+    /// <summary>Makes <paramref name="host"/> resolve to nothing at all.</summary>
+    public StubPreviewHostResolver Unresolvable(string host)
+    {
+        _answers[host] = [];
+        return this;
+    }
+
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken)
+    {
+        Asked.Add(host);
+
+        return ValueTask.FromResult<IReadOnlyList<IPAddress>>(
+            _answers.TryGetValue(host, out var mapped) ? mapped : [Public]);
     }
 }
 
@@ -260,8 +301,24 @@ internal sealed class DeploymentFixture : IAsyncDisposable
     /// <summary>The clock every service in the fixture reads.</summary>
     public ModelFakeTimeProvider Clock { get; private set; } = new(DateTimeOffset.UnixEpoch);
 
+    /// <summary>
+    /// How preview host names resolve for everything this fixture builds.
+    /// </summary>
+    /// <remarks>
+    /// Stubbed rather than left to DNS for two reasons. It makes the suite deterministic and offline —
+    /// <c>quote-tool-pr-142.up.railway.app</c> is not a name anybody owns — and it is the only way to
+    /// pin the case section 16.3 is actually about: an ordinary-looking name that resolves to somewhere
+    /// on the operator's own network.
+    /// </remarks>
+    public StubPreviewHostResolver Resolver { get; } = new();
+
+    /// <summary>The URL gate, reading this fixture's resolver.</summary>
+    public PreviewUrlPolicy Urls(DeploymentOptions? options = null)
+        => new(options ?? DeploymentOptions.WebhookOnly, Resolver, NullLogger<PreviewUrlPolicy>.Instance);
+
     /// <summary>What section 18's generic webhook writes.</summary>
-    public DeploymentBinder Binder() => new(Db, Clock, NullLogger<DeploymentBinder>.Instance);
+    public DeploymentBinder Binder(DeploymentOptions? options = null)
+        => new(Db, Clock, NullLogger<DeploymentBinder>.Instance, Urls(options));
 
     /// <summary>Everything the requester was told, so section 6's two states can be counted.</summary>
     public RecordingNotificationService Notifications { get; } = new();
@@ -285,10 +342,12 @@ internal sealed class DeploymentFixture : IAsyncDisposable
             new PreviewReachabilityProbe(
                 new StubHttpClientFactory(handler ?? new StubHttpMessageHandler()),
                 options,
-                NullLogger<PreviewReachabilityProbe>.Instance),
+                NullLogger<PreviewReachabilityProbe>.Instance,
+                Urls(options)),
             Clock,
             NullLogger<PreviewArtifactPublisher>.Instance,
-            Announcer(options));
+            Announcer(options),
+            Urls(options));
 
     /// <summary>Both ingestion paths, wired to <paramref name="providers"/>.</summary>
     public DeploymentIngestor Ingestor(
@@ -297,7 +356,7 @@ internal sealed class DeploymentFixture : IAsyncDisposable
         StubHttpMessageHandler? handler = null)
         => new(
             Db,
-            Binder(),
+            Binder(options),
             Publisher(options, handler),
             providers ?? new DeploymentProviderRegistry([]),
             NullLogger<DeploymentIngestor>.Instance);

@@ -28,7 +28,9 @@ public static class ChangeRequestEventTypes
     /// </summary>
     /// <remarks>
     /// Optional. Where a runner does not report it, the publisher falls back to the conventional
-    /// session branch, so a backend that only knows how to <c>git push</c> still works.
+    /// session branch, so a backend that only knows how to <c>git push</c> still works. Where it does
+    /// report one, the name is checked against the session's own branch and refused when it differs —
+    /// see <see cref="SessionBranchReference"/> and section 16.3.
     /// </remarks>
     public const string BranchPushed = "branch_pushed";
 
@@ -62,6 +64,11 @@ public enum ChangeRequestPublication
 
     /// <summary>Nothing to do: no such session, or it is terminal.</summary>
     Skipped,
+
+    /// <summary>
+    /// The runner named a branch that is not this session's (section 16.3). Nothing was published.
+    /// </summary>
+    Refused,
 
     /// <summary>The provider refused or was unreachable. The sweep tries again.</summary>
     Failed,
@@ -126,8 +133,10 @@ public sealed class ChangeRequestPublisher
     /// <remarks>
     /// A convention rather than a stored column, so a runner that has never spoken to the control
     /// plane can compute it, and so a session that is re-run lands on the same branch (section 7.5's
-    /// <em>revise and rebuild</em>). A runner that pushes somewhere else says so with a
-    /// <see cref="ChangeRequestEventTypes.BranchPushed"/> event and is believed.
+    /// <em>revise and rebuild</em>). It is also the <em>only</em> branch this session may publish: a
+    /// <see cref="ChangeRequestEventTypes.BranchPushed"/> naming anything else is refused rather than
+    /// believed, because the ref Charter moves may never be named by the execution plane (section
+    /// 16.3). <see cref="SessionBranchReference"/> holds that line and says why at length.
     /// </remarks>
     public static string BranchFor(Guid sessionId) => $"charter/session-{sessionId:N}";
 
@@ -213,12 +222,15 @@ public sealed class ChangeRequestPublisher
         {
             var pushed = await PublishBranchAsync(provider, reference, session, cancellationToken);
 
-            if (pushed is null)
+            if (pushed.Refusal is { Length: > 0 } refusal)
+            {
+                return await RecordRefusedAsync(session, refusal, cancellationToken);
+            }
+
+            if (pushed.Branch is not { Length: > 0 } branch || pushed.Revision is not { Length: > 0 } revision)
             {
                 return await RecordNoChangesAsync(session, provider, cancellationToken);
             }
-
-            var (branch, revision) = pushed.Value;
 
             var comparison = await provider.CompareAsync(
                 reference,
@@ -351,22 +363,63 @@ public sealed class ChangeRequestPublisher
         return results;
     }
 
+    /// <summary>What the ref half of publishing came to.</summary>
+    /// <param name="Branch">The branch that now carries the work, when there is one.</param>
+    /// <param name="Revision">Its head revision.</param>
+    /// <param name="Refusal">
+    /// Set when the runner named a branch that is not this session's. Nothing was published and
+    /// nothing may be.
+    /// </param>
+    private readonly record struct BranchPublication(string? Branch, string? Revision, string? Refusal)
+    {
+        /// <summary>The agent changed nothing: no branch, no refusal, nothing to review.</summary>
+        public static BranchPublication Nothing => default;
+
+        /// <summary>Section 16.3: the reported branch is not the session's, so no ref is touched.</summary>
+        public static BranchPublication Refuse(string refusal) => new(null, null, refusal);
+    }
+
     /// <summary>
-    /// Publishes the session branch, and answers null when there is nothing to publish.
+    /// Publishes the session branch, and answers what there was to publish.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The bytes are pushed by whoever holds the working copy — the runner, with its own short-TTL
     /// credential (section 7.4). What happens here is the ref half: a branch the runner already
     /// pushed is left alone, and a revision the runner reported without publishing is published.
+    /// </para>
+    /// <para>
+    /// The ref moved is always this session's own, computed from its id. A <c>branch_pushed</c>
+    /// naming any other branch is refused whole — see <see cref="SessionBranchReference"/>.
+    /// </para>
     /// </remarks>
-    private async Task<(string Branch, string Revision)?> PublishBranchAsync(
+    private async Task<BranchPublication> PublishBranchAsync(
         IVersionControlProvider provider,
         RepoRef repo,
         Session session,
         CancellationToken cancellationToken)
     {
         var reported = await ReadBranchPushAsync(session.Id, cancellationToken);
-        var branch = reported?.Branch ?? BranchFor(session.Id);
+        var check = SessionBranchReference.Evaluate(reported?.Branch, session.Id);
+
+        if (check.IsRejected)
+        {
+            // Warning, not information: an operator has to see this one. The reported name is a
+            // structured property rather than part of the template, so it cannot forge a log line,
+            // and it is never a token (section 19).
+            _logger.LogWarning(
+                "Refused to publish session {SessionId}: the runner reported branch {ReportedBranch}, which is "
+                + "not this session's branch {SessionBranch}",
+                session.Id,
+                SessionBranchReference.Describe(reported?.Branch),
+                BranchFor(session.Id));
+
+            return BranchPublication.Refuse(check.Refusal!);
+        }
+
+        // Never `reported.Branch`, even now that it has been checked: the value Charter acts on is
+        // read from the session's own row, and the callback only ever agrees or is refused.
+        var branch = BranchFor(session.Id);
         var reportedRevision = reported?.Revision;
         var head = await provider.GetBranchHeadAsync(repo, branch, cancellationToken);
 
@@ -377,18 +430,18 @@ public sealed class ChangeRequestPublisher
             // change request.
             if (reportedRevision is not { Length: > 0 } revision)
             {
-                return null;
+                return BranchPublication.Nothing;
             }
 
             await provider.CreateBranchAsync(repo, branch, revision, cancellationToken);
-            return (branch, revision);
+            return new BranchPublication(branch, revision, null);
         }
 
         if (reportedRevision is { Length: > 0 } target
             && !string.Equals(target, head, StringComparison.OrdinalIgnoreCase))
         {
             var push = await provider.PushAsync(repo, branch, target, cancellationToken: cancellationToken);
-            return (branch, push.Revision);
+            return new BranchPublication(branch, push.Revision, null);
         }
 
         // A branch that never moved off the base commit is an agent that changed nothing, whatever
@@ -396,10 +449,10 @@ public sealed class ChangeRequestPublisher
         if (session.BaseCommitSha is { Length: > 0 } baseSha
             && string.Equals(baseSha, head, StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            return BranchPublication.Nothing;
         }
 
-        return (branch, head);
+        return new BranchPublication(branch, head, null);
     }
 
     private async Task<ChangeRequestPublicationResult> RecordNoChangesAsync(
@@ -436,6 +489,40 @@ public sealed class ChangeRequestPublisher
             provider.Terms.ChangeRequest);
 
         return new ChangeRequestPublicationResult(ChangeRequestPublication.NoChanges, explanation);
+    }
+
+    /// <summary>
+    /// Ends a session whose runner named a branch that was not its own (section 16.3).
+    /// </summary>
+    /// <remarks>
+    /// Terminal on purpose. Leaving it Running would have the reconciliation sweep re-refuse it every
+    /// pass, which is a log full of the same line and a requester's thread that never resolves; and
+    /// there is nothing a later attempt could learn that would change the answer. The reason is
+    /// written to the transcript as an error so it is in front of whoever opens the session, not only
+    /// in the operator's logs.
+    /// </remarks>
+    private async Task<ChangeRequestPublicationResult> RecordRefusedAsync(
+        Session session,
+        string refusal,
+        CancellationToken cancellationToken)
+    {
+        await AppendAsync(
+            session.Id,
+            EventTypes.Error,
+            $$"""{"reason":"branch_refused","message":{{JsonSerializer.Serialize(refusal)}}}""",
+            cancellationToken);
+
+        var now = _clock.GetUtcNow();
+        session.TransitionTo(SessionStatus.Failed, now);
+
+        if (await LoadRequestAsync(session, cancellationToken) is { } request)
+        {
+            request.TransitionTo(RequestStatus.Failed, now);
+        }
+
+        await _database.SaveChangesAsync(cancellationToken);
+
+        return new ChangeRequestPublicationResult(ChangeRequestPublication.Refused, refusal);
     }
 
     /// <summary>Section 7.5 and section 15, in the order an engineer reads them.</summary>
@@ -606,7 +693,20 @@ public sealed class ChangeRequestPublisher
                 continue;
             }
 
-            reports.Add(new CheckReport(name, passed, Read(payload, "summary") ?? string.Empty));
+            // Both fields come from the execution plane, so both are flattened and bounded here rather
+            // than at the point they are written into markdown — a check whose name is four kilobytes
+            // is the same document-flooding problem as one whose summary is (section 16.3).
+            var flattened = ChangeRequestText.Flatten(name, ChangeRequestText.MaxCheckName);
+
+            if (flattened.Length == 0)
+            {
+                continue;
+            }
+
+            reports.Add(new CheckReport(
+                flattened,
+                passed,
+                ChangeRequestText.Flatten(Read(payload, "summary"), ChangeRequestText.MaxCheckSummary)));
         }
 
         return reports;
@@ -615,6 +715,11 @@ public sealed class ChangeRequestPublisher
     /// <summary>
     /// The change request body. It states facts and never editorialises on quality (section 14).
     /// </summary>
+    /// <remarks>
+    /// Everything a check contributed is rendered through <see cref="ChangeRequestText"/>. The body is a
+    /// document Charter authored and an engineer reads as Charter's own account of the session, so text the
+    /// execution plane supplied appears in it as quoted output and never as live markdown (section 16.3).
+    /// </remarks>
     private static string Body(
         Spec spec,
         Session session,
@@ -640,15 +745,29 @@ public sealed class ChangeRequestPublisher
             body.AppendLine();
         }
 
-        if (checks.Any(check => !check.Passed))
+        var failed = checks.Where(check => !check.Passed).ToList();
+
+        if (failed.Count > 0)
         {
             // Reported at the top, in words, because this is the one fact about the change that
             // decides whether the diff is worth reading yet.
             body.AppendLine("> **A check this repository declares did not pass.**");
 
-            foreach (var check in checks.Where(check => !check.Passed))
+            foreach (var check in failed.Take(ChangeRequestText.MaxChecks))
             {
-                body.Append("> - ").AppendLine(check.Summary);
+                body.Append("> - ").Append(Quote(check.Name));
+
+                if (check.Summary.Length > 0)
+                {
+                    body.Append(" — ").Append(Quote(check.Summary));
+                }
+
+                body.AppendLine();
+            }
+
+            if (failed.Count > ChangeRequestText.MaxChecks)
+            {
+                body.Append("> - ").AppendLine(Overflow(failed.Count - ChangeRequestText.MaxChecks));
             }
 
             body.AppendLine(">");
@@ -677,21 +796,22 @@ public sealed class ChangeRequestPublisher
         }
         else
         {
-            foreach (var check in checks)
+            // The roll call: every check and its verdict. What a failing one said is in the block above
+            // rather than repeated here — twice is not clearer, and it doubles what a session can spend
+            // of the body's budget.
+            foreach (var check in checks.Take(ChangeRequestText.MaxChecks))
             {
                 body
                     .Append("- ")
                     .Append(check.Passed ? "**passed**" : "**failed**")
-                    .Append(" — `")
-                    .Append(check.Name)
-                    .Append('`');
+                    .Append(" — ")
+                    .Append(Quote(check.Name))
+                    .AppendLine();
+            }
 
-                if (!check.Passed && check.Summary.Length > 0)
-                {
-                    body.Append(": ").Append(check.Summary);
-                }
-
-                body.AppendLine();
+            if (checks.Count > ChangeRequestText.MaxChecks)
+            {
+                body.Append("- ").AppendLine(Overflow(checks.Count - ChangeRequestText.MaxChecks));
             }
         }
 
@@ -706,6 +826,19 @@ public sealed class ChangeRequestPublisher
 
         return body.ToString();
     }
+
+    /// <summary>
+    /// Plane-supplied text, quoted so it renders as what it is rather than as markdown.
+    /// </summary>
+    /// <remarks>
+    /// Already flattened and bounded by <see cref="ReadChecksAsync"/>; this is the wrapping, kept at the
+    /// point of use so no future line in <see cref="Body"/> can append a check's words unquoted by accident.
+    /// </remarks>
+    private static string Quote(string text) => ChangeRequestText.CodeSpan(text, ChangeRequestText.MaxCheckSummary);
+
+    /// <summary>The checks past the ceiling, counted rather than dropped in silence.</summary>
+    private static string Overflow(int remaining)
+        => $"*…and {remaining} more, not listed here. Read the session transcript in Charter for all of them.*";
 
     private static string? Read(string payload, string property)
     {

@@ -204,6 +204,8 @@ The shim is a separate project precisely because all three backends need it: Git
 | `CHARTER_RAILWAY_BASE_ENVIRONMENT` | when railway | — | **Required, never defaulted.** §18: base previews off staging, not production, so preview secrets are never real ones. Charter warns loudly when this value looks like production. |
 | `CHARTER_RAILWAY_API_URL` | no | `https://backboard.railway.com/graphql/v2` | |
 | `CHARTER_PREVIEW_TTL_HOURS` | no | `72` | How long a preview lives where the platform does not expire it itself. `0` means never. |
+| `CHARTER_DEPLOYMENT_WEBHOOK_SECRET` | to use the §18 webhook | — | What a caller must present to `POST /api/deployments/{prSha}`, as `Authorization: Bearer`, `X-Charter-Deployment-Secret`, or `?token=`. Minimum 24 characters. **Unset means the endpoint admits nobody** — the head commit SHA is a binding key, not a credential (§16.3). |
+| `CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS` | no | `false` | Whether a preview URL may resolve to a private address (RFC 1918, CGNAT, IPv6 ULA). Loopback and link-local are refused either way. Set it only where previews genuinely live on the instance's own network. |
 | `CHARTER_DEMO` | no | `false` | §30.6 — seeds a fake org, disables outbound calls |
 
 **The two model defaults are not inconsistent.** Phase 1 ships one `IModelClient` implementation —
@@ -931,7 +933,7 @@ Repo-content injection is the harder half. The answer is unchanged: **the agent 
 
 ### 16.3 The execution plane never names what the control plane acts on
 
-A rule about §2.1's split, and the third defect of this shape found in one day, so it is written as a rule rather than as three fixes.
+A rule about §2.1's split, and the third defect of this shape found in one day, so it is written as a rule rather than as three fixes. A later sweep found three more — a branch, a file path, and the text of a pull request body — which is the evidence that the rule was worth writing down and that it has to be applied everywhere rather than at the sites that were noticed first.
 
 The runner's callback token proves **which session is speaking**. It proves nothing about what that session says. The shim holds it in the same process as an agent reading untrusted repository content, so every field of every callback body is attacker-influenced input.
 
@@ -942,7 +944,17 @@ Where a value must round-trip through the plane — `run_url` is the case, becau
 - **Validate at every recording point, or the protection is imaginary.** `run_url` reached the journal from two callbacks, and fixing one would have implied a boundary that did not exist.
 - **Validate again at the point of use.** A fix at the recording point cannot reach rows already in the database, and an upgrade does not rewrite them.
 
+**Where there is no record to compare against, the check is a policy rather than a match, and it is still one gate.** A preview URL (§18.1) has no counterpart on the session — the hosting platform is telling Charter something genuinely new — so "validate against the session's own record" has nothing to compare. That does not make it a value to be trusted; it makes the rule "decide what is admissible, once, before it is stored". It is the same shape as the two above: refuse rather than sanitise, validate at every recording point (both ingestion paths go through one binder for exactly this reason), and validate again at the point of use.
+
+**A value the execution plane supplies is never displayed under Charter's own assurance.** §27.7's preview card prints *"Nothing you do here touches the real one"* above a link. That sentence is Charter vouching, and it may only appear above a value Charter checked. Where the check fails, the requester gets an honest sentence and no button — not the link with the assurance removed, and never the assurance with an unchecked link.
+
 §11's cancel is where the second harm of getting this wrong shows up, and it is the worse one: a cancel that acts on the wrong handle reports success while the session it was meant to stop keeps running and keeps spending. A backend confirms a cancellation only when it confirmed the run is dead — never when it could not identify the run, could not reach it, or was handed a handle it will not act on.
+
+Three more sites, and what each adds to the rule:
+
+- **The branch a session publishes is `charter/session-{id}`, computed from the session's id, and nothing else is ever published.** `branch_pushed` carries a branch; believing it made `PATCH /repos/{owner}/{name}/git/refs/heads/{whatever it said}` a call any session could aim, and fast-forward-only does not save it — an agent's commit is a descendant of the base branch in the ordinary case, so a session could advance `main` and the merge gate of §7.4 would never be consulted. This is the case where the reported value is not merely *checked* against the session's own record, it is **replaced by** it: strict equality decides accept or refuse, and the value acted on is always the one Charter computed. A refusal ends the session rather than falling back to the right branch, because publishing a revision that was never pushed to the branch it is published on is a different, quieter wrong answer.
+- **A path is a value that addresses something, even when it looks like content.** `file_write.path` reaches the provider's contents API. `Uri.EscapeDataString` leaves `..` intact — `.` is unreserved — and `new Uri(base, path)` applies RFC 3986's *remove_dot_segments*, so enough `..` under `repos/{owner}/{name}/contents/` addresses a different repository with this session's token. An allowlist built from the plane's own paths is not a defence: a poisoned transcript matches itself, so **both sides of a comparison have to be validated, not one**. Refuse a path that is not repository-relative; do not strip the climb and read what is left, which answers an attack with a file. And validate at the point of use too — the client that builds URLs refuses a dot segment in any path, ref or revision, whatever a caller passed.
+- **Text is displayable, but only as text.** The change request body is a document Charter authors and an engineer reads as Charter's account of the session, so `check_result` names and summaries in it are rendered as inline code spans: one line, length-bounded, and a ceiling on how many are listed. Inert by construction beats an escape table that has to be re-audited when a renderer grows a new syntax. The ceiling is part of the rule rather than tidiness — an unbounded body fails the provider's create call, which would let a session stop its own work being reviewed by talking too much.
 
 ---
 
@@ -964,6 +976,22 @@ Provider-agnostic by design. Two ingestion paths:
 2. **PR comment parsing** — fragile but universal fallback. Railway's GitHub bot comments when the PR environment is ready.
 
 Railway-specific note: PR Environments replicate every service, database, and variable from the base environment into an isolated ephemeral environment with fresh URLs. **Base them off a staging environment, not production**, so preview secrets are never real ones. Railway also won't deploy a PR branch from a user outside the workspace unless they've been invited with that GitHub account.
+
+### 18.1 The webhook is authenticated, and the URL it carries is validated
+
+Both halves of this section were originally left open, and the reasoning for each was the same mistake §16.3 names.
+
+**The head commit SHA is not a credential.** It is authored by the execution plane, so a session knows it before the control plane does, and it is then legitimately known to everyone who can see the change request — forks, CI logs, notification emails, the change request page. "An unguessable 40-character key that already exists" describes a value that is not secret and was never issued to anybody. Admission is `CHARTER_DEPLOYMENT_WEBHOOK_SECRET`, presented as `Authorization: Bearer`, as an `X-Charter-Deployment-Secret` header, or as `?token=` for a platform whose post-deploy hook is a URL field and nothing else. The SHA still decides *which* change request a report binds to. An instance with no secret set refuses every report, loudly at startup and in the response body: fail closed.
+
+**A preview URL is a value the execution plane supplies, and Charter acts on it twice.** It fetches it on a loop for the reachability dot, from inside the control plane's network, which makes an unchecked URL a recurring server-side request forgery against anything the container can reach — including the instance metadata endpoint at `169.254.169.254`. And it renders it as the requester's button under Charter's own words, *"Nothing you do here touches the real one"*, which is a promise made on Charter's authority to the person least able to evaluate a link.
+
+So the URL is validated **once, before it is stored**, at the binder both ingestion paths go through — not at each use, where a consumer added later is the one that forgets. Refused: anything that is not `http(s)`, credentials in the userinfo, and any host that resolves to loopback, link-local, private, CGNAT or unique-local space. Resolution decides, because a name can point anywhere. A refused report is recorded as a failed deployment with no URL, so the requester's card reaches §11's designed failure rather than spinning on a preview that is not coming. `CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS` re-admits the private ranges for a self-hoster whose previews genuinely live on their own network, and re-admits nothing else.
+
+Three further consequences, each of them §16.3's:
+
+- **Validate again at the point of use.** The publisher re-checks before it writes a URL onto an artifact and the API re-checks the structural rule before it projects one, because a fix at the recording point cannot reach rows already in the database and an upgrade does not rewrite them.
+- **The fetch defends itself.** DNS can answer differently between validation and use, so the probe's client resolves and checks the address at the socket, connects only to one that survives, follows no redirects — a redirect is a second URL nothing checked — bounds the response, and sends no credentials, cookies or proxy.
+- **A URL that fails is never shown as safe.** The card renders an honest sentence and no button, and Charter's reassurance is not printed above a link it did not check.
 
 ---
 

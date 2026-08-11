@@ -358,15 +358,17 @@ self-hoster first-class rather than a port of the Railway path.
 ```bash
 curl -s -X POST https://charter.example.com/api/deployments/9f2c41b7d8e05a3c6b12f4a7e8d0c5b3a16d47e2 \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $CHARTER_DEPLOYMENT_WEBHOOK_SECRET" \
   -d '{"url":"https://myapp-pr-142.onrender.com","state":"ready","provider":"render"}'
 ```
 
 `prSha` is the **head commit SHA** of the pull request, not a Charter identifier — it is the one value
-every hosting provider already knows about a preview build without being told.
+every hosting provider already knows about a preview build without being told. It decides which pull
+request a report binds to. It is **not** what admits the caller; see below.
 
 | Field | Notes |
 |---|---|
-| `url` | Required when `state` is `ready`. A ready deployment with no URL is refused. |
+| `url` | Required when `state` is `ready`. A ready deployment with no URL is refused, and so is one Charter will not vouch for — see [security.md](security.md#preview-urls-are-validated-before-charter-stores-fetches-or-shows-one). |
 | `state` | One of `pending`, `building`, `ready`, `failed`, `cancelled`, `expired`. |
 | `provider` | Free text: `railway`, `render`, `fly`, `coolify`. Defaults to `unknown`. |
 
@@ -378,14 +380,21 @@ to `building`; `success`, `succeeded`, `active` and `deployed` to `ready`; `fail
 | Response | Means |
 |---|---|
 | `202` | Recorded, and the verification artifact was published in the same call. |
+| `401` | The instance's deployment secret was absent, wrong, or not configured at all. |
 | `404` | No pull request in this instance carries that head commit. |
-| `400` | The body named no state Charter understands, or a ready state with no URL. |
+| `400` | The body named no state Charter understands, a ready state with no URL, or a URL Charter will not accept. |
 
-**The commit SHA is the authorisation.** There is no second shared secret for this endpoint. A report
-for a SHA no pull request carries is refused, so the endpoint cannot be used to enumerate anything or
-to attach a URL to work it does not name. An operator who wants more than that can put it behind their
-own gateway — a secret pasted into four hosting providers is not obviously better than an unguessable
-40-character key that already exists.
+**This endpoint takes a secret, and refuses everything without one.**
+`CHARTER_DEPLOYMENT_WEBHOOK_SECRET` is checked before the body is read. Present it as
+`Authorization: Bearer <secret>`, as `X-Charter-Deployment-Secret: <secret>`, or — for a platform
+whose post-deploy hook is a URL field and nothing else — as `?token=<secret>`. The first carrier
+present is the one checked, so send exactly one. A missing secret and a wrong one produce the same
+`401`, so the response cannot be used to tell them apart.
+
+The commit SHA is not the credential and never was. It is authored inside the session that produced
+the branch, and afterwards it is on the pull request page, in every fork, in CI logs and in
+notification emails — a value strangers legitimately know cannot decide which strangers may write.
+Setting up the secret is in [configuration.md](configuration.md#the-deployment-webhook-needs-a-secret).
 
 ## Realtime
 

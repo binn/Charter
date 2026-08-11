@@ -39,6 +39,46 @@ public class ArtifactPreviewTests
     }
 
     [Theory]
+    [InlineData("http://127.0.0.1:8080/")]
+    [InlineData("http://169.254.169.254/latest/meta-data/")]
+    [InlineData("https://admin:hunter2@preview.example.com/")]
+    [InlineData("javascript:alert(1)")]
+    public void AUrlTheProjectionCannotVouchForIsWithheldRatherThanRendered(string url)
+    {
+        // Section 16.3: validate again at the point of use. The binder refuses these before one is
+        // stored, and the publisher refuses one before it writes an artifact — but neither reaches a
+        // row written before those checks existed, and an upgrade does not rewrite rows. This is the
+        // last place the value can be stopped before it is a button under "Nothing you do here
+        // touches the real one".
+        var artifact = VerificationArtifact.Pending(
+            Guid.CreateVersion7(),
+            VerificationArtifactKind.HostedPreview,
+            VerificationArtifactAudience.Requester,
+            Now);
+
+        artifact.MarkReady(url: url, expiresAt: Now.AddHours(8), payload: PreviewArtifactPublisher.Payload(url, PreviewReachability.Reachable));
+
+        var payload = Assert.IsType<HostedPreviewPayload>(ArtifactPayloads.For(artifact));
+
+        // Empty, not sanitised: the card renders "there is no link to open here" honestly, and a
+        // rewritten URL would be Charter inventing a destination.
+        Assert.Equal(string.Empty, payload.Url);
+        Assert.Equal(string.Empty, payload.DisplayUrl);
+    }
+
+    [Fact]
+    public void APrivatePreviewIsStillRenderedBecauseTheRequestersBrowserIsOnThatNetworkToo()
+    {
+        // The display rule withholds what is never legitimate, not what this instance happens to be
+        // configured for. A self-hoster whose previews live at 10.x has a working link.
+        var artifact = ReadyPreview("http://10.0.4.12:3000/quotes/new", PreviewReachability.Reachable);
+
+        var payload = Assert.IsType<HostedPreviewPayload>(ArtifactPayloads.For(artifact));
+
+        Assert.Equal("http://10.0.4.12:3000/quotes/new", payload.Url);
+    }
+
+    [Theory]
     [InlineData(PreviewReachability.Reachable, ApiReachability.Reachable)]
     [InlineData(PreviewReachability.Unreachable, ApiReachability.Unreachable)]
     [InlineData(PreviewReachability.Unknown, ApiReachability.Unknown)]

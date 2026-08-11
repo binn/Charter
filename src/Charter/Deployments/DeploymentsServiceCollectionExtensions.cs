@@ -55,7 +55,19 @@ public static class DeploymentsServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(options);
 
-        services.AddHttpClient(PreviewReachabilityProbe.HttpClientName);
+        services.TryAddSingleton<IPreviewHostResolver, DnsPreviewHostResolver>();
+        services.TryAddSingleton<PreviewUrlPolicy>();
+
+        // The probe's client, and the only outbound request Charter makes to an address somebody else
+        // chose. The handler resolves and checks every address before it opens a socket to it, and
+        // does not follow redirects — a redirect is a second URL nothing has checked.
+        services
+            .AddHttpClient(
+                PreviewReachabilityProbe.HttpClientName,
+                client => PreviewHttpClient.Configure(client, options.ProbeTimeout))
+            .ConfigurePrimaryHttpMessageHandler(provider =>
+                PreviewHttpClient.CreateHandler(provider.GetRequiredService<PreviewUrlPolicy>()));
+
         services.TryAddSingleton<PreviewReachabilityProbe>();
         services.TryAddSingleton<DeploymentProviderRegistry>();
 
@@ -125,6 +137,19 @@ public sealed class DeploymentStartupWarnings : IHostedService
                 "No deployment provider is configured. Previews bind through POST /api/deployments/{{prSha}} " +
                 "(section 18); Charter will not poll a platform, read its comments, or tear its " +
                 "environments down.");
+        }
+
+        // Not a configuration error — an instance that binds previews from Railway's comments never
+        // needs this — but an instance whose platform posts to the webhook gets nothing at all without
+        // it, and silence would send the operator looking at their platform instead.
+        if (_options.WebhookSecret is null)
+        {
+            _logger.LogWarning(
+                "CHARTER_DEPLOYMENT_WEBHOOK_SECRET is not set, so POST /api/deployments/{{prSha}} refuses " +
+                "every report. Set it, and send it as an Authorization: Bearer header, an {Header} " +
+                "header, or a ?{Query}= parameter from your platform's post-deploy hook.",
+                DeploymentWebhookAuthentication.HeaderName,
+                DeploymentWebhookAuthentication.QueryName);
         }
 
         return Task.CompletedTask;

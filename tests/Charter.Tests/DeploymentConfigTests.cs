@@ -100,9 +100,10 @@ public class DeploymentConfigTests
         var warnings = new DeploymentStartupWarnings(options, logger);
         await warnings.StartAsync(TestContext.Current.CancellationToken);
 
-        var logged = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
-
-        Assert.Contains("CHARTER_RAILWAY_BASE_ENVIRONMENT", logged.Message, StringComparison.Ordinal);
+        Assert.Single(
+            logger.Entries,
+            entry => entry.Level == LogLevel.Warning
+                     && entry.Message.Contains("CHARTER_RAILWAY_BASE_ENVIRONMENT", StringComparison.Ordinal));
     }
 
     [Fact]

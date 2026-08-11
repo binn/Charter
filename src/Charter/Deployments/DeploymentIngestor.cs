@@ -75,9 +75,17 @@ public sealed class DeploymentIngestor
     /// Records a generic webhook report and publishes the resulting artifact.
     /// </summary>
     /// <remarks>
-    /// The head commit SHA is the authorisation, exactly as it is for the binder: a report naming a
-    /// commit no change request in this instance carries is refused with
-    /// <see cref="DeploymentBindingOutcome.UnknownCommit"/>, which the endpoint turns into a 404.
+    /// <para>
+    /// The head commit SHA says which change request this is about, exactly as it does for the binder:
+    /// a report naming a commit no change request in this instance carries is refused with
+    /// <see cref="DeploymentBindingOutcome.UnknownCommit"/>, which the endpoint turns into a 404. It is
+    /// not what admits the caller — see <see cref="DeploymentWebhookAuthentication"/>.
+    /// </para>
+    /// <para>
+    /// A refused URL publishes too. The binder wrote a failed deployment for it, and leaving that
+    /// unpublished would hold the requester's card on section 27.7's skeleton until the next reconcile
+    /// sweep, waiting on a preview that has already been decided against.
+    /// </para>
     /// </remarks>
     public async Task<DeploymentBindingResult> ReportAsync(
         string headSha,
@@ -88,7 +96,7 @@ public sealed class DeploymentIngestor
 
         var result = await _binder.ReportAsync(headSha, report, cancellationToken);
 
-        if (result.Outcome == DeploymentBindingOutcome.Recorded)
+        if (result.Outcome is DeploymentBindingOutcome.Recorded or DeploymentBindingOutcome.UnsafeUrl)
         {
             await PublishAsync(headSha, cancellationToken);
         }

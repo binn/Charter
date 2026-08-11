@@ -234,6 +234,53 @@ If you do not want object storage, leave `CHARTER_STORAGE_BACKEND` unset and uns
 block. That is the supported configuration, and the only correct one on a platform whose filesystem
 does not survive a deploy. See [configuration.md](configuration.md).
 
+### The deployment webhook needs `CHARTER_DEPLOYMENT_WEBHOOK_SECRET`
+
+**If your hosting platform posts previews to `POST /api/deployments/{prSha}`, that endpoint stops
+working on this upgrade until you set a secret and add it to the hook.** This is a breaking change,
+and it is deliberate.
+
+Previously the endpoint's only admission rule was the head commit SHA in its path. That SHA is
+authored inside the session and is public from the moment the pull request exists — it is on the pull
+request page, in every fork, in CI logs and in notification emails. Anybody who had it could attach a
+URL of their choosing to a real request, and Charter would then fetch that URL from inside its own
+container on a loop and show it to a requester as a link its own copy calls safe.
+
+Two steps:
+
+```bash
+openssl rand -hex 32
+```
+
+```bash
+CHARTER_DEPLOYMENT_WEBHOOK_SECRET=1f0c…   # at least 24 characters; a shorter one stops the boot
+```
+
+Then add it to your platform's post-deploy hook, as a header where you can:
+
+```bash
+curl -s -X POST https://charter.example.com/api/deployments/$COMMIT_SHA \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $CHARTER_DEPLOYMENT_WEBHOOK_SECRET" \
+  -d '{"url":"'"$PREVIEW_URL"'","state":"ready","provider":"render"}'
+```
+
+If your platform's hook is a URL field and nothing else, use `?token=…` instead and read the note
+about it in [configuration.md](configuration.md#the-deployment-webhook-needs-a-secret).
+
+Until then, reports are refused with `401` and a body naming the variable, and the instance says so at
+startup. Nothing is lost — a preview that was refused can simply be reported again once the hook
+carries the secret.
+
+**Nothing to do if previews arrive through Railway's pull request comments.** That path does not use
+the endpoint.
+
+**Second change on the same upgrade: preview URLs are now validated.** A URL that resolves to
+loopback, link-local, or a private address is refused, and the requester's card shows the designed
+failure rather than a link. If your previews genuinely live on a private network — a homelab, a
+VPC with no public ingress — set `CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS=true` and read
+[security.md](security.md#if-your-previews-live-on-a-private-network) for what that trades away.
+
 ### If a migration fails
 
 Charter fails to start rather than serving traffic against a half-migrated database. The startup logs

@@ -120,6 +120,34 @@ supposed to stop kept running and kept spending. The same rule covers the other 
 Charter will not kill a container, or cancel an agent job, that does not belong to the session being
 cancelled.
 
+**Nor which branch it pushed to.** A runner reports the branch its work landed on, and Charter then
+moves that ref on the provider. That report is written in the same sandbox as everything else, so
+Charter publishes **only** the session's own branch — `charter/session-<id>`, computed from the session
+id and nothing a callback contains — and refuses the publication outright when a `branch_pushed` names
+anything else. The push is fast-forward-only, which is no protection here at all: an agent's commit is
+a descendant of your base branch in exactly the ordinary case, so a believed report could advance
+`main` without a review, a merge, or a pull request. A refused session ends as failed with the reason
+on its transcript and a warning in the operator's log; whatever the runner really pushed is still on
+the provider for an engineer to look at, and nothing is quietly rewritten to look correct.
+
+**A file path in a transcript is not a path in your repository.** The code pane reads one file at a
+time from the provider, and both the path in the request and the list of paths it is checked against
+come from the session's own `file_write` events. A path that climbs out of the repository — a `..`
+segment, a leading `/`, a backslash, a percent sequence — is refused rather than cleaned up, at the
+pane and again in the GitHub client, where every path, ref and revision that goes into a URL is
+checked. Without that, a path an agent chose could address a different repository on the API host with
+this session's installation token attached. The reader sees the same *no such file* the pane already
+gives for a file outside the change.
+
+**What a check said is quoted, never rendered.** Charter writes the pull request body, and an engineer
+reads it as Charter's account of the session. The check names and summaries in it come from the
+session, so they appear as inline code — one line each, length-bounded, at most twenty checks listed
+with the rest counted — and never as live markdown. A summary cannot become a link somebody clicks, a
+mention that pages a real person, a heading that hides the failing-check block, or a blockquote that
+fakes the *no human approved this specification* disclosure. It also cannot grow the body past the
+provider's size limit, which would otherwise let a session stop its own work being reviewed by
+talking too much.
+
 **Transcript and code panes are gated on repository read access, not on user preference.** A requester
 toggling to the detailed view would otherwise be a permission bypass: transcripts leak file paths,
 environment variable names, dependency versions, and error output. The API omits engineer-only fields
@@ -405,6 +433,80 @@ exists; there is no reason to grant the App the scope in the meantime.
 **Transcripts contain your source code.** Setting `CHARTER_LOG_INCLUDE_TRANSCRIPTS=true` exports
 transcript bodies to every enabled log sink. If any of those is a third-party SaaS, that is your code
 leaving your infrastructure. It is off by default. See [privacy.md](privacy.md).
+
+## The deployment webhook takes a secret
+
+`POST /api/deployments/{prSha}` is how a hosting platform tells Charter a preview is ready. It is
+reachable by anyone who can reach your instance, and it is **refused entirely** until you set
+`CHARTER_DEPLOYMENT_WEBHOOK_SECRET`.
+
+The head commit SHA in the path is not a credential and was never issued to anybody. It is authored
+inside the session that produced the branch, and from the moment the pull request exists it is on the
+pull request page, in every fork of the repository, in CI logs, and in notification emails. Anybody
+holding it could previously attach a URL of their choosing to a real request — a URL Charter then
+fetched from inside its own network, and showed the requester as a link Charter's own copy calls safe.
+
+The SHA still decides *which* pull request a report binds to, which is what keeps the endpoint from
+being an enumeration tool. Admission is the secret. Missing and wrong produce the same `401`.
+Configuration, and the three ways to present it, are in
+[configuration.md](configuration.md#the-deployment-webhook-needs-a-secret).
+
+## Preview URLs are validated before Charter stores, fetches, or shows one
+
+A preview URL comes from outside the trust boundary — a platform's webhook, or a bot comment on a
+pull request that anybody with repository access can write. Charter does two things with it that make
+an unchecked value dangerous:
+
+- **It fetches the URL** on a loop, from inside the control-plane container, for the "responding" dot
+  on the preview card. An unchecked URL makes that a repeating request against anything your container
+  can reach: your database's admin port, an internal service, or your cloud provider's instance
+  metadata endpoint at `169.254.169.254`.
+- **It shows the URL to a requester** as a button, underneath Charter's own sentence — *"Nothing you
+  do here touches the real one."* That reassurance is the product's promise to the person least
+  equipped to evaluate a link themselves.
+
+So every URL is checked once, before it is stored, on the path both ingestion routes share. Refused:
+
+| Refused | Why |
+|---|---|
+| Anything that is not `http` or `https` | `file:`, `gopher:` and friends are not previews |
+| Credentials in the URL (`https://user:pass@host/`) | A link that reads as one host and authenticates to another is exactly what a requester cannot evaluate |
+| Loopback — `127.0.0.0/8`, `::1`, `localhost`, `*.localhost` | Means "this container" to Charter and "this laptop" to the requester; never the same machine |
+| Link-local — `169.254.0.0/16`, `fe80::/10` | Where every cloud provider parks instance metadata |
+| Private — RFC 1918, CGNAT `100.64.0.0/10`, IPv6 unique local | Unless you opt in; see below |
+| A hostname that **resolves** to any of the above | A name can point anywhere, so resolution decides rather than the spelling |
+
+A refused report is recorded as a failed deployment with no URL. The requester's card settles on the
+designed failure state — an honest sentence and no button — rather than spinning forever on a preview
+that is not coming, and an engineer sees the refusal, the URL and the reason in the log.
+
+Three further defences, because one check is never enough for a value that can change under you:
+
+- **The URL is checked again before it is rendered**, so a row written by an older version of Charter
+  cannot become a button after an upgrade. Upgrades do not rewrite existing rows.
+- **The fetch checks the address at the socket.** DNS can answer differently between the moment a URL
+  is validated and the moment it is fetched. Charter's probe resolves the name itself, connects only
+  to an address that survives the same rules, follows no redirects — a redirect is a second URL nobody
+  checked — bounds the response, and sends no cookies, credentials, or proxy.
+- **The browser checks too.** The card refuses to render a link, a copy button, or a QR code for a URL
+  that fails the structural rules, whatever the API sent.
+
+### If your previews live on a private network
+
+Set `CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS=true`. It re-admits RFC 1918, carrier-grade NAT, and IPv6
+unique local addresses — the ranges a homelab or a VPC-only preview legitimately sits in, where your
+requesters are on that network too and the link genuinely works for them.
+
+It does **not** re-admit loopback or link-local, with no override, because no preview has ever lived
+at `127.0.0.1` or `169.254.169.254` and both are Charter fetching from itself.
+
+Understand what you are trading: with it on, anyone who can reach the deployment webhook can aim
+Charter's probe at services on your private network and learn, from the reachability dot, whether
+something answers on a given host and port. Charter warns about this at startup whenever it is on.
+
+**A stated limitation.** A hostname that does not resolve at all is accepted rather than refused — a
+transient DNS failure must not permanently mark a working preview as broken — and nothing rests on
+that leniency, because the socket-level check runs when the URL is actually fetched.
 
 ## Audit and accountability
 

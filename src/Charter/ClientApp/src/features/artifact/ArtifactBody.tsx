@@ -16,6 +16,7 @@ import { Icon, type IconName } from '@/components/ui/Icon';
 import { Markdown } from '@/components/ui/Markdown';
 import { QrCode } from '@/components/ui/QrCode';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
+import { isDisplayablePreviewUrl } from '@/features/artifact/artifact-presentation';
 import { formatBytes, formatDuration } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -61,6 +62,23 @@ const REACHABILITY: Record<
 
 function HostedPreviewBody({ payload }: { payload: HostedPreviewPayload }) {
   const reach = REACHABILITY[payload.reachability];
+
+  // §16.3: a preview URL arrives from the execution plane, and this card is where it would reach the
+  // one person who cannot judge it. When it is not a link Charter can stand behind, the card says
+  // that plainly rather than rendering a button, a copyable link and a QR code beside the sentence
+  // "Nothing you do here touches the real one".
+  if (!isDisplayablePreviewUrl(payload.url)) {
+    return (
+      <div className="border-line bg-sunken rounded-control border border-dashed px-4 py-5 text-center">
+        <Icon className="text-ink-subtle mx-auto mb-2" name="alert" size={20} />
+        <p className="text-ink font-medium">There is no link to open here</p>
+        <p className="text-small text-ink-muted mx-auto mt-1 max-w-sm text-balance">
+          The address Charter was given for this preview is not one it can vouch for, so it has not
+          been put in front of you. An engineer has been told; nothing you need to do.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

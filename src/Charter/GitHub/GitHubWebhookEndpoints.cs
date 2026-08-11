@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Charter.Configuration;
 using Charter.Deployments;
 using Microsoft.AspNetCore.Builder;
@@ -22,7 +23,10 @@ public static class GitHubWebhookEndpoints
     /// <summary>Where the GitHub App's webhook is pointed.</summary>
     public const string WebhookPath = "/api/github/webhook";
 
-    /// <summary>Section 18's generic deployment webhook.</summary>
+    /// <summary>
+    /// Section 18's generic deployment webhook, admitted by
+    /// <c>CHARTER_DEPLOYMENT_WEBHOOK_SECRET</c>.
+    /// </summary>
     public const string DeploymentPath = "/api/deployments/{prSha}";
 
     /// <summary>Maps the webhook routes.</summary>
@@ -101,11 +105,61 @@ public static class GitHubWebhookEndpoints
         // requester's card on a skeleton until the lifecycle sweep next runs — up to fifteen seconds
         // of section 27.7's "pending" state for a preview that is already live (section 18).
         app.MapPost(DeploymentPath, async (
+            HttpContext context,
             string prSha,
-            DeploymentWebhookRequest body,
+            DeploymentOptions options,
             DeploymentIngestor ingestor,
+            ILoggerFactory loggerFactory,
             CancellationToken cancellationToken) =>
         {
+            var logger = loggerFactory.CreateLogger(typeof(GitHubWebhookEndpoints));
+
+            // Admission first, and the body is bound by hand below rather than as a parameter so that
+            // it genuinely is first: a parameter would have Charter parsing an unauthenticated
+            // caller's JSON before deciding whether to listen to them at all.
+            //
+            // The head commit SHA in the path is a binding key, not a credential. The execution plane
+            // authors it, so it knows the value before Charter does, and everyone who can see the pull
+            // request learns it afterwards (section 16.3).
+            var presented = DeploymentWebhookAuthentication.Presented(context.Request);
+
+            switch (DeploymentWebhookAuthentication.Check(options.WebhookSecret, presented))
+            {
+                case DeploymentWebhookAdmission.NotConfigured:
+                    logger.LogWarning(
+                        "Refused a deployment report: this instance has no CHARTER_DEPLOYMENT_WEBHOOK_SECRET set");
+
+                    return Results.Json(
+                        new { error = DeploymentWebhookAuthentication.NotConfiguredMessage },
+                        statusCode: StatusCodes.Status401Unauthorized);
+
+                case DeploymentWebhookAdmission.Refused:
+                    // One message for absent and for wrong, as the GitHub webhook does, so the response
+                    // cannot be used to tell them apart. The log distinguishes them.
+                    logger.LogWarning(
+                        "Refused a deployment report for commit {HeadSha}: the deployment secret was {State}",
+                        prSha,
+                        presented is null ? "absent" : "not the one this instance holds");
+
+                    return Results.Json(
+                        new { error = DeploymentWebhookAuthentication.RefusedMessage },
+                        statusCode: StatusCodes.Status401Unauthorized);
+
+                default:
+                    break;
+            }
+
+            DeploymentWebhookRequest? body;
+
+            try
+            {
+                body = await context.Request.ReadFromJsonAsync<DeploymentWebhookRequest>(cancellationToken);
+            }
+            catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+            {
+                return Results.BadRequest(new { error = "a JSON body of { url, state, provider } is required" });
+            }
+
             if (body is null)
             {
                 return Results.BadRequest(new { error = "a body of { url, state, provider } is required" });

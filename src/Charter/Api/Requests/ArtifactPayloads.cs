@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using Charter.Api.Contracts;
+using Charter.Deployments;
 using Charter.Domain;
 
 namespace Charter.Api.Requests;
@@ -60,14 +61,38 @@ public static class ArtifactPayloads
         };
     }
 
+    /// <summary>
+    /// The last check before a preview URL leaves the API as a button a requester is told is safe.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="PreviewUrlPolicy"/> refuses a URL before it is stored, and the publisher refuses it
+    /// again before it writes one onto an artifact. Neither of those can reach a row that was written
+    /// before those checks existed, and an upgrade does not rewrite rows (section 16.3) — so the
+    /// structural rule runs here too, on the way out.
+    /// </para>
+    /// <para>
+    /// Structural only: no configuration and no name resolution, because this runs on a read path that
+    /// must not make a network call. That means it withholds exactly what is never a legitimate
+    /// preview link — a scheme that is not http(s), credentials in the userinfo, the loopback
+    /// interface, a link-local address — and leaves the configuration-dependent question of private
+    /// ranges to the write path, which knows the answer.
+    /// </para>
+    /// </remarks>
     private static HostedPreviewPayload HostedPreview(VerificationArtifact artifact, StoredPayload? stored)
     {
-        var url = Clean(stored?.Url) ?? artifact.Url ?? string.Empty;
+        var recorded = Clean(stored?.Url) ?? artifact.Url ?? string.Empty;
+
+        // Empty, not sanitised: the card renders "no link to show" honestly, and a truncated or
+        // rewritten URL would be Charter inventing a destination.
+        var url = PreviewUrlPolicy.IsDisplayable(recorded) ? recorded : string.Empty;
 
         return new HostedPreviewPayload
         {
             Url = url,
-            DisplayUrl = Clean(stored?.DisplayUrl) ?? RequestPresentation.TruncateUrl(url),
+            DisplayUrl = url.Length == 0
+                ? string.Empty
+                : Clean(stored?.DisplayUrl) ?? RequestPresentation.TruncateUrl(url),
 
             // "Unknown" is the honest answer for a dot whose whole purpose is to say whether anybody
             // has checked. Only a probe that actually ran writes anything else here.

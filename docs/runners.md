@@ -310,6 +310,25 @@ not match.
   internal `charter-agent:job:…` handle. Those are handles Charter mints for itself, and a runner has
   no business reporting one.
 
+The other field Charter would otherwise act on is **the branch in `branch_pushed`**. A runner reports
+where it pushed, and Charter moves that ref to open the pull request — so Charter publishes only the
+branch it named itself.
+
+- The session's branch is `charter/session-<session id, hex, no dashes>`. Every backend computes it
+  the same way, from the session id, so a runner never has to be told it.
+- A `branch_pushed` naming anything else is refused, and **nothing is published**: no ref is moved, no
+  branch is created, no pull request is opened. The session ends as failed with the reason on its
+  transcript, and the refusal is logged at warning level with the branch that was reported.
+- Fast-forward-only is not a substitute for this. An agent's commit sits on top of your base branch in
+  the ordinary case, so a believed report could advance `main` — the ref your branch protection exists
+  to hold — without anything being merged or reviewed.
+- Reporting no branch at all is still fine. A backend that only knows how to `git push` leaves the
+  field out, and the convention applies.
+
+**If you write your own runner, push to `charter/session-<id>` and nowhere else.** There is no setting
+that relaxes this, and a runner that pushes elsewhere will have its sessions refused even though the
+work is sitting on the provider.
+
 The same rule holds at the other end. Cancelling a session will not kill a container that does not
 carry that session's label, and will not cancel an agent job whose payload names a different session
 — whichever handle happens to be recorded against it. When a cancel cannot reach the run, it says so:

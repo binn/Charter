@@ -24,6 +24,7 @@ import {
   artifactIcon,
   artifactStateStyle,
   effectiveState,
+  isDisplayablePreviewUrl,
   orderArtifacts,
   primaryActionFor,
 } from '@/features/artifact/artifact-presentation';
@@ -197,9 +198,15 @@ export function VerificationArtifactCard({
     }
   })();
 
+  // "Nothing you do here touches the real one" is Charter vouching for a link. It is not printed
+  // above a preview whose link Charter has withheld — the reassurance is the thing that would be
+  // false, and it is the sentence a requester would be trusting (§16.3, §27.7).
+  const vouchable =
+    selected.kind !== 'hosted_preview' || isDisplayablePreviewUrl(selected.payload.url);
+
   const artifactPanel = (
     <div className="space-y-4 pt-4">
-      {selected.instructionsMd && state !== 'expired' && state !== 'failed' ? (
+      {selected.instructionsMd && vouchable && state !== 'expired' && state !== 'failed' ? (
         <div className="text-small text-ink-muted">
           <Markdown>{selected.instructionsMd}</Markdown>
         </div>

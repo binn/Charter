@@ -122,4 +122,42 @@ public class DeploymentWiringTests
 
         Assert.Contains("/api/deployments/", line.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task AnInstanceWithNoDeploymentSecretSaysSoRatherThanSilentlyRefusingEveryReport()
+    {
+        var logger = new RecordingLogger<DeploymentStartupWarnings>();
+        var warnings = new DeploymentStartupWarnings(DeploymentOptions.WebhookOnly, logger);
+
+        await warnings.StartAsync(TestContext.Current.CancellationToken);
+
+        var line = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains("CHARTER_DEPLOYMENT_WEBHOOK_SECRET", line.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ThePreviewProbeGetsTheGuardedHandlerRatherThanABareOne()
+    {
+        // Asserting on PreviewHttpClient.CreateHandler proves nothing unless the client the probe
+        // actually resolves is built from it. This is the wiring that makes the guard real: the
+        // control plane's one outbound request to an address somebody else chose.
+        using var provider = Build(DeploymentOptions.WebhookOnly);
+
+        var factory = provider.GetRequiredService<IHttpMessageHandlerFactory>();
+
+        using var chain = factory.CreateHandler(PreviewReachabilityProbe.HttpClientName);
+
+        var handler = chain;
+        while (handler is DelegatingHandler delegating && delegating.InnerHandler is { } inner)
+        {
+            handler = inner;
+        }
+
+        var sockets = Assert.IsType<SocketsHttpHandler>(handler);
+
+        Assert.False(sockets.AllowAutoRedirect);
+        Assert.False(sockets.UseProxy);
+        Assert.NotNull(sockets.ConnectCallback);
+    }
 }

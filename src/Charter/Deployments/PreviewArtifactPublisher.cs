@@ -27,10 +27,20 @@ public enum PreviewReachability
 
 /// <summary>Asks a preview URL whether anything is listening.</summary>
 /// <remarks>
+/// <para>
 /// A dot on a card, not a health check. Anything that answers HTTP counts as reachable; a connection
 /// that is refused, a name that does not resolve, a request that times out, and a 5xx from a
 /// platform edge in front of a dead container all count as unreachable, because from the requester's
 /// side those are the same event — the link does not work.
+/// </para>
+/// <para>
+/// This is also the one place in Charter that makes an outbound request to an address somebody else
+/// chose, on a loop, from inside the control plane. It therefore checks the URL against
+/// <see cref="PreviewUrlPolicy"/> again before every probe rather than trusting that the value was
+/// checked when it was stored — the row may predate the check, and the name may have started
+/// resolving somewhere else since. <see cref="PreviewHttpClient"/> checks the address once more at the
+/// socket, which is the check that cannot be raced.
+/// </para>
 /// </remarks>
 public sealed class PreviewReachabilityProbe
 {
@@ -39,12 +49,14 @@ public sealed class PreviewReachabilityProbe
 
     private readonly IHttpClientFactory _clients;
     private readonly DeploymentOptions _options;
+    private readonly PreviewUrlPolicy _urls;
     private readonly ILogger<PreviewReachabilityProbe> _logger;
 
     public PreviewReachabilityProbe(
         IHttpClientFactory clients,
         DeploymentOptions options,
-        ILogger<PreviewReachabilityProbe> logger)
+        ILogger<PreviewReachabilityProbe> logger,
+        PreviewUrlPolicy? urls = null)
     {
         ArgumentNullException.ThrowIfNull(clients);
         ArgumentNullException.ThrowIfNull(options);
@@ -52,6 +64,7 @@ public sealed class PreviewReachabilityProbe
 
         _clients = clients;
         _options = options;
+        _urls = urls ?? PreviewUrlPolicy.Default;
         _logger = logger;
     }
 
@@ -63,10 +76,15 @@ public sealed class PreviewReachabilityProbe
             return PreviewReachability.Unknown;
         }
 
-        if (string.IsNullOrWhiteSpace(url)
-            || !Uri.TryCreate(url, UriKind.Absolute, out var target)
-            || target.Scheme is not ("http" or "https"))
+        var verdict = await _urls.ValidateAsync(url, cancellationToken);
+
+        if (!verdict.Allowed || verdict.Url is not { } target)
         {
+            // "Unknown" rather than "Unreachable": nothing was asked, so nothing was learned. The
+            // publisher refuses this URL outright, so this branch is a second line rather than the
+            // one a requester ever sees.
+            _logger.LogWarning("Refused to probe a preview url: {Reason}", verdict.Reason);
+
             return PreviewReachability.Unknown;
         }
 
@@ -144,6 +162,7 @@ public sealed class PreviewArtifactPublisher
     private readonly TimeProvider _clock;
     private readonly ILogger<PreviewArtifactPublisher> _logger;
     private readonly PreviewReadyAnnouncer? _announcer;
+    private readonly PreviewUrlPolicy _urls;
 
     public PreviewArtifactPublisher(
         CharterDbContext database,
@@ -151,7 +170,8 @@ public sealed class PreviewArtifactPublisher
         PreviewReachabilityProbe probe,
         TimeProvider clock,
         ILogger<PreviewArtifactPublisher> logger,
-        PreviewReadyAnnouncer? announcer = null)
+        PreviewReadyAnnouncer? announcer = null,
+        PreviewUrlPolicy? urls = null)
     {
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(options);
@@ -165,6 +185,7 @@ public sealed class PreviewArtifactPublisher
         _clock = clock;
         _logger = logger;
         _announcer = announcer;
+        _urls = urls ?? PreviewUrlPolicy.Default;
     }
 
     /// <summary>Applies a deployment to the session's hosted preview artifact, and saves.</summary>
@@ -200,8 +221,32 @@ public sealed class PreviewArtifactPublisher
 
         var changed = created;
 
+        var urlRefused = deployment.State == DeploymentState.Ready
+                         && !string.IsNullOrWhiteSpace(deployment.Url)
+                         && !(await _urls.ValidateAsync(deployment.Url, cancellationToken)).Allowed;
+
         switch (deployment.State)
         {
+            // Section 16.3: validate again at the point of use. The binder refuses an unsafe URL
+            // before it is ever written, but a fix at the recording point cannot reach rows already in
+            // the database and an upgrade does not rewrite them — and a name that was public when it
+            // was recorded can be pointed somewhere else afterwards. This is the last check before a
+            // URL becomes a button under the words "Nothing you do here touches the real one".
+            case DeploymentState.Ready when urlRefused:
+                {
+                    _logger.LogWarning(
+                        "Withheld the preview url on session {SessionId}: it is not one Charter will show a requester",
+                        sessionId);
+
+                    if (artifact.State != VerificationArtifactState.Failed)
+                    {
+                        artifact.MarkFailed();
+                        changed = true;
+                    }
+
+                    break;
+                }
+
             case DeploymentState.Ready when !string.IsNullOrWhiteSpace(deployment.Url):
                 {
                     var isNewPreview = artifact.State != VerificationArtifactState.Ready

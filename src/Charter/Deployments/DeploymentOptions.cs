@@ -42,6 +42,29 @@ public sealed record DeploymentOptions
     public RailwayOptions? Railway { get; init; }
 
     /// <summary>
+    /// <c>CHARTER_DEPLOYMENT_WEBHOOK_SECRET</c>: what a caller must present to
+    /// <c>POST /api/deployments/{prSha}</c>.
+    /// </summary>
+    /// <remarks>
+    /// Null means the endpoint admits nobody. See <see cref="DeploymentWebhookAuthentication"/> for
+    /// why the head commit SHA is not a substitute, and section 16.3 for the rule it breaks.
+    /// </remarks>
+    public Secret? WebhookSecret { get; init; }
+
+    /// <summary>
+    /// <c>CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS</c>, default false: whether a preview may live on an
+    /// address inside this instance's own network.
+    /// </summary>
+    /// <remarks>
+    /// The escape hatch for a self-hoster whose previews genuinely sit on a private network — a
+    /// homelab, a LAN, a VPC with no public ingress — where a preview URL of <c>http://10.0.4.12:3000</c>
+    /// is the correct answer and the requester's browser can reach it. It re-admits RFC 1918,
+    /// carrier-grade NAT and IPv6 unique local addresses, and nothing else: loopback and link-local
+    /// stay refused with it on, because no preview has ever lived at <c>169.254.169.254</c>.
+    /// </remarks>
+    public bool AllowPrivatePreviewHosts { get; init; }
+
+    /// <summary>
     /// <c>CHARTER_BASE_URL</c>: where the instance is reachable, so a notification can link to the
     /// status thread (sections 11, 22).
     /// </summary>
@@ -136,11 +159,39 @@ public sealed record DeploymentOptions
 
         var railway = RailwayOptions.Parse(reader, provider == DeploymentProviderKind.Railway);
 
+        var secret = reader.OptionalSecret("CHARTER_DEPLOYMENT_WEBHOOK_SECRET");
+
+        // Set-but-weak is an error rather than a warning: an operator who has configured this has
+        // decided to run the endpoint, and a secret short enough to guess is worse than the honest
+        // refusal an unset one produces (section 4.1).
+        if (secret is not null && secret.Length < DeploymentWebhookAuthentication.MinimumSecretLength)
+        {
+            reader.Error(
+                "CHARTER_DEPLOYMENT_WEBHOOK_SECRET",
+                "CHARTER_DEPLOYMENT_WEBHOOK_SECRET must be at least " +
+                $"{DeploymentWebhookAuthentication.MinimumSecretLength} characters. Generate one with " +
+                "`openssl rand -hex 32`.");
+        }
+
+        var allowPrivateHosts = reader.Bool("CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS", false);
+
+        if (allowPrivateHosts)
+        {
+            reader.Warn(
+                "CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS",
+                "CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS is on, so Charter will accept and fetch preview " +
+                "URLs on private addresses. Set it only where previews genuinely live on this " +
+                "instance's own network; anyone who can reach the deployment webhook can then aim " +
+                "Charter at services on that network.");
+        }
+
         var options = new DeploymentOptions
         {
             Provider = provider,
             PreviewTtl = TimeSpan.FromHours(ttlHours),
             Railway = railway,
+            WebhookSecret = secret,
+            AllowPrivatePreviewHosts = allowPrivateHosts,
             Problems = reader.Problems,
         };
 

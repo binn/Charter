@@ -95,6 +95,26 @@ outbound request a day — but it is your call, and it is a single flag.
 Everything else Charter talks to, you configured: your Postgres, your GitHub App, your model provider,
 your SMTP server, your log sinks, your runners.
 
+### One request you did not configure by hand: the preview probe
+
+There is a second outbound request, and it goes wherever your hosting platform said your preview is.
+Charter sends a plain `GET` to each live preview URL every reconcile pass — roughly every fifteen
+seconds while a preview is open — so the card can say whether the link is responding.
+
+What that request is:
+
+- A `GET` to the preview URL itself, with a `Charter-preview-probe/1.0` user agent and nothing else.
+  No cookies, no credentials, no proxy, and the response body is never read.
+- It follows no redirects, so it never reaches a URL you were not told about.
+- The URL is validated before it is stored and the address checked again at the socket, so this
+  request cannot be aimed at your own network by whoever reports the deployment. The rules are in
+  [security.md](security.md#preview-urls-are-validated-before-charter-stores-fetches-or-shows-one).
+- Whoever operates the preview host sees your instance's source IP, as they would for any request.
+
+**A stated limitation: there is no variable that turns the probe off on its own.** An instance that
+never records a ready preview never probes anything, but if you bind previews you get the probe. If
+that matters for your environment, say so on the issue tracker rather than reading past this.
+
 ## What goes into an email
 
 Charter sends five kinds of message: an invitation, a password reset, a question about a request,

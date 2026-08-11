@@ -226,11 +226,19 @@ deployment webhook rather than PR comment parsing:
 
 ```
 POST /api/deployments/{prSha}
+Authorization: Bearer <CHARTER_DEPLOYMENT_WEBHOOK_SECRET>
 { "url": "https://charter-pr-142.onrender.com", "state": "ready", "provider": "render" }
 ```
 
 Point a post-deploy hook at that endpoint on your instance and preview binding works the same as it
 does on Railway.
+
+**That endpoint refuses everything until `CHARTER_DEPLOYMENT_WEBHOOK_SECRET` is set.** Generate one
+with `openssl rand -hex 32` and send it as the header above, as `X-Charter-Deployment-Secret`, or —
+if your platform's hook is a URL field and nothing else — as `?token=`. Charter also refuses preview
+URLs that resolve to loopback, link-local or private addresses; if your previews really do live on a
+private network, see
+[security.md](security.md#if-your-previews-live-on-a-private-network).
 
 ### Fly
 

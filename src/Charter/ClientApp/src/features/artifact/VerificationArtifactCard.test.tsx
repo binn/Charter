@@ -328,3 +328,56 @@ describe('VerificationArtifactCard — feedback', () => {
     expect(screen.queryByRole('button', { name: 'Works' })).not.toBeInTheDocument();
   });
 });
+
+describe('VerificationArtifactCard — a preview URL Charter cannot vouch for', () => {
+  /**
+   * The card's own copy — *"Nothing you do here touches the real one"* — is a promise made on
+   * Charter's authority to the person least able to evaluate a link. §16.3: a value from the
+   * execution plane may be displayed, but it may never be the thing the control plane acts on. So
+   * when the URL does not survive the check, the requester gets an honest sentence and no button —
+   * not a button under a reassurance nothing checked.
+   */
+  const withheld = () =>
+    hostedPreview({
+      instructionsMd:
+        'This is a full copy of the app with your change in it. Nothing you do here touches the real one.',
+      payload: {
+        url: 'http://169.254.169.254/latest/meta-data/',
+        displayUrl: '169.254.169.254/latest/meta-data/',
+        reachability: 'unknown',
+      },
+    });
+
+  it('offers no link, no copy button and no QR code', () => {
+    renderCard([withheld()]);
+
+    expect(screen.queryByRole('link', { name: /open preview/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /copy (preview )?link/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /scan to open this preview/i })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('169.254.169.254');
+  });
+
+  it('says plainly that there is nothing to open, and drops the reassurance it cannot make', () => {
+    renderCard([withheld()]);
+
+    expect(screen.getByText('There is no link to open here')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('Nothing you do here touches the real one');
+  });
+
+  it('renders the same way when the API withheld the URL entirely', () => {
+    // What the projection sends for a row written before the check existed: an empty URL rather than
+    // a sanitised one, because a rewritten URL would be Charter inventing a destination.
+    renderCard([
+      hostedPreview({ payload: { url: '', displayUrl: '', reachability: 'unknown' } }),
+    ]);
+
+    expect(screen.getByText('There is no link to open here')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open preview/i })).not.toBeInTheDocument();
+  });
+
+  it('still offers an ordinary public preview', () => {
+    renderCard([hostedPreview()]);
+
+    expect(screen.getAllByRole('link', { name: /open preview/i }).length).toBeGreaterThan(0);
+  });
+});

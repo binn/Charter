@@ -189,6 +189,52 @@ public class GitHubClientTests
         Assert.Equal("main", body.RootElement.GetProperty("base").GetString());
     }
 
+    public static TheoryData<string> ClimbingPaths =>
+    [
+        "../../../../victim/secrets/contents/.env",
+        "src/../../../../victim/secrets/contents/.env",
+        "src/App.tsx/../..",
+        ".",
+    ];
+
+    [Theory]
+    [MemberData(nameof(ClimbingPaths))]
+    public async Task APathThatClimbsOutOfTheRepositoryIsNeverRequested(string path)
+    {
+        // Section 16.3, at the point of use. `.` is unreserved, so `Uri.EscapeDataString` leaves `..`
+        // exactly as it found it, and every URL here is built with `new Uri(ApiBaseUrl, path)`, which
+        // applies RFC 3986's remove_dot_segments — so four `..` under
+        // `repos/{owner}/{name}/contents/` is a request somewhere else on the API host, carrying a token
+        // minted for this repository. Callers validate first; this is the promise that holds when one
+        // forgets.
+        var handler = Handler();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => Client(handler).GetFileAsync(
+            GitHubTestFixtures.Repository,
+            path,
+            "abc123",
+            TestContext.Current.CancellationToken));
+
+        Assert.DoesNotContain(
+            handler.Calls,
+            call => !call.Path.StartsWith("/repos/acme/widgets/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ARefThatClimbsIsRefusedTooBecauseEveryUrlHereIsBuiltTheSameWay()
+    {
+        // The same escaping serves branches, refs and revisions, so the guarantee has to cover all of
+        // them: a compare against `..` would address a repository this installation was never scoped to.
+        var handler = Handler();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => Client(handler).GetBranchHeadShaAsync(
+            GitHubTestFixtures.Repository,
+            "../../victim/secrets",
+            TestContext.Current.CancellationToken));
+
+        Assert.Empty(handler.Calls);
+    }
+
     [Fact]
     public void TheClientCannotExpressAMerge()
     {

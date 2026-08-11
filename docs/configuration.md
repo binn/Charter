@@ -319,6 +319,8 @@ The schema, the shipped adapters, and what each one can do are in [adapters.md](
 | `CHARTER_RAILWAY_BASE_ENVIRONMENT` | when `railway` | — | The environment previews are cloned from. Never defaulted. |
 | `CHARTER_RAILWAY_API_URL` | no | `https://backboard.railway.com/graphql/v2` | |
 | `CHARTER_PREVIEW_TTL_HOURS` | no | `72` | Preview lifetime where the platform does not expire it itself. `0` means never. |
+| `CHARTER_DEPLOYMENT_WEBHOOK_SECRET` | to use the webhook | — | What a caller must present to `POST /api/deployments/{prSha}`. Minimum 24 characters. Unset means that endpoint accepts nothing. |
+| `CHARTER_PREVIEW_ALLOW_PRIVATE_HOSTS` | no | `false` | Allow preview URLs on private addresses. See [security.md](security.md#preview-urls-are-validated-before-charter-stores-fetches-or-shows-one). |
 
 Half-configuring a provider fails startup: setting `CHARTER_DEPLOYMENT_PROVIDER=railway` without a
 token, project, and base environment reports all of the missing values at once.
@@ -331,8 +333,41 @@ them. It simply does not create the deployment itself. Report your own:
 ```bash
 curl -X POST https://charter.example.com/api/deployments/a3f9c21e4b7d8f0c1a2b3c4d5e6f7a8b9c0d1e2f \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $CHARTER_DEPLOYMENT_WEBHOOK_SECRET" \
   -d '{"url": "https://pr-142.preview.example.com", "state": "ready", "provider": "render"}'
 ```
+
+### The deployment webhook needs a secret
+
+That endpoint is reachable by anyone who can reach your instance, and what it accepts is a URL
+Charter fetches from inside its own network and shows a requester as a link to click. Generate a
+secret and set it:
+
+```bash
+openssl rand -hex 32
+```
+
+```bash
+CHARTER_DEPLOYMENT_WEBHOOK_SECRET=1f0c…   # at least 24 characters
+```
+
+Present it in whichever of these three your platform can send. The first one found is the one
+checked, so send exactly one:
+
+| Carrier | Use it when |
+|---|---|
+| `Authorization: Bearer <secret>` | Your platform lets you set headers. Prefer this. |
+| `X-Charter-Deployment-Secret: <secret>` | Your platform reserves `Authorization` for its own use. |
+| `?token=<secret>` in the URL | Your platform's post-deploy hook is a URL field and nothing else. |
+
+The query parameter is genuinely weaker than a header: URLs end up in proxy access logs, browser
+history, and referrer headers in a way headers do not. Charter never logs it, but the hops between
+you and Charter might. Use a header where you can.
+
+**With the variable unset, the endpoint refuses everything** and says so at startup and in every
+response. That is deliberate — the endpoint used to admit anyone who knew the pull request's head
+commit, which is public. If you bind previews only through Railway's pull request comments, you do
+not need this variable at all.
 
 The head SHA is the authorisation: a report for a commit no change request carries returns 404.
 Put it behind your own gateway if you want more than that.

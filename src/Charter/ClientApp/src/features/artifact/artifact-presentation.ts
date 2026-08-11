@@ -66,6 +66,73 @@ export function artifactStateStyle(
   }
 }
 
+/** Host names that only ever mean "the machine this is running on". */
+const LOCAL_HOST_SUFFIXES = ['.localhost', '.local', '.internal', '.home.arpa'];
+
+/**
+ * Whether a preview URL is one Charter can honestly offer as a button.
+ *
+ * The server refuses these before it stores one and again before it renders one (§16.3); this is the
+ * same structural rule at the last possible moment, because the card's own copy — *"Nothing you do
+ * here touches the real one"* — is a promise made on Charter's authority to the person least able to
+ * evaluate the link. A requester must never be handed a `http://127.0.0.1:8080` or a
+ * `http://169.254.169.254/…` under that sentence, whatever the API sent.
+ *
+ * Structural only, and deliberately permissive about private ranges: a self-hoster whose preview
+ * genuinely lives at `http://10.0.4.12:3000` has a working link, and the browser cannot resolve a
+ * name anyway. What it rejects is what is never legitimate.
+ */
+export function isDisplayablePreviewUrl(url: string | undefined | null): boolean {
+  if (!url) {
+    return false;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return false;
+  }
+  // Credentials in a link are how a link is made to look like somewhere it is not.
+  if (parsed.username !== '' || parsed.password !== '') {
+    return false;
+  }
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|]$/g, '');
+  if (host === '' || host === 'localhost') {
+    return false;
+  }
+  if (LOCAL_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
+    return false;
+  }
+
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ipv4) {
+    const [first, second] = [Number(ipv4[1]), Number(ipv4[2])];
+    // Loopback, "this network", link-local (where every cloud metadata service lives), multicast.
+    if (first === 0 || first === 127 || first >= 224 || (first === 169 && second === 254)) {
+      return false;
+    }
+    return true;
+  }
+
+  if (host.includes(':')) {
+    // IPv6 literal: loopback, unspecified, link-local, multicast.
+    if (host === '::1' || host === '::') {
+      return false;
+    }
+    if (/^fe[89ab]/.test(host) || host.startsWith('ff')) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export interface PrimaryAction {
   label: string;
   /** `link` opens `href`; `copy` writes `value` to the clipboard; `rebuild` calls the API. */
@@ -94,13 +161,17 @@ export function primaryActionFor(
 
   switch (artifact.kind) {
     case 'hosted_preview':
-      return {
-        label: 'Open preview',
-        behaviour: 'link',
-        href: artifact.payload.url,
-        icon: 'arrowRight',
-        qrValue: artifact.payload.url,
-      };
+      // No link, no copy, no QR code for a URL Charter cannot vouch for. The body says so in words;
+      // offering the button anyway would be the card asserting the one thing it does not know.
+      return isDisplayablePreviewUrl(artifact.payload.url)
+        ? {
+            label: 'Open preview',
+            behaviour: 'link',
+            href: artifact.payload.url,
+            icon: 'arrowRight',
+            qrValue: artifact.payload.url,
+          }
+        : NO_ACTION;
     case 'build_artifact':
       return {
         label: 'Download',

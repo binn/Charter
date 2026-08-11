@@ -214,6 +214,14 @@ Four rules govern how they run:
 - **Checks are skipped entirely when the agent changed nothing.** There is nothing to validate, and a
   full test run to prove it is minutes of somebody's time spent on an empty diff.
 
+A check's own output reaches the change request body, and it reaches it **as quoted text**. Whatever a
+check prints has passed through a sandbox running an agent over repository content nobody vetted, and
+the body is a document Charter signs, so a name and a summary appear there as inline code: flattened to
+one line, cut at 100 and 300 characters, with at most twenty checks listed and the rest counted. Write
+summaries that are worth reading on one line — markdown in them will be shown rather than rendered, and
+a long one is truncated with an ellipsis. The full output stays on the transcript, where the pane
+shows it in full.
+
 ## policies/migrations.yml
 
 Rules for classifying schema migrations. Preview databases are disposable, so the risk is not data loss

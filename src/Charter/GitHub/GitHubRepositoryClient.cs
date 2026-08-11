@@ -1140,15 +1140,46 @@ public sealed class GitHubRepositoryClient : IGitHubRepositoryClient
     }
 
     /// <summary>
-    /// Escapes each segment and leaves the separators alone.
+    /// Escapes each segment, leaves the separators alone, and refuses a segment that climbs.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Branch names contain slashes — <c>charter/onboarding</c> is one — and so do file paths.
     /// Escaping the whole string would send <c>charter%2Fonboarding</c>, which GitHub reads as a
     /// branch with a slash in its name rather than as the ref <c>heads/charter/onboarding</c>.
+    /// </para>
+    /// <para>
+    /// Which is why the dot segments have to be refused here rather than escaped away: <c>.</c> is an
+    /// unreserved character, so <see cref="Uri.EscapeDataString"/> leaves <c>..</c> exactly as it found it,
+    /// and every URL in this client is built with <c>new Uri(ApiBaseUrl, path)</c>, which applies RFC 3986's
+    /// <em>remove_dot_segments</em>. Three <c>..</c> in a path under
+    /// <c>repos/{owner}/{name}/contents/</c> is therefore a request somewhere else on the API host,
+    /// carrying a token minted for this repository.
+    /// </para>
+    /// <para>
+    /// Callers are expected to have validated their input already — <see cref="Charter.Api.Changes.RepositoryPath"/>
+    /// is where a reader's path is refused, with the explanation. This is the point-of-use half of the same
+    /// rule (section 16.3): every path, ref and revision this client puts in a URL passes through here, so
+    /// this is the one place that can promise no request leaves <c>repos/{owner}/{name}/</c>, whatever a
+    /// future caller forgets. It throws rather than returning something safe, because a climb is a defect or
+    /// an attack and neither should be answered with a file.
+    /// </para>
     /// </remarks>
     private static string EscapePath(string path)
-        => string.Join(
-            '/',
-            path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.EscapeDataString));
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var segment in segments)
+        {
+            if (segment is "." or "..")
+            {
+                throw new ArgumentException(
+                    "A path, ref or revision sent to GitHub may not contain a '.' or '..' segment: "
+                    + "resolving one would address something outside the repository this call is scoped to.",
+                    nameof(path));
+            }
+        }
+
+        return string.Join('/', segments.Select(Uri.EscapeDataString));
+    }
 }
