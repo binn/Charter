@@ -101,7 +101,20 @@ jobs:
         working-directory: src/Charter/ClientApp
         run: npm run build
 
+      # A database of its own, so the migration check below still starts from an
+      # empty one and stays a genuine test of the migrations.
+      - name: Create the test database
+        env:
+          PGPASSWORD: charter
+        run: psql -h localhost -U charter -d charter_ci -c 'CREATE DATABASE charter_tests'
+
+      # Without this, every database-backed test skips: 438 of them on the run that
+      # exposed this, so CI was proving about 85% of the suite and reporting green
+      # for the rest. The tests that catch the queue, authorisation and boot defects
+      # are exactly the ones that need a database.
       - name: Test
+        env:
+          CHARTER_TEST_DATABASE_URL: postgres://charter:charter@localhost:5432/charter_tests?sslmode=disable
         run: dotnet test Charter.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory ./TestResults
 
       - name: Install dotnet-ef

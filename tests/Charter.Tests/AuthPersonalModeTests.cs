@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Charter.Auth.Authorization;
 using Charter.Auth.Setup;
 using Charter.Configuration;
@@ -253,6 +252,30 @@ public class AuthPersonalModeTests
         return string.Join('\n', kept);
     }
 
-    private static string RepositoryRoot([CallerFilePath] string thisFile = "")
-        => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(thisFile)!, "..", ".."));
+    /// <summary>
+    /// The repository root, found by walking up from the test assembly until the solution file
+    /// appears.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <c>[CallerFilePath]</c>. <c>Directory.Build.props</c> turns on
+    /// <c>DeterministicSourcePaths</c> whenever <c>CI=true</c>, which rewrites every embedded source
+    /// path to <c>/_/…</c> — so a caller path resolves to a directory that exists on no machine, and
+    /// this test failed in CI while passing on every developer's laptop. Walking the filesystem is
+    /// the only form of this that is true in both places.
+    /// </remarks>
+    private static string RepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Charter.sln")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"No Charter.sln above {AppContext.BaseDirectory}, so the source tree cannot be located.");
+    }
 }

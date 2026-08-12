@@ -75,12 +75,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # Kept in this job rather than in build, so that pages:write and id-token:write
-      # stay scoped to the only job that actually needs them. The site's base path is
-      # hardcoded in docs/.vitepress/config.ts, so the build needs no output from here.
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
+      # No configure-pages step. Its only output is the base path, which is hardcoded in
+      # docs/.vitepress/config.ts, so it contributed nothing but a failure mode: it calls
+      # the Pages API on every run and 404s whenever the repository's Pages source is not
+      # already "GitHub Actions". deploy-pages needs no such call.
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
