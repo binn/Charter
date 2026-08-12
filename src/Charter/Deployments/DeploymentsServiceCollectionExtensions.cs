@@ -52,7 +52,7 @@ public static class DeploymentsServiceCollectionExtensions
             throw new ConfigException([.. options.Errors.Select(problem => problem.Text)]);
         }
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(options);
 
         services.TryAddSingleton<IPreviewHostResolver, DnsPreviewHostResolver>();

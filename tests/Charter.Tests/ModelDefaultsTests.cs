@@ -73,7 +73,7 @@ public class ModelDefaultsTests
             new StubHttpClientFactory(new StubHttpMessageHandler()),
             new ModelClientOptions(),
             ModelTestFixtures.Calculator(),
-            TimeProvider.System,
+            CharterTime.System,
             ModelTestFixtures.Silent<OpenAiCompatibleModelClient>());
 
         Assert.True(client.Supports(ModelClientOptions.DefaultRefineModel));
@@ -89,19 +89,19 @@ public class ModelDefaultsTests
                 new StubHttpClientFactory(new StubHttpMessageHandler()),
                 new ModelClientOptions(),
                 ModelTestFixtures.Calculator(),
-                TimeProvider.System,
+                CharterTime.System,
                 ModelTestFixtures.Silent<AnthropicModelClient>()),
             new OpenAiCompatibleModelClient(
                 new StubHttpClientFactory(new StubHttpMessageHandler()),
                 new ModelClientOptions(),
                 ModelTestFixtures.Calculator(),
-                TimeProvider.System,
+                CharterTime.System,
                 ModelTestFixtures.Silent<OpenAiCompatibleModelClient>()),
             new GeminiModelClient(
                 new StubHttpClientFactory(new StubHttpMessageHandler()),
                 new ModelClientOptions(),
                 ModelTestFixtures.Calculator(),
-                TimeProvider.System,
+                CharterTime.System,
                 ModelTestFixtures.Silent<GeminiModelClient>()),
         ]);
 

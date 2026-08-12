@@ -337,7 +337,7 @@ public class AccessAdministrationTests
             this.organization = organization;
             this.requesterMember = requesterMember;
 
-            Audits = new AuditWriter(db, TimeProvider.System);
+            Audits = new AuditWriter(db, CharterTime.System);
             Members = new MembersService(db, Audits);
             Audit = new AuditQueryService(db);
 
@@ -345,7 +345,7 @@ public class AccessAdministrationTests
                 db,
                 new CharterAuthorizationService(db, Audits),
                 new VersionControlProviderRegistry([]),
-                TimeProvider.System);
+                CharterTime.System);
         }
 
         public CharterDbContext Db { get; }

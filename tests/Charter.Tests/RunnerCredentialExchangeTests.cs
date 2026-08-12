@@ -405,14 +405,14 @@ internal sealed class ExchangeWorld : IAsyncDisposable
             context,
             Db,
             journal,
-            new SessionMilestones(Db, TimeProvider.System),
+            new SessionMilestones(Db, CharterTime.System),
             Tokens,
             new NeedsInputAnnouncer(
                 Db,
                 journal,
                 new JobQueue(Db),
                 options,
-                TimeProvider.System,
+                CharterTime.System,
                 provider.GetRequiredService<ILogger<NeedsInputAnnouncer>>()),
             provider.GetRequiredService<ILoggerFactory>(),
             TestContext.Current.CancellationToken);

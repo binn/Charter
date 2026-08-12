@@ -229,7 +229,7 @@ public class ModelInstanceCredentialTests
         var store = new InstanceKeyModelCredentialStore(
             inner,
             instance,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<InstanceKeyModelCredentialStore>.Instance);
 
         var id = InstanceModelCredentials.IdPrefix + "OPENROUTER_API_KEY";
@@ -264,7 +264,7 @@ public class ModelInstanceCredentialTests
         var store = new InstanceKeyModelCredentialStore(
             inner,
             InstanceModelCredentials.From("sk-ant-test", null),
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<InstanceKeyModelCredentialStore>.Instance);
 
         await store.MarkInvalidAsync(

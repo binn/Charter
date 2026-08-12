@@ -26,7 +26,7 @@ public static class RefinementServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(new RefinementOptions());
         services.TryAddSingleton<RefinementPromptBuilder>();
         services.TryAddScoped<ISpecRefiner, SpecRefiner>();

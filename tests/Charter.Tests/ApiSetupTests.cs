@@ -258,7 +258,7 @@ public class ApiSetupTests
 
         public MemberSnapshot Requester { get; }
 
-        public SetupChecklistService Service() => new(db, config, TimeProvider.System);
+        public SetupChecklistService Service() => new(db, config, CharterTime.System);
 
         public async Task ConnectRepositoryAsync()
         {

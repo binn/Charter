@@ -214,18 +214,18 @@ internal sealed class ApprovalWorld : IAsyncDisposable
     public RequestQueryService Queries()
         => new(
             Db,
-            new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+            new CharterAuthorizationService(Db, new AuditWriter(Db, CharterTime.System)),
             new VersionControlProviderRegistry([]),
-            TimeProvider.System);
+            CharterTime.System);
 
     public RequestCommandService Commands()
         => new(
             Db,
-            new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+            new CharterAuthorizationService(Db, new AuditWriter(Db, CharterTime.System)),
             Queries(),
             new NoStreamPublisher(),
             new JobQueue(Db),
-            TimeProvider.System);
+            CharterTime.System);
 
     public SessionOrchestrator Orchestrator()
         => new(

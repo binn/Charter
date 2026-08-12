@@ -546,8 +546,8 @@ public class OnboardingServiceTests
                 new MergeGateInspector(
                     new VersionControlProviderRegistry([Provider]),
                     NullLogger<MergeGateInspector>.Instance),
-                new AuditWriter(db, TimeProvider.System),
-                TimeProvider.System,
+                new AuditWriter(db, CharterTime.System),
+                CharterTime.System,
                 NullLogger<OnboardingService>.Instance);
 
             Query = new RequestableRepoQuery(db);

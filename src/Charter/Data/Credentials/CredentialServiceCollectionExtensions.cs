@@ -35,7 +35,7 @@ public static class CredentialServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
 
         services.TryAddSingleton<ICredentialProtector>(provider =>
             new AesGcmCredentialProtector(provider.GetRequiredService<KeyConfig>()));

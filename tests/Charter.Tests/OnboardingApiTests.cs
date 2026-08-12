@@ -709,7 +709,7 @@ public class OnboardingApiTests
                 RequiredApprovals: 1,
                 CodeOwnersReviewRequired: true);
 
-            var audit = new AuditWriter(db, TimeProvider.System);
+            var audit = new AuditWriter(db, CharterTime.System);
 
             Onboarding = new OnboardingService(
                 db,
@@ -720,7 +720,7 @@ public class OnboardingApiTests
                     new VersionControlProviderRegistry([Provider]),
                     NullLogger<MergeGateInspector>.Instance),
                 audit,
-                TimeProvider.System,
+                CharterTime.System,
                 NullLogger<OnboardingService>.Instance);
 
             Repos = new RepoOnboardingService(db, Onboarding, new RepoScopeAdministration(db, audit));
@@ -730,7 +730,7 @@ public class OnboardingApiTests
                 db,
                 new CharterAuthorizationService(db, audit),
                 new VersionControlProviderRegistry([Provider]),
-                TimeProvider.System);
+                CharterTime.System);
         }
 
         public CharterDbContext Db { get; }

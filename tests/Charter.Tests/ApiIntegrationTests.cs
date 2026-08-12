@@ -620,9 +620,9 @@ public class ApiIntegrationTests
         public RequestQueryService Queries()
             => new(
                 Db,
-                new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+                new CharterAuthorizationService(Db, new AuditWriter(Db, CharterTime.System)),
                 new Charter.VersionControl.VersionControlProviderRegistry([]),
-                TimeProvider.System);
+                CharterTime.System);
 
         public Charter.Api.Viewer.ViewerService Viewers()
             => new(Db, new Charter.Api.Viewer.UserRecordPreferencesStore(Db), Queries());
@@ -630,11 +630,11 @@ public class ApiIntegrationTests
         public RequestCommandService Commands()
             => new(
                 Db,
-                new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+                new CharterAuthorizationService(Db, new AuditWriter(Db, CharterTime.System)),
                 Queries(),
                 new SilentPublisher(),
                 new JobQueue(Db),
-                TimeProvider.System);
+                CharterTime.System);
 
         public async Task PutSpecUpForApprovalAsync()
         {

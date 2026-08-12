@@ -24,7 +24,7 @@ public static class RecapServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(new RecapOptions());
         services.TryAddSingleton<RecapPromptBuilder>();
         services.TryAddScoped<IRecapGenerator, RecapGenerator>();

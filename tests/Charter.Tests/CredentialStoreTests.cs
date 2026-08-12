@@ -546,7 +546,7 @@ public class CredentialStoreIntegrationTests
         // The resolver has nothing to show as a reset instant either, rather than a bogus one.
         var resolution = await new CredentialResolver(
                 fixture.Store,
-                TimeProvider.System,
+                CharterTime.System,
                 NullLogger<CredentialResolver>.Instance)
             .ResolveAsync(fixture.Query(), TestContext.Current.CancellationToken);
 
@@ -615,7 +615,7 @@ public class CredentialStoreIntegrationTests
 
         var resolver = new CredentialResolver(
             fixture.Store,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<CredentialResolver>.Instance);
 
         // Tier 1 while the subscription still has quota.
@@ -774,7 +774,7 @@ public class CredentialStoreIntegrationTests
 
         var resolver = new CredentialResolver(
             fixture.Store,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<CredentialResolver>.Instance);
 
         var first = await resolver.ResolveAsync(fixture.Query(), TestContext.Current.CancellationToken);
@@ -823,7 +823,7 @@ public class CredentialStoreIntegrationTests
         // instance opted in. Without it the pool is not consulted at all, which is its own test.
         var resolver = new CredentialResolver(
             fixture.Store,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<CredentialResolver>.Instance,
             CredentialPolicy.Pooled);
 
@@ -846,7 +846,7 @@ public class CredentialStoreIntegrationTests
             Store = new EfModelCredentialStore(
                 db,
                 protector,
-                TimeProvider.System,
+                CharterTime.System,
                 NullLogger<EfModelCredentialStore>.Instance);
         }
 

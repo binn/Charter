@@ -1,3 +1,4 @@
+using Charter;
 using Charter.Auth.Providers;
 using Charter.Runners;
 using Charter.Runners.Agent;
@@ -39,7 +40,7 @@ public static class AgentServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton<ICharterPasswordHasher>(_ => new CharterPasswordHasher());
         services.TryAddSingleton<AgentCredentialMint>();
         services.TryAddSingleton<AgentConnectionRegistry>();

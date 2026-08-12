@@ -26,7 +26,7 @@ public class TeachingWiringTests
     [Fact]
     public void ADataLayerImplementationRegisteredFirstWins()
     {
-        var mine = new InMemoryConceptLedgerStore(TimeProvider.System);
+        var mine = new InMemoryConceptLedgerStore(CharterTime.System);
 
         using var provider = Services(mine).BuildServiceProvider();
 

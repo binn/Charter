@@ -145,7 +145,7 @@ internal sealed class ControlPlaneInstance : IAsyncDisposable
         var services = new ServiceCollection();
 
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Warning));
-        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton(CharterTime.System);
         services.AddDbContext<CharterDbContext>(
             builder => DataServiceCollectionExtensions.ConfigureNpgsql(builder, database.ConnectionString),
             ServiceLifetime.Scoped);

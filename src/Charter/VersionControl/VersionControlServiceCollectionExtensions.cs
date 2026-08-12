@@ -23,7 +23,7 @@ public static class VersionControlServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
 
         // Singleton: providers are stateless wrappers over singleton clients, and the registry is a
         // lookup over them.

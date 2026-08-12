@@ -112,7 +112,7 @@ internal static class EmailFixture
     {
         logger = new RecordingLogger<EmailSender>();
         deliveryLog = new RecentEmailDeliveryLog();
-        var time = clock ?? TimeProvider.System;
+        var time = clock ?? CharterTime.System;
 
         return new EmailSender(
             provider,
@@ -281,7 +281,7 @@ public class EmailDeliveryTests
     public async Task TheSmtpProviderRendersBothBodiesIntoOneMultipartMessage()
     {
         var transport = new StubSmtpTransport();
-        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, TimeProvider.System);
+        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, CharterTime.System);
 
         var result = await provider.SendAsync(EmailFixture.Message(), TestContext.Current.CancellationToken);
 
@@ -304,7 +304,7 @@ public class EmailDeliveryTests
     public async Task ASubjectCannotSmuggleASecondHeader()
     {
         var transport = new StubSmtpTransport();
-        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, TimeProvider.System);
+        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, CharterTime.System);
 
         var message = EmailFixture.Message() with
         {
@@ -336,7 +336,7 @@ public class EmailDeliveryTests
             Next = SmtpTransportResult.Refused(451, "4.3.0 try later", transient: true),
         };
 
-        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, TimeProvider.System);
+        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, CharterTime.System);
 
         var result = await provider.SendAsync(EmailFixture.Message(), TestContext.Current.CancellationToken);
 
@@ -353,7 +353,7 @@ public class EmailDeliveryTests
         var transport = new StubSmtpTransport();
 
         Assert.Throws<ArgumentException>(() =>
-            new SmtpEmailProvider(EmailFixture.Disabled(), transport, TimeProvider.System));
+            new SmtpEmailProvider(EmailFixture.Disabled(), transport, CharterTime.System));
     }
 
     [Fact]
@@ -362,9 +362,9 @@ public class EmailDeliveryTests
         // Change spec 001 C.3 asks for this button because misconfiguration is otherwise discovered
         // when an invitation silently fails. A test that bypassed the send path would prove nothing.
         var transport = new StubSmtpTransport();
-        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, TimeProvider.System);
+        var provider = new SmtpEmailProvider(EmailFixture.Enabled(), transport, CharterTime.System);
         var sender = EmailFixture.Sender(provider, EmailFixture.Enabled(), out _, out var log);
-        var tester = new EmailTester(sender, TimeProvider.System, "charter.example.com");
+        var tester = new EmailTester(sender, CharterTime.System, "charter.example.com");
 
         var result = await tester.SendTestAsync("admin@example.com", TestContext.Current.CancellationToken);
 
@@ -378,7 +378,7 @@ public class EmailDeliveryTests
     public async Task TheTestEmailExplainsItselfWhenEmailIsOff()
     {
         var sender = EmailFixture.Sender(new NullEmailProvider(), EmailFixture.Disabled(), out _, out _);
-        var tester = new EmailTester(sender, TimeProvider.System, "charter.example.com");
+        var tester = new EmailTester(sender, CharterTime.System, "charter.example.com");
 
         var result = await tester.SendTestAsync("admin@example.com", TestContext.Current.CancellationToken);
 
@@ -391,7 +391,7 @@ public class EmailDeliveryTests
     public async Task TheTestEmailRejectsSomethingThatIsNotAnAddress()
     {
         var sender = EmailFixture.Sender(new StubEmailProvider(), EmailFixture.Enabled(), out _, out _);
-        var tester = new EmailTester(sender, TimeProvider.System, "charter.example.com");
+        var tester = new EmailTester(sender, CharterTime.System, "charter.example.com");
 
         var result = await tester.SendTestAsync("not-an-address", TestContext.Current.CancellationToken);
 

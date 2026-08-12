@@ -32,7 +32,7 @@ public static class NotificationServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
 
         services.TryAddSingleton<IEmailDeliveryLog, RecentEmailDeliveryLog>();
 

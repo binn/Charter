@@ -549,7 +549,7 @@ public class UpdateCheckTests
             new UpdateCheckOptions { CurrentVersion = current, Repository = "binn/Charter" },
             new JobQueue(db),
             db,
-            TimeProvider.System,
+            CharterTime.System,
             new RecordingLogger<UpdateCheckJobHandler>());
     }
 

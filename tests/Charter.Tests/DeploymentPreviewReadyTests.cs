@@ -198,7 +198,7 @@ public class DeploymentPreviewReadyTests
         var services = new ServiceCollection();
 
         services.AddLogging();
-        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton(CharterTime.System);
         services.AddSingleton(Settings);
         services.AddDbContext<CharterDbContext>(builder =>
             DataServiceCollectionExtensions.ConfigureNpgsql(builder, "Host=localhost;Database=unused"));

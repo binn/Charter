@@ -1,3 +1,4 @@
+using Charter;
 using Charter.Configuration;
 using Charter.Orchestration;
 using Charter.Runners;
@@ -69,7 +70,7 @@ public static class OrchestrationServiceCollectionExtensions
             return options;
         });
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
 
         // The seam. Backends only ever dispatch; the work itself is Charter.DetachedRunner's.
         services.TryAddSingleton<IGitHubRepositoryDispatcher, UnconfiguredGitHubRepositoryDispatcher>();

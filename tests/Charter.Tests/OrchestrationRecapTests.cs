@@ -167,7 +167,7 @@ public class OrchestrationRecapTests
                 new AlwaysResolvesCredential(),
                 new RecapOptions(),
                 provider.GetRequiredService<OrchestrationOptions>(),
-                TimeProvider.System,
+                CharterTime.System,
                 NullLogger<RecapJobHandler>.Instance);
 
             var job = new ClaimedJob(

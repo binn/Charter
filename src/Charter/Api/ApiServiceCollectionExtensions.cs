@@ -49,7 +49,7 @@ public static class ApiServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(limits);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(limits);
 
         // Minimal APIs bind request bodies through the host's JSON options, not through

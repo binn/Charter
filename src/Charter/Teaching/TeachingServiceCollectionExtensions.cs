@@ -27,7 +27,7 @@ public static class TeachingServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(new TeachingOptions());
         services.TryAddSingleton<TeachingPromptBuilder>();
         services.TryAddSingleton<IConceptLedgerStore, InMemoryConceptLedgerStore>();

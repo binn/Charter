@@ -444,13 +444,13 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
         Publisher = new ChangeRequestPublisher(
             db,
             Registry,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<ChangeRequestPublisher>.Instance);
 
         Tracker = new ChangeRequestStateTracker(
             db,
             Registry,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<ChangeRequestStateTracker>.Instance);
     }
 
@@ -540,9 +540,9 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
             Db,
             new RequestQueryService(
                 Db,
-                new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+                new CharterAuthorizationService(Db, new AuditWriter(Db, CharterTime.System)),
                 Registry,
-                TimeProvider.System),
+                CharterTime.System),
             files);
 
     /// <summary>Records a file write exactly as the execution plane reported it.</summary>
@@ -564,7 +564,7 @@ internal sealed class ChangeRequestWorld : IAsyncDisposable
         => new(
             Db,
             new VersionControlProviderRegistry([provider]),
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<ChangeRequestPublisher>.Instance);
 
     public async Task<IReadOnlyList<ChangeRequest>> ChangeRequestsAsync()

@@ -73,7 +73,7 @@ public sealed class UserRecordPreferencesStore : IViewerPreferencesStore
     private readonly TimeProvider clock;
 
     public UserRecordPreferencesStore(CharterDbContext database)
-        : this(database, TimeProvider.System)
+        : this(database, CharterTime.System)
     {
     }
 

@@ -390,14 +390,14 @@ public class AuthServiceIntegrationTests
         {
             Db = db;
             this.schema = schema;
-            Audit = new AuditWriter(db, TimeProvider.System);
+            Audit = new AuditWriter(db, CharterTime.System);
             Authorization = new CharterAuthorizationService(db, Audit);
             Scopes = new RepoScopeAdministration(db, Audit);
             Linker = new IdentityLinker(db, Audit);
             PasswordProvider = new PasswordIdentityProvider(
                 db,
                 new CharterPasswordHasher(iterationCount: 1_000),
-                new SignInThrottle(TimeProvider.System),
+                new SignInThrottle(CharterTime.System),
                 NullLogger<PasswordIdentityProvider>.Instance);
         }
 

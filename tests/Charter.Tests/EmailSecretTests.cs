@@ -58,7 +58,7 @@ public class EmailSecretTests
             Next = SmtpTransportResult.Refused(535, "5.7.8 authentication failed", transient: false),
         };
 
-        var provider = new SmtpEmailProvider(config, transport, TimeProvider.System);
+        var provider = new SmtpEmailProvider(config, transport, CharterTime.System);
         var sender = EmailFixture.Sender(provider, config, out var logger, out var log);
 
         var result = await sender.SendAsync(EmailFixture.Message(), TestContext.Current.CancellationToken);

@@ -291,18 +291,18 @@ public class ApiSessionActionTests
         public RequestQueryService Queries()
             => new(
                 db,
-                new CharterAuthorizationService(db, new AuditWriter(db, TimeProvider.System)),
+                new CharterAuthorizationService(db, new AuditWriter(db, CharterTime.System)),
                 new Charter.VersionControl.VersionControlProviderRegistry([]),
-                TimeProvider.System);
+                CharterTime.System);
 
         public RequestCommandService Commands()
             => new(
                 db,
-                new CharterAuthorizationService(db, new AuditWriter(db, TimeProvider.System)),
+                new CharterAuthorizationService(db, new AuditWriter(db, CharterTime.System)),
                 Queries(),
                 new SilentPublisher(),
                 new JobQueue(db),
-                TimeProvider.System);
+                CharterTime.System);
 
         public async Task<Guid> QueueBuildAsync()
         {

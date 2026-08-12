@@ -31,7 +31,7 @@ public static class GitHubServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(options);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(options);
 
         services.AddHttpClient(GitHubAppTokenProvider.HttpClientName);

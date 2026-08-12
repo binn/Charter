@@ -1,3 +1,4 @@
+using Charter;
 using Charter.Budgets;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -38,7 +39,7 @@ public static class BudgetServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
 
         services.TryAddSingleton(_ =>
         {

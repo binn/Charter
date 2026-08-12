@@ -228,7 +228,7 @@ public class DemoModeTests
             return;
         }
 
-        var seeded = await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+        var seeded = await new DemoSeeder(fixture.Database, CharterTime.System, Hasher())
             .SeedAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DemoSeedOutcome.Seeded, seeded);
@@ -323,7 +323,7 @@ public class DemoModeTests
             return;
         }
 
-        var seeder = new DemoSeeder(fixture.Database, TimeProvider.System, Hasher());
+        var seeder = new DemoSeeder(fixture.Database, CharterTime.System, Hasher());
 
         Assert.Equal(DemoSeedOutcome.Seeded, await seeder.SeedAsync(TestContext.Current.CancellationToken));
 
@@ -332,7 +332,7 @@ public class DemoModeTests
         // than Occupied, because the operator who restarted still needs the credentials printed.
         Assert.Equal(
             DemoSeedOutcome.AlreadySeeded,
-            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+            await new DemoSeeder(fixture.Database, CharterTime.System, Hasher())
                 .SeedAsync(TestContext.Current.CancellationToken));
 
         Assert.Equal(1, await fixture.Database.Organizations.CountAsync(TestContext.Current.CancellationToken));
@@ -356,7 +356,7 @@ public class DemoModeTests
 
         Assert.Equal(
             DemoSeedOutcome.Occupied,
-            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+            await new DemoSeeder(fixture.Database, CharterTime.System, Hasher())
                 .SeedAsync(TestContext.Current.CancellationToken));
 
         Assert.Empty(await fixture.Database.Repos.ToListAsync(TestContext.Current.CancellationToken));
@@ -382,7 +382,7 @@ public class DemoModeTests
 
         Assert.Equal(
             DemoSeedOutcome.Occupied,
-            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+            await new DemoSeeder(fixture.Database, CharterTime.System, Hasher())
                 .SeedAsync(TestContext.Current.CancellationToken));
 
         Assert.Empty(await fixture.Database.Identities.ToListAsync(TestContext.Current.CancellationToken));
@@ -408,13 +408,13 @@ public class DemoModeTests
 
         Assert.Equal(
             DemoSeedOutcome.Seeded,
-            await new DemoSeeder(fixture.Database, TimeProvider.System, hasher)
+            await new DemoSeeder(fixture.Database, CharterTime.System, hasher)
                 .SeedAsync(TestContext.Current.CancellationToken));
 
         var provider = new PasswordIdentityProvider(
             fixture.Database,
             hasher,
-            new SignInThrottle(TimeProvider.System),
+            new SignInThrottle(CharterTime.System),
             NullLogger<PasswordIdentityProvider>.Instance);
 
         foreach (var account in DemoSeeder.Accounts)
@@ -460,7 +460,7 @@ public class DemoModeTests
 
         Assert.Equal(
             DemoSeedOutcome.Seeded,
-            await new DemoSeeder(fixture.Database, TimeProvider.System, Hasher())
+            await new DemoSeeder(fixture.Database, CharterTime.System, Hasher())
                 .SeedAsync(TestContext.Current.CancellationToken));
 
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -528,7 +528,7 @@ public class DemoModeTests
 
         var hosted = new DemoSeedHostedService(
             provider,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<DemoSeedHostedService>.Instance);
 
         await hosted.StartAsync(TestContext.Current.CancellationToken);

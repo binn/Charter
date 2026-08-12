@@ -208,7 +208,7 @@ internal sealed class MilestoneWorld : IAsyncDisposable
         Db = db;
         SessionId = sessionId;
         Journal = new SessionJournal(db);
-        Milestones = new SessionMilestones(db, TimeProvider.System);
+        Milestones = new SessionMilestones(db, CharterTime.System);
     }
 
     public CharterDbContext Db { get; }

@@ -32,7 +32,7 @@ public static class ModelServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(new ModelClientOptions());
 
         // Section 20b.7: the instance-level pooling switch. Registered with TryAdd and defaulted to

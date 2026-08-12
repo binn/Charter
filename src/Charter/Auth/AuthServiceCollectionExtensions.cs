@@ -30,7 +30,7 @@ public static class AuthServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
 
         // Section 34.9: setup seeds an organisation's first budget, so this graph needs the amounts.
         // TryAdd, and the host registers its projection of CHARTER_DEFAULT_MONTHLY_BUDGET_USD and

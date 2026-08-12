@@ -337,7 +337,7 @@ public class TeachingGeneratorTests
     internal static (TeachingGenerator Generator, RecapStubClient Client, IConceptLedgerStore Concepts) Build(
         TeachingOptions options,
         params object[] payloads)
-        => Build(options, new InMemoryConceptLedgerStore(TimeProvider.System), payloads);
+        => Build(options, new InMemoryConceptLedgerStore(CharterTime.System), payloads);
 
     internal static (TeachingGenerator Generator, RecapStubClient Client, IConceptLedgerStore Concepts) Build(
         TeachingOptions options,
@@ -355,7 +355,7 @@ public class TeachingGeneratorTests
             new TeachingPromptBuilder(),
             concepts,
             new InMemoryWalkthroughStore(),
-            new InMemoryExplainThisQuota(TimeProvider.System),
+            new InMemoryExplainThisQuota(CharterTime.System),
             options,
             NullLogger<TeachingGenerator>.Instance);
 

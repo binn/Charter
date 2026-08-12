@@ -45,14 +45,14 @@ public class ModelClientFactoryTests
             new StubHttpClientFactory(new StubHttpMessageHandler()),
             new ModelClientOptions(),
             ModelTestFixtures.Calculator(),
-            TimeProvider.System,
+            CharterTime.System,
             ModelTestFixtures.Silent<AnthropicModelClient>());
 
         var two = new AnthropicModelClient(
             new StubHttpClientFactory(new StubHttpMessageHandler()),
             new ModelClientOptions(),
             ModelTestFixtures.Calculator(),
-            TimeProvider.System,
+            CharterTime.System,
             ModelTestFixtures.Silent<AnthropicModelClient>());
 
         Assert.Throws<ArgumentException>(() => new ModelClientFactory([one, two]));
@@ -142,19 +142,19 @@ public class ModelClientFactoryTests
                 httpClientFactory,
                 options,
                 calculator,
-                TimeProvider.System,
+                CharterTime.System,
                 ModelTestFixtures.Silent<AnthropicModelClient>()),
             new OpenAiCompatibleModelClient(
                 httpClientFactory,
                 options,
                 calculator,
-                TimeProvider.System,
+                CharterTime.System,
                 ModelTestFixtures.Silent<OpenAiCompatibleModelClient>()),
             new GeminiModelClient(
                 httpClientFactory,
                 options,
                 calculator,
-                TimeProvider.System,
+                CharterTime.System,
                 ModelTestFixtures.Silent<GeminiModelClient>()),
         ]);
     }

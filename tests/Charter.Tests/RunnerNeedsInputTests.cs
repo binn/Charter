@@ -368,7 +368,7 @@ internal sealed class NeedsInputWorld : IAsyncDisposable
             new SessionJournal(Db),
             new JobQueue(Db),
             Options,
-            TimeProvider.System,
+            CharterTime.System,
             NullLogger<NeedsInputAnnouncer>.Instance,
             Notifications);
 
@@ -377,18 +377,18 @@ internal sealed class NeedsInputWorld : IAsyncDisposable
     public RequestQueryService Queries()
         => new(
             Db,
-            new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+            new CharterAuthorizationService(Db, new AuditWriter(Db, CharterTime.System)),
             new VersionControlProviderRegistry([]),
-            TimeProvider.System);
+            CharterTime.System);
 
     public RequestCommandService Commands()
         => new(
             Db,
-            new CharterAuthorizationService(Db, new AuditWriter(Db, TimeProvider.System)),
+            new CharterAuthorizationService(Db, new AuditWriter(Db, CharterTime.System)),
             Queries(),
             Stream,
             new JobQueue(Db),
-            TimeProvider.System,
+            CharterTime.System,
             Announcer());
 
     /// <summary>The bytes this request's <c>GET /api/requests/{id}</c> would return to its requester.</summary>

@@ -37,7 +37,7 @@ public static class UpdateServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(config);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
         services.TryAddSingleton(new UpdateCheckOptions());
 
         if (!config.ShouldCheckForUpdates)

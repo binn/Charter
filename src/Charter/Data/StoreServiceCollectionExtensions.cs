@@ -46,7 +46,7 @@ public static class StoreServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(CharterTime.System);
 
         // Section 13: the ledger a requester graduates through, the walkthrough cache that makes a
         // second open free, and the per-user cap on the one unbounded surface.

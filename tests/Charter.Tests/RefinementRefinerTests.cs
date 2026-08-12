@@ -447,7 +447,7 @@ internal static class RefinementStubs
         new RefinementStubClientFactory(client),
         new RefinementPromptBuilder(),
         new RefinementOptions(),
-        TimeProvider.System,
+        CharterTime.System,
         NullLogger<SpecRefiner>.Instance);
 
     public static SpecDocument Spec(

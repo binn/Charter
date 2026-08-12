@@ -367,7 +367,7 @@ public sealed class ShimCheckRunner
         ArgumentNullException.ThrowIfNull(processes);
 
         _processes = processes;
-        _clock = clock ?? TimeProvider.System;
+        _clock = clock ?? CharterTime.System;
     }
 
     /// <summary>Runs every check in declaration order.</summary>

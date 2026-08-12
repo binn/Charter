@@ -482,7 +482,7 @@ public class AuthSetupIntegrationTests
             Db = db;
             this.schema = schema;
             State = new SetupState();
-            Tokens = new SetupTokenStore(TimeProvider.System);
+            Tokens = new SetupTokenStore(CharterTime.System);
             Mode = new SetupModeService(db, State);
             Hasher = new CharterPasswordHasher(iterationCount: 1_000);
             Service = new SetupService(
@@ -493,7 +493,7 @@ public class AuthSetupIntegrationTests
                 Hasher,
                 config,
                 BudgetLimitsServiceCollectionExtensions.From(config),
-                TimeProvider.System);
+                CharterTime.System);
             Email = $"admin-{schema}@example.com";
         }
 
