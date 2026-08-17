@@ -22,7 +22,8 @@
 
   <ItemGroup>
     <!-- Serilog is the logging pipeline (section 19). Configured in code, never from a config file. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -54,14 +55,14 @@
       counts a new dependency as supply chain - this one is Amazon's own, and it is not loaded at all
       on the default backend.
     -->
-    <PackageReference Include="AWSSDK.S3" Version="4.0.102" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.102.1" />
 
     <!-- Postgres is the only external dependency (section 3). -->
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />
 
     <!-- Development-time SPA proxy (section 3.1). -->
-    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.10" />
+    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.11" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
