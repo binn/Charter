@@ -22,7 +22,8 @@
 
   <ItemGroup>
     <!-- Serilog is the logging pipeline (section 19). Configured in code, never from a config file. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.13" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -33,18 +34,18 @@
     <PackageReference Include="Serilog.Sinks.OpenTelemetry" Version="4.2.0" />
 
     <!-- OpenTelemetry traces + metrics (section 19.2). -->
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
-    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.17.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.20.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.20.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.20.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.20.0" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.20.0" />
 
     <!--
       Official Anthropic C# SDK (section 3). Version 10 and later is Anthropic's own package;
       `Anthropic` 3.x and below was the unrelated tryAGI community SDK, now published as
       `tryAGI.Anthropic`. Pinned exactly - do not float this reference.
     -->
-    <PackageReference Include="Anthropic" Version="12.40.0" />
+    <PackageReference Include="Anthropic" Version="12.58.0" />
 
     <!--
       S3-compatible object storage (section 4.2), used only when CHARTER_STORAGE_BACKEND=s3. The AWS
@@ -54,14 +55,14 @@
       counts a new dependency as supply chain - this one is Amazon's own, and it is not loaded at all
       on the default backend.
     -->
-    <PackageReference Include="AWSSDK.S3" Version="4.0.102" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.104.4" />
 
     <!-- Postgres is the only external dependency (section 3). -->
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Npgsql.OpenTelemetry" Version="10.0.3" />
 
     <!-- Development-time SPA proxy (section 3.1). -->
-    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.10" />
+    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Version="10.0.13" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
